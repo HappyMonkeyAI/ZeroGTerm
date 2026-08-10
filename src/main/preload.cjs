@@ -5,17 +5,17 @@ const api = {
   createLocalSession: (request) => ipcRenderer.invoke('sessions:createLocal', request),
   createSshSession: (request) => ipcRenderer.invoke('sessions:createSsh', request),
   attachSession: (id) => ipcRenderer.invoke('sessions:attach', id),
-  write: (data) => ipcRenderer.send('terminal:write', data),
-  resize: (cols, rows) => ipcRenderer.send('terminal:resize', cols, rows),
+  write: (sessionId, data) => ipcRenderer.send('terminal:write', sessionId, data),
+  resize: (sessionId, cols, rows) => ipcRenderer.send('terminal:resize', sessionId, cols, rows),
   copyText: (text) => ipcRenderer.invoke('clipboard:writeText', text),
   readText: () => ipcRenderer.invoke('clipboard:readText'),
   onData: (callback) => {
-    const listener = (_event, data) => callback(data);
+    const listener = (_event, sessionId, data) => callback(sessionId, data);
     ipcRenderer.on('terminal:data', listener);
     return () => ipcRenderer.removeListener('terminal:data', listener);
   },
   onStatus: (callback) => {
-    const listener = (_event, message) => callback(message);
+    const listener = (_event, sessionId, message) => callback(sessionId, message);
     ipcRenderer.on('terminal:status', listener);
     return () => ipcRenderer.removeListener('terminal:status', listener);
   },

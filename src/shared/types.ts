@@ -30,12 +30,12 @@ export interface TerminalApi {
   createLocalSession(request: CreateLocalRequest): Promise<SessionInfo>;
   createSshSession(request: CreateSshRequest): Promise<SessionInfo>;
   attachSession(id: string): Promise<SessionInfo>;
-  write(data: string): void;
-  resize(cols: number, rows: number): void;
+  write(sessionId: string, data: string): void;
+  resize(sessionId: string, cols: number, rows: number): void;
   copyText(text: string): Promise<void>;
   readText(): Promise<string>;
-  onData(callback: (data: string) => void): () => void;
-  onStatus(callback: (message: string) => void): () => void;
+  onData(callback: (sessionId: string, data: string) => void): () => void;
+  onStatus(callback: (sessionId: string, message: string) => void): () => void;
   requestAiCommand(): Promise<{ command: string; explanation: string }>;
 }
 

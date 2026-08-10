@@ -51,7 +51,7 @@ function createWindow() {
 
   win.on('closed', () => {
     win = undefined;
-    service.detach();
+    service.detachAll();
   });
 }
 
@@ -81,18 +81,18 @@ ipcMain.handle('sessions:attach', (_event, id: unknown) => {
   if (typeof id !== 'string' || !id) throw new Error('attachSession requires a session id');
   return service.attach(
     id,
-    (data) => win?.webContents.send('terminal:data', data),
-    (message) => win?.webContents.send('terminal:status', message)
+    (data) => win?.webContents.send('terminal:data', id, data),
+    (message) => win?.webContents.send('terminal:status', id, message)
   );
 });
 
-ipcMain.on('terminal:write', (_event, data: unknown) => {
-  if (typeof data === 'string') service.write(data);
+ipcMain.on('terminal:write', (_event, sessionId: unknown, data: unknown) => {
+  if (typeof sessionId === 'string' && typeof data === 'string') service.write(sessionId, data);
 });
 
-ipcMain.on('terminal:resize', (_event, cols: unknown, rows: unknown) => {
-  if (Number.isInteger(cols) && Number.isInteger(rows)) {
-    service.resize(cols as number, rows as number);
+ipcMain.on('terminal:resize', (_event, sessionId: unknown, cols: unknown, rows: unknown) => {
+  if (typeof sessionId === 'string' && Number.isInteger(cols) && Number.isInteger(rows)) {
+    service.resize(sessionId, cols as number, rows as number);
   }
 });
 
