@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseScreenList, validateSessionName, validateSshTarget } from '../src/main/session-service';
+import { ScreenService, parseScreenList, validateSessionName, validateSshTarget } from '../src/main/session-service';
 
 describe('screen session contract', () => {
   it('validates safe names', () => {
@@ -17,4 +17,28 @@ describe('screen session contract', () => {
     expect(validateSshTarget('dev@example.com:2222')).toEqual({ target: 'dev@example.com:2222', args: ['-tt', '-p', '2222', 'dev@example.com'] });
     expect(() => validateSshTarget('dev@example.com; touch /tmp/pwned')).toThrow();
   });
+
+  it('routes input and output independently for two attached sessions', async () => {
+    const service = new ScreenService();
+    const first = await service.createLocal(`first-${Date.now()}`);
+    const second = await service.createLocal(`second-${Date.now()}`);
+    let firstOutput = '';
+    let secondOutput = '';
+
+    service.attach(first.id, (data) => { firstOutput += data; }, () => undefined);
+    service.attach(second.id, (data) => { secondOutput += data; }, () => undefined);
+    service.write(first.id, "printf 'FIRST_SESSION_OK\\n'\r");
+    service.write(second.id, "printf 'SECOND_SESSION_OK\\n'\r");
+
+    const deadline = Date.now() + 3000;
+    while ((!firstOutput.includes('FIRST_SESSION_OK') || !secondOutput.includes('SECOND_SESSION_OK')) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    service.detachAll();
+
+    expect(firstOutput).toContain('FIRST_SESSION_OK');
+    expect(firstOutput).not.toContain('SECOND_SESSION_OK');
+    expect(secondOutput).toContain('SECOND_SESSION_OK');
+    expect(secondOutput).not.toContain('FIRST_SESSION_OK');
+  }, 5000);
 });

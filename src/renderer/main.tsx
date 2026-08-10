@@ -104,6 +104,30 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
           <rect x="5" y="5" width="14" height="14" rx="1.5" />
         </svg>
       );
+    case 'maximize':
+      return (
+        <svg {...common}>
+          <path d="M8 4H4v4M16 4h4v4M4 16v4h4M20 16v4h-4" />
+        </svg>
+      );
+    case 'restore':
+      return (
+        <svg {...common}>
+          <path d="M8 8h12v12H8zM4 16V4h12" />
+        </svg>
+      );
+    case 'chevron-left':
+      return (
+        <svg {...common}>
+          <path d="M15 5l-7 7 7 7" />
+        </svg>
+      );
+    case 'chevron-right':
+      return (
+        <svg {...common}>
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+      );
     case 'split-v':
       return (
         <svg {...common}>
@@ -123,7 +147,7 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
   }
 }
 
-function TerminalView({ onStatus, theme }: { onStatus: (message: string) => void; theme: Theme }) {
+function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onStatus: (message: string) => void; theme: Theme }) {
   const ref = useRef<HTMLDivElement>(null);
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
@@ -161,7 +185,7 @@ function TerminalView({ onStatus, theme }: { onStatus: (message: string) => void
         return;
       }
       if (currentApi && terminal.cols > 0 && terminal.rows > 0) {
-        currentApi.resize(terminal.cols, terminal.rows);
+        if (sessionId) currentApi.resize(sessionId, terminal.cols, terminal.rows);
       }
     };
 
@@ -186,13 +210,18 @@ function TerminalView({ onStatus, theme }: { onStatus: (message: string) => void
       };
     }
 
-    const removeData = currentApi.onData((data) => terminal.write(data));
-    const removeStatus = currentApi.onStatus((status) => {
+    const removeData = currentApi.onData((eventSessionId, data) => {
+      if (eventSessionId === sessionId) terminal.write(data);
+    });
+    const removeStatus = currentApi.onStatus((eventSessionId, status) => {
+      if (eventSessionId !== sessionId) return;
       statusRef.current(status);
       // Refit after connection changes — wrong rows make prompts appear mid-pane.
       scheduleFit();
     });
-    const input = terminal.onData((data) => currentApi.write(data));
+    const input = terminal.onData((data) => {
+      if (sessionId) currentApi.write(sessionId, data);
+    });
 
     // Linux terminal conventions: Ctrl+Shift+C / Ctrl+Shift+V.
     // Keep Ctrl+C as interrupt by only handling the Shift variants.
@@ -220,7 +249,7 @@ function TerminalView({ onStatus, theme }: { onStatus: (message: string) => void
             if (typeof terminal.paste === 'function') {
               terminal.paste(text);
             } else {
-              currentApi.write(text);
+              if (sessionId) currentApi.write(sessionId, text);
             }
           })
           .catch((error) => {
@@ -240,8 +269,21 @@ function TerminalView({ onStatus, theme }: { onStatus: (message: string) => void
     }).catch(() => undefined);
 
     scheduleFit();
-    terminal.writeln('\x1b[90mZeroG Terminal\x1b[0m');
-    terminal.writeln('\x1b[90mSelect a session or create a local/SSH connection.\x1b[0m');
+    if (!sessionId) {
+      terminal.writeln('\x1b[90mZeroG Terminal\x1b[0m');
+      terminal.writeln('\x1b[90mSelect a session or create a local/SSH connection.\x1b[0m');
+    } else {
+      void currentApi.attachSession(sessionId).then((attached) => {
+        if (attached.persistence === 'process') {
+          statusRef.current(`${attached.host} · ${attached.name} · process only (install screen for persistence)`);
+        } else {
+          statusRef.current(`${attached.host} · ${attached.name}`);
+        }
+        scheduleFit();
+      }).catch((error) => {
+        statusRef.current(error instanceof Error ? error.message : String(error));
+      });
+    }
 
     return () => {
       disposed = true;
@@ -304,6 +346,8 @@ function App() {
   const [modal, setModal] = useState<ModalKind>(null);
   const [overview, setOverview] = useState(false);
   const [layout, setLayout] = useState<Layout>('stack');
+  const [focusedSessionId, setFocusedSessionId] = useState<string>();
+  const [maximizedSessionId, setMaximizedSessionId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState('Workspace');
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
@@ -413,25 +457,13 @@ function App() {
   }, [overview, approval, modal, workspaces, activeWorkspace, workspaceSessions]);
 
   const attach = async (session: SessionInfo) => {
-    const currentApi = api();
-    if (!currentApi) return setStatus('Preload API unavailable');
-    setBusy(true);
     setActive(session);
-    try {
-      const attached = await currentApi.attachSession(session.id);
-      setActive(attached);
-      setSessions((current) => current.map((item) => (item.id === attached.id ? attached : item)));
-      setStatus(
-        attached.persistence === 'process'
-          ? `${attached.host} · ${attached.name} · process only (install screen for persistence)`
-          : `${attached.host} · ${attached.name}`
-      );
-      setOverview(false);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
+    setStatus(
+      session.persistence === 'process'
+        ? `${session.host} · ${session.name} · process only (install screen for persistence)`
+        : `${session.host} · ${session.name}`
+    );
+    setOverview(false);
   };
 
   const claimSession = (session: SessionInfo, workspaceId = activeWorkspaceId) => {
@@ -464,11 +496,18 @@ function App() {
     event.preventDefault();
     const currentApi = api();
     if (!currentApi) return;
+    if (workspaceSessions.length >= 4) {
+      setStatus('This workspace supports up to 4 sessions.');
+      setModal(null);
+      return;
+    }
     setBusy(true);
     try {
       const session = await currentApi.createLocalSession({ name: localName });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
+      setMaximizedSessionId(null);
+      setLayout(layoutForSessionCount(workspaceSessions.length + 1));
       setModal(null);
       await attach(session);
     } catch (error) {
@@ -482,11 +521,18 @@ function App() {
     event.preventDefault();
     const currentApi = api();
     if (!currentApi) return;
+    if (workspaceSessions.length >= 4) {
+      setStatus('This workspace supports up to 4 sessions.');
+      setModal(null);
+      return;
+    }
     setBusy(true);
     try {
       const session = await currentApi.createSshSession({ name: sshName || undefined, target: sshTarget });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
+      setMaximizedSessionId(null);
+      setLayout(layoutForSessionCount(workspaceSessions.length + 1));
       setModal(null);
       await attach(session);
     } catch (error) {
@@ -515,6 +561,26 @@ function App() {
           ? 'pane-grid grid'
           : 'pane-grid';
   const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
+  const visibleSessions = layout === 'stack'
+    ? (active ? [active] : workspaceSessions.slice(0, 1))
+    : workspaceSessions.slice(0, paneCount);
+  // Keep every workspace terminal mounted while changing layouts. Hiding a
+  // pane must not dispose its xterm renderer and lose its scrollback/content.
+  const paneSessions = workspaceSessions.slice(0, 4);
+  const renderedPaneCount = Math.max(paneCount, paneSessions.length);
+  const toggleMaximize = (sessionId: string) => {
+    setFocusedSessionId(sessionId);
+    setMaximizedSessionId((current) => current === sessionId ? null : sessionId);
+  };
+  const cycleMaximizedSession = (direction: -1 | 1) => {
+    if (!maximizedSessionId || workspaceSessions.length < 2) return;
+    const currentIndex = workspaceSessions.findIndex((session) => session.id === maximizedSessionId);
+    const nextIndex = (currentIndex + direction + workspaceSessions.length) % workspaceSessions.length;
+    const next = workspaceSessions[nextIndex];
+    setFocusedSessionId(next.id);
+    setActive(next);
+    setMaximizedSessionId(next.id);
+  };
 
   return (
     <main className={`app-shell ${drawerCollapsed ? 'drawer-collapsed' : ''}`}>
@@ -714,32 +780,65 @@ function App() {
             </div>
             <div className="layout-controls">
               <span className="control-label">LAYOUT</span>
-              <button type="button" className={layout === 'stack' ? 'layout-button active' : 'layout-button'} onClick={() => setLayout('stack')} title="Stack">
+              <button
+                type="button"
+                className={layout === 'stack' || maximizedSessionId ? 'layout-button active' : 'layout-button'}
+                onClick={() => {
+                  if (maximizedSessionId) {
+                    setMaximizedSessionId(null);
+                  } else if (workspaceSessions.length > 1) {
+                    const target = focusedSessionId ?? active?.id ?? workspaceSessions[0]?.id;
+                    if (target) setMaximizedSessionId(target);
+                  } else {
+                    setLayout('stack');
+                  }
+                }}
+                title={maximizedSessionId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
+              >
                 <Icon name="stack" />
               </button>
-              <button type="button" className={layout === 'split-v' ? 'layout-button active' : 'layout-button'} onClick={() => setLayout('split-v')} title="Vertical split">
+              <button type="button" className={layout === 'split-v' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
                 <Icon name="split-v" />
               </button>
-              <button type="button" className={layout === 'split-h' ? 'layout-button active' : 'layout-button'} onClick={() => setLayout('split-h')} title="Horizontal split">
+              <button type="button" className={layout === 'split-h' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
                 <Icon name="split-h" />
               </button>
-              <button type="button" className={layout === 'grid' ? 'layout-button active' : 'layout-button'} onClick={() => setLayout('grid')} title="Grid">
+              <button type="button" className={layout === 'grid' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
                 <Icon name="grid" />
               </button>
             </div>
           </div>
 
-          <div className={paneClass}>
-            {Array.from({ length: paneCount }, (_, index) =>
-              index === 0 ? (
-                <article className="pane terminal-pane" key="terminal">
+          <div className={`${paneClass} ${maximizedSessionId ? 'maximized-pane-grid' : ''}`}>
+            {Array.from({ length: renderedPaneCount }, (_, index) =>
+              paneSessions[index] ? (
+                <article
+                  className={`pane terminal-pane ${focusedSessionId === paneSessions[index].id ? 'focused' : ''} ${maximizedSessionId === paneSessions[index].id ? 'maximized-pane' : ''} ${index >= paneCount ? 'overflow-pane' : ''}`}
+                  key={paneSessions[index].id}
+                  onMouseDown={() => setFocusedSessionId(paneSessions[index].id)}
+                >
                   <div className="pane-title">
                     <span>
-                      <span className="pane-live" /> {active?.name ?? 'TERMINAL'}
+                      <span className="pane-live" /> {paneSessions[index].name}
                     </span>
-                    <span className="pane-actions">{busy ? 'connecting…' : 'bash / ssh'} ···</span>
+                    <span className="pane-actions">
+                      {maximizedSessionId && (
+                        <>
+                          <button type="button" className="pane-nav" onClick={() => cycleMaximizedSession(-1)} title="Previous session">
+                            <Icon name="chevron-left" />
+                          </button>
+                          <button type="button" className="pane-nav" onClick={() => cycleMaximizedSession(1)} title="Next session">
+                            <Icon name="chevron-right" />
+                          </button>
+                        </>
+                      )}
+                      {busy ? 'connecting…' : paneSessions[index].kind === 'ssh' ? 'ssh' : 'bash'}
+                      <button type="button" className="pane-maximize" onClick={() => toggleMaximize(paneSessions[index].id)} title={maximizedSessionId ? 'Restore pane' : 'Maximize pane'}>
+                        <Icon name={maximizedSessionId ? 'restore' : 'maximize'} />
+                      </button>
+                    </span>
                   </div>
-                  <TerminalView onStatus={setStatus} theme={theme} />
+                  <TerminalView sessionId={paneSessions[index].id} onStatus={setStatus} theme={theme} />
                 </article>
               ) : (
                 <PanePlaceholder key={index} index={index + 1} onCreate={openNewLocalTerminal} />
@@ -752,11 +851,11 @@ function App() {
             <span className="status-separator" />
             <span>{activeWorkspace?.name ?? 'Workspace'}</span>
             <span className="status-separator" />
-            <span>{layout === 'stack' ? '1 pane' : `${paneCount} panes`}</span>
+            <span>{maximizedSessionId ? 'maximized pane' : layout === 'stack' ? '1 pane' : `${paneCount} panes`}</span>
             <span className="status-separator" />
             <span>Esc closes overlays · ⌘⇧B sidebar</span>
             <span className="status-spacer" />
-            <span>{active ? `${active.kind === 'ssh' ? 'SSH' : 'SCREEN'} · persistent` : 'no connection'}</span>
+            <span>{active ? `${active.kind === 'ssh' ? 'SSH' : active.persistence === 'process' ? 'PROCESS' : 'SCREEN'} · ${active.persistence === 'process' ? 'non-persistent' : 'persistent'}` : 'no connection'}</span>
           </footer>
         </section>
       </div>
@@ -915,7 +1014,7 @@ function App() {
                 type="button"
                 className="primary-button"
                 onClick={() => {
-                  api()?.write(`${approval.command}\r`);
+                  if (active) api()?.write(active.id, `${approval.command}\r`);
                   setApproval(null);
                 }}
               >
@@ -973,6 +1072,12 @@ function nextTerminalName(workspaceName: string, sessions: SessionInfo[]): strin
   let index = 2;
   while (names.has(`${base}-${index}`)) index += 1;
   return `${base}-${index}`;
+}
+
+function layoutForSessionCount(count: number): Layout {
+  if (count <= 1) return 'stack';
+  if (count === 2) return 'split-v';
+  return 'grid';
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

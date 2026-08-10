@@ -497,6 +497,11 @@ input:focus-visible {
   color: #9ece6a;
 }
 
+.layout-button .icon-svg {
+  width: 15px;
+  height: 15px;
+}
+
 .pane-grid {
   display: grid;
   flex: 1;
@@ -513,6 +518,16 @@ input:focus-visible {
   grid-template-rows: 1fr 1fr;
 }
 
+.pane-grid.maximized-pane-grid {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.pane-grid:not(.maximized-pane-grid) .overflow-pane,
+.pane-grid.maximized-pane-grid .pane:not(.maximized-pane) {
+  display: none;
+}
+
 .pane {
   min-width: 0;
   min-height: 0;
@@ -523,6 +538,11 @@ input:focus-visible {
 
 .terminal-pane {
   outline: 1px solid #202630;
+  outline-offset: -1px;
+}
+
+.terminal-pane.focused {
+  outline: 1px solid #7aa2f7;
   outline-offset: -1px;
 }
 
@@ -541,6 +561,38 @@ input:focus-visible {
 .pane-dim {
   color: #4e5969;
   font-size: 9px;
+}
+
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pane-nav,
+.pane-maximize {
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #697386;
+  background: transparent;
+}
+
+.pane-nav:hover,
+.pane-maximize:hover {
+  color: #d8dee9;
+  background: #1a202a;
+  border-color: #2a3340;
+}
+
+.pane-nav .icon-svg,
+.pane-maximize .icon-svg {
+  width: 13px;
+  height: 13px;
 }
 
 .pane-live {

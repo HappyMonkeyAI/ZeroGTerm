@@ -17,6 +17,11 @@ export type PtyHandle = {
   kill: () => void;
 };
 
+type SessionPty = {
+  handle: PtyHandle;
+  kind: 'local' | 'ssh';
+};
+
 export function validateSessionName(name: string): string {
   const value = name.trim();
   if (!NAME.test(value)) {
@@ -63,7 +68,7 @@ export function parseScreenList(output: string): SessionInfo[] {
           cwd: homedir(),
           status: attached ? 'connected' : 'detached',
           lastSeen: new Date().toISOString(),
-          persistence: 'screen'
+          persistence: 'screen' as const
         }
       ];
     });
@@ -78,8 +83,7 @@ function loadPty(): any {
 }
 
 export class ScreenService {
-  private child?: PtyHandle;
-  private activeId?: string;
+  private ptys = new Map<string, SessionPty>();
   private sshSessions = new Map<string, SessionInfo>();
   private fallbackLocalSessions = new Map<string, SessionInfo>();
 
@@ -94,21 +98,21 @@ export class ScreenService {
 
   async list(): Promise<SessionInfo[]> {
     const local = (await this.available()) ? await this.listLocal() : [];
-    const ssh = [...this.sshSessions.values()].map((session) => ({
-      ...session,
-      status: this.activeId === session.id ? 'connected' as const : session.status
-    }));
-    const fallback = [...this.fallbackLocalSessions.values()].map((session) => ({
-      ...session,
-      status: this.activeId === session.id ? 'connected' as const : session.status
-    }));
+    const fallback = [...this.fallbackLocalSessions.values()];
+    const ssh = [...this.sshSessions.values()];
     return [
       ...local.map((session) => ({
         ...session,
-        status: this.activeId === session.id ? 'connected' as const : session.status
+        status: this.ptys.has(session.id) ? 'connected' as const : session.status
       })),
-      ...fallback,
-      ...ssh
+      ...fallback.map((session) => ({
+        ...session,
+        status: this.ptys.has(session.id) ? 'connected' as const : session.status
+      })),
+      ...ssh.map((session) => ({
+        ...session,
+        status: this.ptys.has(session.id) ? 'connected' as const : session.status
+      }))
     ];
   }
 
@@ -171,29 +175,20 @@ export class ScreenService {
   }
 
   attach(id: string, onData: (data: string) => void, onExit: (message: string) => void): SessionInfo {
-    this.detach();
+    const existing = this.getSession(id);
+    if (this.ptys.has(id)) return { ...existing, status: 'connected' };
+
     if (id.startsWith('local:')) {
       const fallback = this.fallbackLocalSessions.get(id);
       if (fallback) {
-        this.activeId = id;
         fallback.status = 'connected';
         fallback.lastSeen = new Date().toISOString();
-        this.spawnCommand('bash', [], onData, onExit, fallback.cwd);
+        this.spawnCommand(id, 'bash', [], onData, onExit, fallback.cwd);
         return { ...fallback };
       }
       const name = id.slice('local:'.length);
-      this.activeId = id;
-      this.spawnCommand('screen', ['-x', name], onData, onExit);
-      return {
-        id,
-        name,
-        kind: 'local',
-        host: 'local',
-        cwd: homedir(),
-        status: 'connected',
-        lastSeen: new Date().toISOString(),
-        persistence: 'screen'
-      };
+      this.spawnCommand(id, 'screen', ['-x', name], onData, onExit);
+      return { ...existing, status: 'connected', persistence: 'screen' };
     }
 
     const session = this.sshSessions.get(id);
@@ -201,14 +196,35 @@ export class ScreenService {
       throw new Error(`Unknown session: ${id}`);
     }
     const { args } = validateSshTarget(session.sshTarget);
-    this.activeId = id;
     session.status = 'connected';
     session.lastSeen = new Date().toISOString();
-    this.spawnCommand('ssh', args, onData, onExit);
+    this.spawnCommand(id, 'ssh', args, onData, onExit);
     return { ...session };
   }
 
+  private getSession(id: string): SessionInfo {
+    if (id.startsWith('local:')) {
+      const fallback = this.fallbackLocalSessions.get(id);
+      if (fallback) return fallback;
+      const name = id.slice('local:'.length);
+      return {
+        id,
+        name,
+        kind: 'local',
+        host: 'local',
+        cwd: homedir(),
+        status: 'detached',
+        lastSeen: new Date().toISOString(),
+        persistence: 'screen'
+      };
+    }
+    const session = this.sshSessions.get(id);
+    if (!session) throw new Error(`Unknown session: ${id}`);
+    return session;
+  }
+
   private spawnCommand(
+    sessionId: string,
     file: string,
     args: string[],
     onData: (data: string) => void,
@@ -223,7 +239,7 @@ export class ScreenService {
       cwd,
       env: process.env
     });
-    this.child = {
+    const handle: PtyHandle = {
       write: (data: string) => proc.write(data),
       resize: (cols: number, rows: number) => proc.resize(cols, rows),
       kill: () => {
@@ -234,16 +250,14 @@ export class ScreenService {
         }
       }
     };
+    this.ptys.set(sessionId, { handle, kind: sessionId.startsWith('ssh:') ? 'ssh' : 'local' });
     proc.onData(onData);
     proc.onExit(() => {
-      const fallback = this.activeId ? this.fallbackLocalSessions.get(this.activeId) : undefined;
-      this.child = undefined;
-      if (this.activeId?.startsWith('ssh:')) {
-        const session = this.sshSessions.get(this.activeId);
-        if (session) session.status = 'detached';
-      }
+      this.ptys.delete(sessionId);
+      const fallback = this.fallbackLocalSessions.get(sessionId);
       if (fallback) fallback.status = 'detached';
-      this.activeId = undefined;
+      const ssh = this.sshSessions.get(sessionId);
+      if (ssh) ssh.status = 'detached';
       onExit(
         fallback
           ? 'Terminal detached. This process-only local session will not survive app exit; install screen for persistence.'
@@ -252,17 +266,20 @@ export class ScreenService {
     });
   }
 
-  write(data: string): void {
-    this.child?.write(data);
+  write(sessionId: string, data: string): void {
+    this.ptys.get(sessionId)?.handle.write(data);
   }
 
-  resize(cols: number, rows: number): void {
-    this.child?.resize(cols, rows);
+  resize(sessionId: string, cols: number, rows: number): void {
+    this.ptys.get(sessionId)?.handle.resize(cols, rows);
   }
 
-  detach(): void {
-    this.child?.kill();
-    this.child = undefined;
-    this.activeId = undefined;
+  detach(sessionId: string): void {
+    this.ptys.get(sessionId)?.handle.kill();
+    this.ptys.delete(sessionId);
+  }
+
+  detachAll(): void {
+    for (const sessionId of this.ptys.keys()) this.detach(sessionId);
   }
 }
