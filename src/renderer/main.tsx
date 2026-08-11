@@ -5,6 +5,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import type { SessionInfo } from '../shared/types';
+import { MAX_UTTERANCE_SECONDS, VoiceRecorder, isMostlySilence } from './voice';
+
+type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 
 type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
 type ModalKind = 'workspace' | 'local' | 'ssh' | null;
@@ -142,13 +145,28 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
           <rect x="4" y="13" width="16" height="7" rx="1" />
         </svg>
       );
+    case 'x':
+      return (
+        <svg {...common}>
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      );
+    case 'mic':
+      return (
+        <svg {...common}>
+          <rect x="9" y="2.5" width="6" height="12" rx="3" />
+          <path d="M5 11.5a7 7 0 0 0 14 0" />
+          <path d="M12 18.5V21" />
+        </svg>
+      );
     default:
       return <span className="icon" aria-hidden="true">•</span>;
   }
 }
 
-function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onStatus: (message: string) => void; theme: Theme }) {
+function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: string; focused?: boolean; onStatus: (message: string) => void; theme: Theme }) {
   const ref = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
 
@@ -170,6 +188,7 @@ function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onSt
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
+    terminalRef.current = terminal;
 
     const currentApi = api();
     let disposed = false;
@@ -206,6 +225,7 @@ function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onSt
       return () => {
         disposed = true;
         cancelAnimationFrame(fitFrame);
+        terminalRef.current = null;
         terminal.dispose();
       };
     }
@@ -293,9 +313,14 @@ function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onSt
       removeStatus();
       observer.disconnect();
       window.removeEventListener('resize', scheduleFit);
+      terminalRef.current = null;
       terminal.dispose();
     };
   }, [theme]);
+
+  useEffect(() => {
+    if (focused) terminalRef.current?.focus();
+  }, [focused]);
 
   return <div className="terminal" ref={ref} />;
 }
@@ -353,6 +378,11 @@ function App() {
   const [sshName, setSshName] = useState('');
   const [sshTarget, setSshTarget] = useState('');
   const [approval, setApproval] = useState<{ command: string; explanation: string } | null>(null);
+  const [voice, setVoice] = useState<{ status: VoiceStatus; sessionId: string | null }>({ status: 'idle', sessionId: null });
+  const recorderRef = useRef<VoiceRecorder | null>(null);
+  const voiceWorkerRef = useRef<Worker | null>(null);
+  const voiceTargetRef = useRef<string | null>(null);
+  const voiceLimitRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -410,6 +440,12 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (voice.status === 'listening') {
+          event.preventDefault();
+          cancelVoice();
+          setStatus('Voice cancelled');
+          return;
+        }
         if (overview) {
           event.preventDefault();
           setOverview(false);
@@ -454,7 +490,7 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overview, approval, modal, workspaces, activeWorkspace, workspaceSessions]);
+  }, [overview, approval, modal, voice.status, workspaces, activeWorkspace, workspaceSessions]);
 
   const attach = async (session: SessionInfo) => {
     setActive(session);
@@ -506,6 +542,7 @@ function App() {
       const session = await currentApi.createLocalSession({ name: localName });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
+      setFocusedSessionId(session.id);
       setMaximizedSessionId(null);
       setLayout(layoutForSessionCount(workspaceSessions.length + 1));
       setModal(null);
@@ -531,6 +568,7 @@ function App() {
       const session = await currentApi.createSshSession({ name: sshName || undefined, target: sshTarget });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
+      setFocusedSessionId(session.id);
       setMaximizedSessionId(null);
       setLayout(layoutForSessionCount(workspaceSessions.length + 1));
       setModal(null);
@@ -580,6 +618,118 @@ function App() {
     setFocusedSessionId(next.id);
     setActive(next);
     setMaximizedSessionId(next.id);
+  };
+
+  const ensureVoiceWorker = () => {
+    if (!voiceWorkerRef.current) {
+      const worker = new Worker(new URL('./voice-worker.ts', import.meta.url), { type: 'module' });
+      worker.onmessage = (event) => {
+        const data = event.data as
+          | { type: 'loading'; progress: number | null }
+          | { type: 'result'; text: string }
+          | { type: 'error'; message: string };
+        if (data.type === 'result') {
+          const target = voiceTargetRef.current;
+          voiceTargetRef.current = null;
+          setVoice({ status: 'idle', sessionId: null });
+          if (data.text && target) {
+            api()?.write(target, data.text);
+            setStatus(`Voice: "${data.text}"`);
+          } else {
+            setStatus('Voice: nothing transcribed');
+          }
+        } else if (data.type === 'error') {
+          voiceTargetRef.current = null;
+          setVoice({ status: 'idle', sessionId: null });
+          setStatus(`Voice error: ${data.message}`);
+        } else if (data.type === 'loading' && typeof data.progress === 'number') {
+          setStatus(`Loading speech model… ${Math.round(data.progress)}%`);
+        }
+      };
+      voiceWorkerRef.current = worker;
+    }
+    return voiceWorkerRef.current;
+  };
+
+  const cancelVoice = () => {
+    window.clearTimeout(voiceLimitRef.current);
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    voiceTargetRef.current = null;
+    setVoice({ status: 'idle', sessionId: null });
+  };
+
+  const finishListening = async () => {
+    const recorder = recorderRef.current;
+    const target = voiceTargetRef.current;
+    if (!recorder || !target) return;
+    window.clearTimeout(voiceLimitRef.current);
+    recorderRef.current = null;
+    setVoice({ status: 'transcribing', sessionId: target });
+    setStatus('Transcribing…');
+    const audio = await recorder.stop();
+    if (!audio || isMostlySilence(audio)) {
+      voiceTargetRef.current = null;
+      setVoice({ status: 'idle', sessionId: null });
+      setStatus('Voice: no speech detected');
+      return;
+    }
+    ensureVoiceWorker().postMessage({ type: 'transcribe', audio }, [audio.buffer]);
+  };
+
+  const toggleVoice = async (session: SessionInfo) => {
+    if (voice.status === 'listening' && voice.sessionId === session.id) {
+      await finishListening();
+      return;
+    }
+    if (voice.status !== 'idle') return;
+    const recorder = new VoiceRecorder();
+    try {
+      await recorder.start();
+    } catch (error) {
+      setStatus(`Microphone unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    recorderRef.current = recorder;
+    voiceTargetRef.current = session.id;
+    setVoice({ status: 'listening', sessionId: session.id });
+    setFocusedSessionId(session.id);
+    window.clearTimeout(voiceLimitRef.current);
+    voiceLimitRef.current = window.setTimeout(() => void finishListening(), MAX_UTTERANCE_SECONDS * 1000);
+    setStatus(`Listening on ${session.name}… click the mic again or press Esc to finish`);
+  };
+
+  const closePane = async (session: SessionInfo) => {
+    if (voice.sessionId === session.id) cancelVoice();
+    const remaining = workspaceSessions.filter((item) => item.id !== session.id);
+    setWorkspaces((current) =>
+      current.map((workspace) => ({
+        ...workspace,
+        sessionIds: workspace.sessionIds.filter((id) => id !== session.id)
+      }))
+    );
+    if (active?.id === session.id) setActive(remaining[0] ?? null);
+    if (focusedSessionId === session.id) setFocusedSessionId(remaining[0]?.id);
+    if (maximizedSessionId === session.id) setMaximizedSessionId(null);
+    setLayout(layoutForSessionCount(remaining.length));
+
+    const currentApi = api();
+    if (currentApi) {
+      try {
+        await currentApi.closeSession(session.id);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+    setStatus(
+      session.persistence === 'screen'
+        ? `Closed ${session.name} · screen session survives`
+        : session.kind === 'ssh'
+          ? `Closed ${session.name} · SSH connection ended`
+          : `Closed ${session.name} · process ended`
+    );
+    void refresh();
   };
 
   return (
@@ -810,16 +960,21 @@ function App() {
           </div>
 
           <div className={`${paneClass} ${maximizedSessionId ? 'maximized-pane-grid' : ''}`}>
-            {Array.from({ length: renderedPaneCount }, (_, index) =>
-              paneSessions[index] ? (
+            {Array.from({ length: renderedPaneCount }, (_, index) => {
+              const paneSession = paneSessions[index];
+              if (!paneSession) {
+                return <PanePlaceholder key={index} index={index + 1} onCreate={openNewLocalTerminal} />;
+              }
+              const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
+              return (
                 <article
-                  className={`pane terminal-pane ${focusedSessionId === paneSessions[index].id ? 'focused' : ''} ${maximizedSessionId === paneSessions[index].id ? 'maximized-pane' : ''} ${index >= paneCount ? 'overflow-pane' : ''}`}
-                  key={paneSessions[index].id}
-                  onMouseDown={() => setFocusedSessionId(paneSessions[index].id)}
+                  className={`pane terminal-pane ${focusedSessionId === paneSession.id ? 'focused' : ''} ${maximizedSessionId === paneSession.id ? 'maximized-pane' : ''} ${index >= paneCount ? 'overflow-pane' : ''}`}
+                  key={paneSession.id}
+                  onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
                   <div className="pane-title">
                     <span>
-                      <span className="pane-live" /> {paneSessions[index].name}
+                      <span className="pane-live" /> {paneSession.name}
                     </span>
                     <span className="pane-actions">
                       {maximizedSessionId && (
@@ -832,18 +987,34 @@ function App() {
                           </button>
                         </>
                       )}
-                      {busy ? 'connecting…' : paneSessions[index].kind === 'ssh' ? 'ssh' : 'bash'}
-                      <button type="button" className="pane-maximize" onClick={() => toggleMaximize(paneSessions[index].id)} title={maximizedSessionId ? 'Restore pane' : 'Maximize pane'}>
+                      {busy ? 'connecting…' : paneVoice ? `${paneVoice}…` : paneSession.kind === 'ssh' ? 'ssh' : 'bash'}
+                      <button
+                        type="button"
+                        className={paneVoice ? `pane-mic ${paneVoice}` : 'pane-mic'}
+                        onClick={() => void toggleVoice(paneSession)}
+                        disabled={voice.status !== 'idle' && !paneVoice}
+                        title={paneVoice === 'listening' ? 'Stop and transcribe' : paneVoice === 'transcribing' ? 'Transcribing…' : 'Voice input'}
+                        aria-label={paneVoice === 'listening' ? `Stop recording ${paneSession.name}` : `Voice input for ${paneSession.name}`}
+                      >
+                        <Icon name="mic" />
+                      </button>
+                      <button type="button" className="pane-maximize" onClick={() => toggleMaximize(paneSession.id)} title={maximizedSessionId ? 'Restore pane' : 'Maximize pane'}>
                         <Icon name={maximizedSessionId ? 'restore' : 'maximize'} />
+                      </button>
+                      <button type="button" className="pane-close" onClick={() => void closePane(paneSession)} title="Close pane" aria-label={`Close ${paneSession.name}`}>
+                        <Icon name="x" />
                       </button>
                     </span>
                   </div>
-                  <TerminalView sessionId={paneSessions[index].id} onStatus={setStatus} theme={theme} />
+                  <TerminalView
+                    sessionId={paneSession.id}
+                    focused={focusedSessionId === paneSession.id}
+                    onStatus={setStatus}
+                    theme={theme}
+                  />
                 </article>
-              ) : (
-                <PanePlaceholder key={index} index={index + 1} onCreate={openNewLocalTerminal} />
-              )
-            )}
+              );
+            })}
           </div>
 
           <footer className="status-bar">

@@ -1,5 +1,9 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { ScreenService, parseScreenList, validateSessionName, validateSshTarget } from '../src/main/session-service';
+
+const execFileAsync = promisify(execFile);
 
 describe('screen session contract', () => {
   it('validates safe names', () => {
@@ -40,5 +44,37 @@ describe('screen session contract', () => {
     expect(firstOutput).not.toContain('SECOND_SESSION_OK');
     expect(secondOutput).toContain('SECOND_SESSION_OK');
     expect(secondOutput).not.toContain('FIRST_SESSION_OK');
+  }, 5000);
+
+  it('close removes transient SSH bookkeeping so the session no longer lists', async () => {
+    const service = new ScreenService();
+    const session = await service.createSsh('example.com', `close-ssh-${Date.now()}`);
+    expect((await service.list()).some((item) => item.id === session.id)).toBe(true);
+
+    service.close(session.id);
+    expect((await service.list()).some((item) => item.id === session.id)).toBe(false);
+  });
+
+  it('close detaches the pane PTY without killing a screen-backed session', async () => {
+    const service = new ScreenService();
+    const name = `close-${Date.now()}`;
+    const session = await service.createLocal(name);
+    let exited = false;
+    service.attach(session.id, () => undefined, () => { exited = true; });
+
+    service.close(session.id);
+    const deadline = Date.now() + 3000;
+    while (!exited && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(exited).toBe(true);
+
+    const stillListed = (await service.list()).some((item) => item.id === session.id);
+    if (session.persistence === 'screen') {
+      expect(stillListed).toBe(true);
+      await execFileAsync('screen', ['-S', name, '-X', 'quit']);
+    } else {
+      expect(stillListed).toBe(false);
+    }
   }, 5000);
 });

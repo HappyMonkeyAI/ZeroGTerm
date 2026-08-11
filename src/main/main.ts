@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, session } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ScreenService } from './session-service.js';
@@ -86,6 +86,11 @@ ipcMain.handle('sessions:attach', (_event, id: unknown) => {
   );
 });
 
+ipcMain.handle('sessions:close', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id) throw new Error('closeSession requires a session id');
+  service.close(id);
+});
+
 ipcMain.on('terminal:write', (_event, sessionId: unknown, data: unknown) => {
   if (typeof sessionId === 'string' && typeof data === 'string') service.write(sessionId, data);
 });
@@ -109,6 +114,12 @@ ipcMain.handle('ai:suggest', () => ({
 }));
 
 app.whenReady().then(() => {
+  // Voice input captures the local microphone only. Electron denies all
+  // permission requests unless a handler answers, so grant media explicitly.
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'media');
+  });
+
   // Keep the normal window chrome, but let the ZeroG UI occupy the full
   // client area instead of showing Electron's default File/Edit/etc. menu.
   Menu.setApplicationMenu(null);

@@ -570,7 +570,9 @@ input:focus-visible {
 }
 
 .pane-nav,
-.pane-maximize {
+.pane-maximize,
+.pane-close,
+.pane-mic {
   width: 19px;
   height: 19px;
   display: grid;
@@ -583,14 +585,47 @@ input:focus-visible {
 }
 
 .pane-nav:hover,
-.pane-maximize:hover {
+.pane-maximize:hover,
+.pane-mic:hover {
   color: #d8dee9;
   background: #1a202a;
   border-color: #2a3340;
 }
 
+.pane-close:hover {
+  color: #f7768e;
+  background: rgba(247, 118, 142, 0.14);
+  border-color: rgba(247, 118, 142, 0.4);
+}
+
+.pane-mic:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pane-mic.listening {
+  color: #f7768e;
+  background: rgba(247, 118, 142, 0.16);
+  border-color: rgba(247, 118, 142, 0.55);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+.pane-mic.transcribing {
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.14);
+  border-color: rgba(224, 175, 104, 0.5);
+  animation: mic-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
 .pane-nav .icon-svg,
-.pane-maximize .icon-svg {
+.pane-maximize .icon-svg,
+.pane-close .icon-svg,
+.pane-mic .icon-svg {
   width: 13px;
   height: 13px;
 }
@@ -1082,6 +1117,18 @@ input:focus-visible {
 
 :root[data-theme='light'] .layout-button.active {
   color: #16803c;
+}
+
+:root[data-theme='light'] .pane-close:hover {
+  color: #c53030;
+}
+
+:root[data-theme='light'] .pane-mic.listening {
+  color: #c53030;
+}
+
+:root[data-theme='light'] .pane-mic.transcribing {
+  color: #b7791f;
 }
 
 :root[data-theme='light'] .overview,

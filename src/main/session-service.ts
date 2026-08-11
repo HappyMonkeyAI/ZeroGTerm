@@ -282,4 +282,15 @@ export class ScreenService {
   detachAll(): void {
     for (const sessionId of this.ptys.keys()) this.detach(sessionId);
   }
+
+  /**
+   * Close a pane's session: detach its PTY and drop transient bookkeeping.
+   * Screen-backed sessions are deliberately left running so they remain
+   * discoverable via `screen -ls`; SSH and process-only sessions end.
+   */
+  close(sessionId: string): void {
+    this.detach(sessionId);
+    this.sshSessions.delete(sessionId);
+    this.fallbackLocalSessions.delete(sessionId);
+  }
 }

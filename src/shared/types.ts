@@ -30,6 +30,8 @@ export interface TerminalApi {
   createLocalSession(request: CreateLocalRequest): Promise<SessionInfo>;
   createSshSession(request: CreateSshRequest): Promise<SessionInfo>;
   attachSession(id: string): Promise<SessionInfo>;
+  /** Detach and close a pane's session; screen-backed sessions stay alive. */
+  closeSession(id: string): Promise<void>;
   write(sessionId: string, data: string): void;
   resize(sessionId: string, cols: number, rows: number): void;
   copyText(text: string): Promise<void>;

@@ -9,6 +9,7 @@ ZeroG Terminal is a Linux-first Electron workspace for persistent `screen` sessi
 - Persistent dark/light theme with an accessible sun/moon toggle.
 - Safe session-name validation and argument-array `screen` invocation.
 - AI command approval surface; suggestions are visible and require explicit approval before being sent to the terminal.
+- Voice input per pane: click the microphone, speak, and the utterance is transcribed locally with Whisper-tiny (via Transformers.js; the model is downloaded once on first use) and typed into the pane's prompt without auto-execution.
 
 ## Release status
 
@@ -25,7 +26,7 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+T` — new local terminal in the current workspace
 - `Ctrl+Shift+O` — session overview
 - `Ctrl+Shift+B` — toggle sessions sidebar
-- `Esc` — close overview / dialogs
+- `Esc` — close overview / dialogs, cancel voice recording
 
 ## Development
 
@@ -59,7 +60,7 @@ sudo dnf install screen
 ## Current verification
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (3 tests covering name validation, `screen -ls` parsing, and SSH argument validation).
+- `npm test`: passes (9 tests covering name validation, `screen -ls` parsing, SSH argument validation, session close semantics, and voice silence detection).
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
 - Electron is configured to disable hardware acceleration by default for the Fedora Toolbox/Wayland runtime; set `ZEROG_ENABLE_GPU=1` only when GPU launch is stable on the host.
 - `npm audit --omit=dev`: reports no known production vulnerabilities.
