@@ -1,6 +1,6 @@
 {
   "name": "zerogterm",
-  "version": "0.1.0-alpha.2",
+  "version": "0.2.0-alpha.1",
   "description": "A Linux-first persistent Electron terminal workspace",
   "license": "MIT",
   "author": "Stephen Phillips",
@@ -28,14 +28,13 @@
     "README.md"
   ],
   "publishConfig": {
-    "access": "public",
-    "tag": "alpha"
+    "access": "public"
   },
   "type": "module",
   "main": "dist/main/main/main.js",
   "scripts": {
     "dev": "concurrently -k \"tsc -p tsconfig.main.json --watch\" \"vite --host 127.0.0.1\"",
-    "build": "tsc -p tsconfig.main.json && cp src/main/preload.cjs dist/main/main/preload.cjs && vite build",
+    "build": "rm -rf dist/main && tsc -p tsconfig.main.json && cp src/main/preload.cjs dist/main/main/preload.cjs && vite build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "electron .",
