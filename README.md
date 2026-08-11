@@ -10,6 +10,12 @@ ZeroG Terminal is a Linux-first Electron workspace for persistent `screen` sessi
 - Safe session-name validation and argument-array `screen` invocation.
 - AI command approval surface; suggestions are visible and require explicit approval before being sent to the terminal.
 
+## Release status
+
+ZeroG Terminal is currently a public alpha. The initial npm release is `0.1.0-alpha.1` and is configured for the `alpha` dist-tag. The version history is tracked in [versions.txt](versions.txt).
+
+The npm package contains the built Electron application and project documentation. It is intended for early adopters and testing rather than production use.
+
 ## Terminal shortcuts
 
 - `Ctrl+Shift+C` — copy selected terminal text
@@ -29,6 +35,12 @@ npm run typecheck
 npm test
 npm run build
 npm start
+```
+
+After installing the published package, launch ZeroG Terminal with:
+
+```bash
+npx zerogterm
 ```
 
 Runtime prerequisites on the host:

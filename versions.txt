@@ -1,0 +1,4 @@
+ZeroG Terminal version history
+
+0.1.0-alpha.1 - Initial public alpha release
+0.1.0-alpha.2 - Add the npx launcher for the published package
