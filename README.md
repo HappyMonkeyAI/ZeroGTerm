@@ -6,6 +6,8 @@ ZeroG Terminal is a Linux-first Electron workspace for persistent `screen` sessi
 - Session sidebar with create, discover, refresh, and attach actions.
 - Visible actions for opening a persistent local terminal and connecting to an SSH target (`host`, `user@host`, or `user@host:port`).
 - xterm.js terminal renderer and a split workspace surface.
+- Pane close button: closing detaches the session and removes the pane from the workspace; screen-backed sessions stay alive and remain discoverable.
+- Newly opened terminal and SSH panes receive keyboard focus so typing works immediately.
 - Persistent dark/light theme with an accessible sun/moon toggle.
 - Safe session-name validation and argument-array `screen` invocation.
 - AI command approval surface; suggestions are visible and require explicit approval before being sent to the terminal.
