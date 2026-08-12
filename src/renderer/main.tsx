@@ -1245,7 +1245,8 @@ function App() {
       )}
 
       {historyOpen && (
-        <div className="history-popover" role="dialog" aria-label="Session history">
+        <div className="history-layer" onClick={() => setHistoryOpen(false)}>
+          <div className="history-popover" role="dialog" aria-label="Session history" onClick={(event) => event.stopPropagation()}>
           <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
             <button type="button" className="history-item" key={entry.id} onClick={() => {
@@ -1290,6 +1291,7 @@ function App() {
             </button>
           )) : <p className="history-empty">No history entries yet.</p>}
           <small className="history-note">Persisted session lifecycle from the main process.</small>
+          </div>
         </div>
       )}
 
