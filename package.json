@@ -35,7 +35,7 @@
   "scripts": {
     "dev": "concurrently -k \"tsc -p tsconfig.main.json --watch\" \"vite --host 127.0.0.1\"",
     "build": "rm -rf dist/main && tsc -p tsconfig.main.json && cp src/main/preload.cjs dist/main/main/preload.cjs && vite build",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "electron .",
     "prepublishOnly": "npm run build"

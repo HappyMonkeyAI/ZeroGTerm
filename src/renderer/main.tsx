@@ -728,10 +728,11 @@ function App() {
         const exists = current.some((item) => item.id === attached.id);
         return exists ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached];
       });
-      claimSession(ssh);
-      await attach(ssh);
-      const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${session.screenName ?? session.name}`;
-      currentApi.write(ssh.id, `${screenCommand}\r`);
+      claimSession(attached);
+      await attach(attached);
+      await currentApi.attachSession(attached.id);
+      const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${screenName}`;
+      currentApi.write(attached.id, `${screenCommand}\r`);
       setStatus(`Connected to ${session.name} on ${connection.alias}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -1103,7 +1104,7 @@ function App() {
                 const count = tab === 'terminals'
                   ? workspaceSessions.length
                   : tab === 'screens'
-                    ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length
+                    ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length + remoteScreenEntries.length
                     : sessions.filter((session) => session.kind === 'ssh').length;
                 return (
                   <button
