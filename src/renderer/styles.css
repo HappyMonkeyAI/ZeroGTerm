@@ -1025,6 +1025,30 @@ input:focus-visible {
 .history-kind { min-width: 43px; color: #7aa2f7; font: 9px JetBrains Mono, monospace; }
 .history-empty { padding: 13px 5px; }
 .history-note { display: block; padding: 9px 4px 2px; line-height: 1.4; }
+:root[data-theme='light'] .history-popover {
+  background: #ffffff;
+  border-color: #c7d2e1;
+  color: #253044;
+}
+:root[data-theme='light'] .history-head { color: #253044; }
+:root[data-theme='light'] .history-head button { color: #536176; }
+:root[data-theme='light'] .history-item {
+  border-top-color: #dbe2ec;
+  color: #536176;
+  background: transparent;
+}
+:root[data-theme='light'] .history-item:hover {
+  background: #e1e9f4;
+  color: #253044;
+}
+:root[data-theme='light'] .history-item small,
+:root[data-theme='light'] .history-note,
+:root[data-theme='light'] .history-empty {
+  color: #68768a;
+}
+:root[data-theme='light'] .history-kind {
+  color: #2459a6;
+}
 :root[data-theme='light'] {
   color: #253044;
   background: #f7f9fc;
