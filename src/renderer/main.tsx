@@ -557,11 +557,10 @@ function App() {
   }, [knownConnections, active?.host, sessions, focusedSessionId]);
 
   useEffect(() => {
-    if (sidebarTab !== 'connections') return;
     const currentApi = api();
     if (!currentApi) return;
     currentApi.listKnownConnections?.().then(setKnownConnections).catch(() => setKnownConnections([]));
-  }, [sidebarTab]);
+  }, []);
 
   useEffect(() => {
     if (!active && workspaceSessions.length) {
