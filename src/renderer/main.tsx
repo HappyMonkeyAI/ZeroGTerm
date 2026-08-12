@@ -4,7 +4,8 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { SessionInfo } from '../shared/types';
+import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend } from '../shared/types';
+type LocalBackend = 'bash' | 'zsh' | 'powershell' | 'wsl';
 import { MAX_UTTERANCE_SECONDS, VoiceRecorder, isMostlySilence } from './voice';
 
 type VoiceStatus = 'idle' | 'listening' | 'transcribing';
@@ -12,6 +13,7 @@ type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
 type ModalKind = 'workspace' | 'local' | 'ssh' | null;
 type Theme = 'dark' | 'light';
+type SidebarTab = 'terminals' | 'screens' | 'connections';
 
 type Workspace = {
   id: string;
@@ -73,6 +75,13 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
       return (
         <svg {...common}>
           <path d="M7 17l5-5-5-5M12 17h7" />
+        </svg>
+      );
+    case 'history':
+      return (
+        <svg {...common}>
+          <path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5M4 4v4.5h4.5" />
+          <path d="M12 7v5l3 2" />
         </svg>
       );
     case 'spark':
@@ -162,6 +171,36 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
     default:
       return <span className="icon" aria-hidden="true">•</span>;
   }
+}
+
+function SessionRow({ session, active = false, ghosted = false, onClick }: { session: SessionInfo; active?: boolean; ghosted?: boolean; onClick: () => void }) {
+  const backend = session.kind === 'ssh'
+    ? `SSH · ${session.host}`
+    : session.backend === 'powershell'
+      ? `PowerShell · ${session.cwd}`
+      : session.backend === 'wsl'
+        ? `WSL${session.wslDistribution ? ` · ${session.wslDistribution}` : ''} · ${session.cwd}`
+        : session.backend === 'zsh'
+          ? `zsh · ${session.cwd}`
+          : session.persistence === 'screen'
+            ? `screen · ${session.cwd}`
+            : `local · process only · ${session.cwd}`;
+  return (
+    <button type="button" className={`session-row ${active ? 'active' : ''} ${ghosted ? 'session-ghosted' : ''}`} onClick={onClick}>
+      <span className={`status-dot ${session.status}`} />
+      <span className="session-copy"><b>{session.name}</b><small>{backend}</small></span>
+      <span className="session-state">{ghosted ? '↗' : session.status === 'connected' ? '●' : '○'}</span>
+    </button>
+  );
+}
+
+function sessionBackendTag(session: SessionInfo): string {
+  if (session.kind === 'ssh') return 'SSH';
+  if (session.backend === 'screen') return 'screen';
+  if (session.backend === 'powershell') return 'PowerShell';
+  if (session.backend === 'zsh') return 'zsh';
+  if (session.backend === 'wsl') return session.wslDistribution ? `WSL · ${session.wslDistribution}` : 'WSL';
+  return 'bash';
 }
 
 function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: string; focused?: boolean; onStatus: (message: string) => void; theme: Theme }) {
@@ -368,6 +407,10 @@ function App() {
   const [status, setStatus] = useState('Ready');
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [overview, setOverview] = useState(false);
   const [layout, setLayout] = useState<Layout>('stack');
@@ -383,6 +426,14 @@ function App() {
   const voiceWorkerRef = useRef<Worker | null>(null);
   const voiceTargetRef = useRef<string | null>(null);
   const voiceLimitRef = useRef<number | undefined>(undefined);
+  const [localBackends, setLocalBackends] = useState<ShellBackend[]>([]);
+  const [selectedBackend, setSelectedBackend] = useState<LocalBackend>('bash');
+  const [wslDistribution, setWslDistribution] = useState<string>('');
+  const [wslDistributions, setWslDistributions] = useState<string[]>([]);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [knownConnections, setKnownConnections] = useState<KnownConnection[]>([]);
+  const [remoteScreenEntries, setRemoteScreenEntries] = useState<Array<{ session: SessionInfo; connection: KnownConnection }>>([]);
+  const [remoteScreensLoading, setRemoteScreensLoading] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -414,8 +465,12 @@ function App() {
 
   const refresh = useCallback(async () => {
     const currentApi = api();
+    setSessionsLoading(true);
+    setSessionsError(null);
     if (!currentApi) {
+      setSessionsError('Preload API unavailable');
       setStatus('Preload API unavailable');
+      setSessionsLoading(false);
       return;
     }
     try {
@@ -423,13 +478,77 @@ function App() {
       setSessions(items);
       setStatus(items.length ? `${items.length} session${items.length === 1 ? '' : 's'}` : 'No sessions');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setSessionsError(message);
+      setStatus(message);
+    } finally {
+      setSessionsLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listBackends?.().then(setLocalBackends).catch(() => setLocalBackends([]));
+  }, []);
+
+  useEffect(() => {
+    if (selectedBackend !== 'wsl') {
+      setWslDistributions([]);
+      setWslDistribution('');
+      return;
+    }
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listWslDistributions?.().then(setWslDistributions).catch(() => setWslDistributions([]));
+  }, [selectedBackend]);
+
+  useEffect(() => {
+    if (!historyOpen) {
+      setHistoryEntries([]);
+      return;
+    }
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listHistory?.().then(setHistoryEntries).catch(() => setHistoryEntries([]));
+  }, [historyOpen]);
+
+  useEffect(() => {
+    if (knownConnections.length === 0) {
+      setRemoteScreenEntries([]);
+      return;
+    }
+    const currentApi = api();
+    if (!currentApi?.discoverRemoteScreens) return;
+    setRemoteScreensLoading(true);
+    Promise.allSettled(
+      knownConnections.map((connection) => currentApi.discoverRemoteScreens(connection))
+    )
+      .then((results) => {
+        const entries: Array<{ session: SessionInfo; connection: KnownConnection }> = [];
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+            result.value.forEach((session) => {
+              entries.push({ session, connection: knownConnections[index] });
+            });
+          }
+        });
+        setRemoteScreenEntries(entries);
+      })
+      .catch(() => setRemoteScreenEntries([]))
+      .finally(() => setRemoteScreensLoading(false));
+  }, [knownConnections]);
+
+  useEffect(() => {
+    if (sidebarTab !== 'connections') return;
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listKnownConnections?.().then(setKnownConnections).catch(() => setKnownConnections([]));
+  }, [sidebarTab]);
 
   useEffect(() => {
     if (!active && workspaceSessions.length) {
@@ -539,7 +658,7 @@ function App() {
     }
     setBusy(true);
     try {
-      const session = await currentApi.createLocalSession({ name: localName });
+      const session = await currentApi.createLocalSession({ name: localName, backend: selectedBackend, wslDistribution: selectedBackend === 'wsl' ? wslDistribution : undefined });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
       setFocusedSessionId(session.id);
@@ -580,6 +699,25 @@ function App() {
     }
   };
 
+  const attachRemoteScreen = async (session: SessionInfo, connection: KnownConnection) => {
+    try {
+      const currentApi = api();
+      if (!currentApi) return;
+      setStatus(`Attaching to ${session.name} on ${connection.alias}…`);
+      const result = await currentApi.buildRemoteScreenAttach?.(connection, session.screenName ?? session.name);
+      const args = result?.args;
+      const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
+      const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
+      const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+      setSessions((current) => [...current, ssh]);
+      claimSession(ssh);
+      await attach(ssh);
+      setStatus(`Connected to ${session.name} on ${connection.alias}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
     setModal('workspace');
@@ -587,6 +725,8 @@ function App() {
 
   const openNewLocalTerminal = () => {
     setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
+    setSelectedBackend('bash');
+    setWslDistribution('');
     setModal('local');
   };
 
@@ -844,52 +984,76 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className="square-button history-button"
+                  onClick={() => setHistoryOpen((value) => !value)}
+                  title="Session history"
+                  aria-label="Open session history"
+                  aria-expanded={historyOpen}
+                >
+                  <Icon name="history" />
+                </button>
+                <button
+                  type="button"
                   className="square-button"
                   onClick={openNewLocalTerminal}
                   title="New local terminal"
+                  aria-label="New local terminal"
                 >
                   <Icon name="plus" />
                 </button>
               </div>
             </div>
 
-            <div className="drawer-tools">
-              <button type="button" className="drawer-tool active">
-                Terminals <span>{workspaceSessions.length}</span>
-              </button>
-              <button type="button" className="drawer-tool" onClick={() => setModal('ssh')}>
-                Remote
-              </button>
-            </div>
-
-            <div className="session-list">
-              {workspaceSessions.length ? (
-                workspaceSessions.map((session) => (
+            <div className="drawer-tools" role="tablist" aria-label="Session inventory">
+              {(['terminals', 'screens', 'connections'] as const).map((tab) => {
+                const labels: Record<SidebarTab, string> = { terminals: 'Terminals', screens: 'Screens', connections: 'Connections' };
+                const count = tab === 'terminals'
+                  ? workspaceSessions.length
+                  : tab === 'screens'
+                    ? sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id)).length
+                    : sessions.filter((session) => session.kind === 'ssh').length;
+                return (
                   <button
                     type="button"
-                    className={`session-row ${active?.id === session.id ? 'active' : ''}`}
-                    key={session.id}
-                    onClick={() => void attach(session)}
+                    role="tab"
+                    aria-selected={sidebarTab === tab}
+                    className={`drawer-tool ${sidebarTab === tab ? 'active' : ''}`}
+                    key={tab}
+                    onClick={() => setSidebarTab(tab)}
                   >
-                    <span className={`status-dot ${session.status}`} />
-                    <span className="session-copy">
-                      <b>{session.name}</b>
-                      <small>
-                        {session.kind === 'ssh'
-                          ? `SSH · ${session.host}`
-                          : session.persistence === 'process'
-                            ? 'local · process only'
-                            : `local · ${session.cwd}`}
-                      </small>
-                    </span>
-                    <span className="session-state">{session.status === 'connected' ? '●' : '○'}</span>
+                    {labels[tab]} <span>{count}</span>
                   </button>
-                ))
+                );
+              })}
+            </div>
+
+            <div className="session-list" role="tabpanel">
+              {sessionsLoading ? (
+                <div className="session-empty"><b>Loading sessions…</b><small>Checking available terminals and durable sessions.</small></div>
+              ) : sessionsError ? (
+                <div className="session-empty session-error"><b>Session inventory unavailable</b><small>{sessionsError}</small><button type="button" onClick={() => void refresh()}>Retry</button></div>
+              ) : sidebarTab === 'terminals' ? (
+                workspaceSessions.length ? workspaceSessions.map((session) => (
+                  <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
+                )) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
+              ) : sidebarTab === 'screens' ? (
+                sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id)).length ? (
+                  sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id)).map((session) => (
+                    <SessionRow key={session.id} session={session} ghosted onClick={() => { claimSession(session); void attach(session); setStatus(`Reconnecting to ${session.name}…`); }} />
+                  ))
+                ) : <div className="session-empty"><b>No discovered screens</b><small>Detached screen sessions will appear here when available.</small></div>
+              ) : sidebarTab === 'connections' ? (
+                knownConnections.length ? knownConnections.map((connection) => (
+                  <button type="button" className="session-row" key={connection.alias} onClick={() => { setSshTarget(connection.hostName ?? connection.alias); setModal('ssh'); }}>
+                    <span className="status-dot" />
+                    <span className="session-copy"><b>{connection.alias}</b><small>{connection.hostName ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}` : 'Saved SSH connection'}</small></span>
+                    <span className="session-state">→</span>
+                  </button>
+                )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
               ) : (
-                <div className="session-empty">
-                  <b>No terminals yet</b>
-                  <small>Add a local terminal or SSH connection to this workspace.</small>
-                </div>
+                sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').length ? sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').map((session) => (
+                  <SessionRow key={session.id} session={session} ghosted onClick={async () => { claimSession(session); setStatus(`Attaching remote screen ${session.name}…`); const currentApi = api(); if (!currentApi) return; try { const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name); const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host; const ssh = await currentApi.createSshSession({ target: destination, name: session.name }); setSessions((current) => current.map((item) => item.id === session.id ? ssh : item)); await attach(ssh); } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); } }} />
+                )) : <div className="session-empty"><b>No remote screens</b><small>Remote screen sessions will appear here after discovery.</small></div>
               )}
             </div>
 
@@ -1080,6 +1244,19 @@ function App() {
         </div>
       )}
 
+      {historyOpen && (
+        <div className="history-popover" role="dialog" aria-label="Session history">
+          <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
+          {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
+            <button type="button" className="history-item" key={entry.id} onClick={() => { setHistoryOpen(false); if (entry.session.kind === 'ssh') setModal('ssh'); else setSidebarTab(entry.session.screenName ? 'screens' : 'terminals'); }}>
+              <span className="history-kind">{entry.event.toUpperCase()}</span>
+              <span><b>{entry.session.name}</b><small>{entry.session.host} · {entry.available ? 'available' : 'unavailable'}</small></span>
+            </button>
+          )) : <p className="history-empty">No history entries yet.</p>}
+          <small className="history-note">Persisted session lifecycle from the main process.</small>
+        </div>
+      )}
+
       {modal && (
         <div className="modal-layer" onClick={() => setModal(null)}>
           <form
@@ -1117,7 +1294,7 @@ function App() {
 
             {modal === 'local' && (
               <>
-                <p>Start a persistent named screen session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
+                <p>Start a local session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
                 <label>
                   Terminal name
                   <input
@@ -1128,6 +1305,18 @@ function App() {
                     required
                   />
                 </label>
+                <label>
+                  Shell backend
+                  <select value={selectedBackend} onChange={(event) => { const value = event.target.value as LocalBackend; setSelectedBackend(value); }}>
+                    {localBackends.length ? localBackends.map((item) => <option key={item.backend} value={item.backend}>{item.label}</option>) : <option value="bash">bash</option>}
+                  </select>
+                </label>
+                {selectedBackend === 'wsl' && (
+                  <label>
+                    WSL distribution
+                    <input value={wslDistribution} onChange={(event) => setWslDistribution(event.target.value)} placeholder="Ubuntu" />
+                  </label>
+                )}
               </>
             )}
 

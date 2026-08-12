@@ -2,8 +2,14 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 const api = {
   listSessions: () => ipcRenderer.invoke('sessions:list'),
+  listHistory: () => ipcRenderer.invoke('sessions:history'),
+  listBackends: () => ipcRenderer.invoke('sessions:backends'),
+  listWslDistributions: () => ipcRenderer.invoke('sessions:wslDistributions'),
   createLocalSession: (request) => ipcRenderer.invoke('sessions:createLocal', request),
   createSshSession: (request) => ipcRenderer.invoke('sessions:createSsh', request),
+  listKnownConnections: () => ipcRenderer.invoke('connections:listKnown'),
+  discoverRemoteScreens: (connection) => ipcRenderer.invoke('screens:discoverRemote', connection),
+  buildRemoteScreenAttach: (connection, screenName) => ipcRenderer.invoke('screens:attachRemote', connection, screenName),
   attachSession: (id) => ipcRenderer.invoke('sessions:attach', id),
   closeSession: (id) => ipcRenderer.invoke('sessions:close', id),
   write: (sessionId, data) => ipcRenderer.send('terminal:write', sessionId, data),

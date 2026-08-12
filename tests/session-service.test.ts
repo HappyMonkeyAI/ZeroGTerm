@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { ScreenService, parseScreenList, validateSessionName, validateSshTarget } from '../src/main/session-service';
+import { ScreenService, discoverShellBackends, parseScreenList, parseWslDistributions, shellBackendArgs, validateSessionName, validateSshTarget } from '../src/main/session-service';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,6 +17,16 @@ describe('screen session contract', () => {
     expect(sessions.map(({ id, name }) => ({ id, name }))).toEqual([{ id: 'local:project-1', name: 'project-1' }, { id: 'local:other', name: 'other' }]);
   });
 
+  it('parses WSL distributions and rejects unsafe argv values', () => {
+    expect(parseWslDistributions('NAME\nUbuntu\n* Debian\n')).toEqual(['Ubuntu', 'Debian']);
+    expect(shellBackendArgs('wsl', 'Ubuntu').args).toEqual(['-d', 'Ubuntu']);
+    expect(() => shellBackendArgs('wsl', 'Ubuntu; rm -rf /')).toThrow();
+  });
+
+  it('discovers only installed optional shell backends', async () => {
+    const backends = await discoverShellBackends();
+    expect(backends.some((item) => item.backend === 'bash')).toBe(true);
+  });
   it('builds SSH arguments without shell interpolation', () => {
     expect(validateSshTarget('dev@example.com:2222')).toEqual({ target: 'dev@example.com:2222', args: ['-tt', '-p', '2222', 'dev@example.com'] });
     expect(() => validateSshTarget('dev@example.com; touch /tmp/pwned')).toThrow();

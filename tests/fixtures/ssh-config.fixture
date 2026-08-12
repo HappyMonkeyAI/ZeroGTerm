@@ -1,0 +1,26 @@
+# Conservative fixture
+Host dev staging
+  HostName bastion.example.com
+  User alice
+  Port 2222
+  IdentityFile ~/.ssh/id_ed25519
+  IdentityFile ~/.ssh/ignored-second
+
+Host wildcard-*
+  HostName ignored.example.com
+
+Host plain
+  HostName plain.example.com
+  User bob
+  # duplicate values: first value wins
+  Port 2200
+  Port 2201
+
+Host alias-only
+
+Host bad* exact
+  HostName mixed.example.com
+
+Host escaped
+  HostName "quoted.example.com"
+  IdentityFile "/home/alice/.ssh/key with spaces"
