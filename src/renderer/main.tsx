@@ -529,22 +529,24 @@ function App() {
   }, [historyOpen]);
 
   useEffect(() => {
-    if (knownConnections.length === 0) {
+    const currentApi = api();
+    const sshHost = (active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '';
+    const matching = sshHost ? knownConnections.filter((connection) => connection.hostName === sshHost || connection.alias === sshHost) : [];
+    if (matching.length === 0) {
       setRemoteScreenEntries([]);
       return;
     }
-    const currentApi = api();
     if (!currentApi?.discoverRemoteScreens) return;
     setRemoteScreensLoading(true);
     Promise.allSettled(
-      knownConnections.map((connection) => currentApi.discoverRemoteScreens(connection))
+      matching.map((connection) => currentApi.discoverRemoteScreens(connection))
     )
       .then((results) => {
         const entries: Array<{ session: SessionInfo; connection: KnownConnection }> = [];
         results.forEach((result, index) => {
           if (result.status === 'fulfilled' && Array.isArray(result.value)) {
             result.value.forEach((session) => {
-              entries.push({ session, connection: knownConnections[index] });
+              entries.push({ session, connection: matching[index] });
             });
           }
         });
@@ -552,7 +554,7 @@ function App() {
       })
       .catch(() => setRemoteScreenEntries([]))
       .finally(() => setRemoteScreensLoading(false));
-  }, [knownConnections]);
+  }, [knownConnections, active?.host, sessions, focusedSessionId]);
 
   useEffect(() => {
     if (sidebarTab !== 'connections') return;
@@ -746,6 +748,79 @@ function App() {
     setSelectedBackend('bash');
     setWslDistribution('');
     setModal('local');
+  };
+
+  const renderScreensTab = () => {
+    const sshHost = (active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '';
+    const hostGroups: Record<string, Array<{ session: SessionInfo; connection: KnownConnection }>> = sshHost
+      ? remoteScreenEntries
+          .filter((entry) => entry.connection.hostName === sshHost || entry.connection.alias === sshHost)
+          .reduce((acc, entry) => {
+            const key = entry.connection.hostName || entry.connection.alias;
+            (acc[key] = acc[key] || []).push(entry);
+            return acc;
+          }, {} as Record<string, Array<{ session: SessionInfo; connection: KnownConnection }>>)
+      : {};
+    const localScreens = sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id));
+    const hasRemote = Object.keys(hostGroups).length > 0;
+    const hasLocal = localScreens.length > 0;
+    if (!hasRemote && !hasLocal) return <div className="session-empty"><b>No screens</b><small>{sshHost ? 'No remote screens found for this host.' : 'Open a remote session to discover screens, or start a local screen.'}</small></div>;
+    const nodes: React.ReactNode[] = [];
+    if (hasRemote) {
+      for (const [host, group] of Object.entries(hostGroups)) {
+        const remoteGroup = group as Array<{ session: SessionInfo; connection: KnownConnection }>;
+        const label = <div key={`${host}-label`} className="session-group-label">{host}</div>;
+        const items = remoteGroup.map(({ session }) => {
+          const connection = remoteGroup.find((item) => item.session.id === session.id)?.connection;
+          return (
+            <SessionRow
+              key={session.id}
+              session={session}
+              ghosted
+              onClick={async () => {
+                if (!connection) return;
+                setStatus(`Attaching ${session.name}…`);
+                const currentApi = api();
+                if (!currentApi) return;
+                try {
+                  const result = await currentApi.buildRemoteScreenAttach?.(connection, session.screenName ?? session.name);
+                  const args = result?.args;
+                  const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
+                  const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
+                  const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+                  const attached = { ...ssh, screenName: session.screenName ?? session.name, persistence: 'screen' as const, backend: 'screen' as const };
+                  setSessions((current) => current.some((item) => item.id === attached.id) ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached]);
+                  claimSession(attached);
+                  await attach(attached);
+                  const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${session.screenName ?? session.name}`;
+                  currentApi.write(attached.id, `${screenCommand}\r`);
+                  setStatus(`Connected to ${session.name}`);
+                } catch (error) {
+                  setStatus(error instanceof Error ? error.message : String(error));
+                }
+              }}
+            />
+          );
+        });
+        nodes.push(label, ...items);
+      }
+    }
+
+    if (hasLocal && !hasRemote) {
+      nodes.push(<div key="local-label" className="session-group-label">local</div>);
+      localScreens.forEach((session) => {
+        nodes.push(
+          <SessionRow
+            key={session.id}
+            session={session}
+            ghosted
+            onClick={() => { claimSession(session); void attach(session); setStatus(`Reconnecting to ${session.name}…`); }}
+          />
+        );
+      });
+    }
+
+    return <>{nodes}</>;
   };
 
   const paneClass =
@@ -1055,12 +1130,8 @@ function App() {
                   <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
                 )) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
               ) : sidebarTab === 'screens' ? (
-                sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id)).length ? (
-                  sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id)).map((session) => (
-                    <SessionRow key={session.id} session={session} ghosted onClick={() => { claimSession(session); void attach(session); setStatus(`Reconnecting to ${session.name}…`); }} />
-                  ))
-                ) : <div className="session-empty"><b>No discovered screens</b><small>Detached screen sessions will appear here when available.</small></div>
-              ) : sidebarTab === 'connections' ? (
+                  renderScreensTab()
+                ) : sidebarTab === 'connections' ? (
                 knownConnections.length ? knownConnections.map((connection) => (
                   <button type="button" className="session-row" key={connection.alias} onClick={() => { setSshTarget(connection.hostName ?? connection.alias); setModal('ssh'); }}>
                     <span className="status-dot" />
