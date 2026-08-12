@@ -642,7 +642,7 @@ input:focus-visible {
   min-width: 0;
   /* No padding here: padding breaks FitAddon row math and leaves empty top space. */
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
   background: #0a0c10;
   /* Prevent body line-height (1.4) from leaking into xterm cell metrics. */

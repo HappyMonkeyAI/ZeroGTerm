@@ -220,9 +220,9 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
       lineHeight: 1.2,
       letterSpacing: 0,
       scrollback: 10000,
+      allowProposedApi: true,
       theme: terminalTheme(theme),
       convertEol: true,
-      allowProposedApi: false
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -361,7 +361,9 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
     if (focused) terminalRef.current?.focus();
   }, [focused]);
 
-  return <div className="terminal" ref={ref} />;
+  return (
+    <div className="terminal" ref={ref} onMouseDownCapture={(event) => event.preventDefault()} />
+  );
 }
 
 function PanePlaceholder({ index, onCreate }: { index: number; onCreate: () => void }) {
