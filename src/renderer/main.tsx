@@ -320,6 +320,15 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
       return true;
     });
 
+    if (typeof terminal.onSelectionChange === 'function') {
+      terminal.onSelectionChange(() => {
+        const selection = terminal.getSelection();
+        if (selection) {
+          void currentApi.copyText(selection).catch(() => undefined);
+        }
+      });
+    }
+
     const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(host);
     window.addEventListener('resize', scheduleFit);
