@@ -1375,6 +1375,8 @@ function App() {
                   setMaximizedSessionId(null);
                   setLayout(layoutForSessionCount(workspaceSessions.length + 1));
                   await attach(newSession);
+                  const screenSource = entry.session.screenName || entry.session.name;
+                  currentApi.write(newSession.id, `screen -x ${screenSource}\r`);
                   setStatus(`Connected to ${newSession.name}`);
                 }
                 return;
