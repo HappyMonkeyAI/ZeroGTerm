@@ -1018,7 +1018,12 @@ input:focus-visible {
 }
 .history-head { display: flex; justify-content: space-between; align-items: center; padding: 3px 4px 9px; color: #d8dee9; }
 .history-head button { background: transparent; color: #697386; font-size: 18px; }
-.history-item { width: 100%; display: flex; align-items: flex-start; gap: 9px; padding: 8px 5px; text-align: left; border-top: 1px solid #202630; background: transparent; color: #8b93a3; }
+.history-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 8px 5px; text-align: left; border-top: 1px solid #202630; background: transparent; color: #8b93a3; }
+.history-main { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.history-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.history-remove { margin-left: 8px; background: transparent; color: #536176; border: none; cursor: pointer; font-size: 16px; line-height: 1; }
+.history-item:hover .history-remove { color: #253044; }
+:root[data-theme='light'] .history-remove { color: #68768a; }
 .history-item:hover { background: #1a202a; color: #d8dee9; }
 .history-item b, .history-item small { display: block; }
 .history-item small, .history-note, .history-empty { color: #697386; font-size: 10px; }

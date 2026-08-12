@@ -1282,8 +1282,11 @@ function App() {
               }
               setSidebarTab('terminals');
             }}>
-              <span className="history-kind">{entry.event.toUpperCase()}</span>
-              <span><b>{entry.session.name}</b><small>{entry.session.host} · {entry.available ? 'available' : 'unavailable'}</small></span>
+              <span className="history-main">
+                <span className="history-kind">{entry.event.toUpperCase()}</span>
+                <span className="history-text"><b>{entry.session.name}</b><small>{entry.session.host} · {entry.available ? 'available' : 'unavailable'}</small></span>
+              </span>
+              <button type="button" className="history-remove" aria-label="Remove history entry" onClick={(event) => { event.stopPropagation(); void api()?.removeHistory(entry.id).then(() => setHistoryEntries((current) => current.filter((item) => item.id !== entry.id))).catch(() => {}); }}>×</button>
             </button>
           )) : <p className="history-empty">No history entries yet.</p>}
           <small className="history-note">Persisted session lifecycle from the main process.</small>
