@@ -1248,7 +1248,40 @@ function App() {
         <div className="history-popover" role="dialog" aria-label="Session history">
           <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
-            <button type="button" className="history-item" key={entry.id} onClick={() => { setHistoryOpen(false); if (entry.session.kind === 'ssh') setModal('ssh'); else setSidebarTab(entry.session.screenName ? 'screens' : 'terminals'); }}>
+            <button type="button" className="history-item" key={entry.id} onClick={() => {
+              setHistoryOpen(false);
+              if (entry.session.kind === 'ssh') {
+                setSshTarget(entry.session.host || entry.session.sshTarget || '');
+                setModal('ssh');
+                return;
+              }
+              if (entry.session.screenName) {
+                setSidebarTab('screens');
+                const match = sessions.find((s) => s.screenName === entry.session.screenName && s.kind === 'local');
+                if (match) {
+                  claimSession(match);
+                  void attach(match);
+                  setStatus(`Reconnecting to ${match.name}…`);
+                } else {
+                  const rawBackend = entry.session.backend || 'bash';
+                  const creationBackend = rawBackend === 'screen' ? 'bash' : rawBackend;
+                  const currentApi = api();
+                  if (currentApi) {
+                    currentApi.createLocalSession({ name: entry.session.name, backend: creationBackend as any, wslDistribution: entry.session.wslDistribution }).then((session) => {
+                      setSessions((current) => [...current, session]);
+                      claimSession(session);
+                      return attach(session);
+                    }).then(() => {
+                      setStatus(`Reconnected to ${entry.session.name}…`);
+                    }).catch((error) => {
+                      setStatus(error instanceof Error ? error.message : String(error));
+                    });
+                  }
+                }
+                return;
+              }
+              setSidebarTab('terminals');
+            }}>
               <span className="history-kind">{entry.event.toUpperCase()}</span>
               <span><b>{entry.session.name}</b><small>{entry.session.host} · {entry.available ? 'available' : 'unavailable'}</small></span>
             </button>
