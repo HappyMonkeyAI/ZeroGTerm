@@ -27,4 +27,17 @@ describe('session history store', () => {
     await writeFile(path, '{not json');
     expect(await new SessionHistoryStore({ filePath: path }).list()).toEqual([]);
   });
+
+  it('removes entries by id', async () => {
+    const path = await file();
+    const store = new SessionHistoryStore({ filePath: path, limit: 10 });
+    await store.record('created', session, true);
+    await store.record('closed', session, false);
+    const entries = await store.list();
+    expect(entries).toHaveLength(2);
+    const toRemove = entries[0];
+    expect(await store.remove(toRemove.id)).toBe(true);
+    expect(await store.list()).toHaveLength(1);
+    expect(await store.remove(toRemove.id)).toBe(false);
+  });
 });

@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const api = {
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   listHistory: () => ipcRenderer.invoke('sessions:history'),
+  removeHistory: (entryId) => ipcRenderer.invoke('sessions:historyRemove', entryId),
   listBackends: () => ipcRenderer.invoke('sessions:backends'),
   listWslDistributions: () => ipcRenderer.invoke('sessions:wslDistributions'),
   createLocalSession: (request) => ipcRenderer.invoke('sessions:createLocal', request),

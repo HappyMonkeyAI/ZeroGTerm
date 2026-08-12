@@ -64,6 +64,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 ipcMain.handle('sessions:list', () => service.list());
 ipcMain.handle('sessions:history', () => history.list());
+ipcMain.handle('sessions:historyRemove', (_event, entryId: string) => history.remove(entryId));
 
 ipcMain.handle('sessions:backends', () => discoverShellBackends());
 ipcMain.handle('sessions:wslDistributions', async () => {

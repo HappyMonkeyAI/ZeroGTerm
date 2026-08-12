@@ -48,6 +48,15 @@ export class SessionHistoryStore {
     return entry;
   }
 
+  async remove(entryId: string): Promise<boolean> {
+    await this.ensureLoaded();
+    const index = this.entries.findIndex((item) => item.id === entryId);
+    if (index < 0) return false;
+    this.entries = this.entries.filter((item) => item.id !== entryId);
+    await this.persist();
+    return true;
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;

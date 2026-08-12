@@ -709,9 +709,16 @@ function App() {
       const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
       const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
       const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
-      setSessions((current) => [...current, ssh]);
+      const screenName = session.screenName ?? session.name;
+      const attached = { ...ssh, screenName, persistence: 'screen' as const, backend: 'screen' as const };
+      setSessions((current) => {
+        const exists = current.some((item) => item.id === attached.id);
+        return exists ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached];
+      });
       claimSession(ssh);
       await attach(ssh);
+      const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${session.screenName ?? session.name}`;
+      currentApi.write(ssh.id, `${screenCommand}\r`);
       setStatus(`Connected to ${session.name} on ${connection.alias}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -1010,7 +1017,7 @@ function App() {
                 const count = tab === 'terminals'
                   ? workspaceSessions.length
                   : tab === 'screens'
-                    ? sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id)).length
+                    ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length
                     : sessions.filter((session) => session.kind === 'ssh').length;
                 return (
                   <button
@@ -1249,34 +1256,71 @@ function App() {
           <div className="history-popover" role="dialog" aria-label="Session history" onClick={(event) => event.stopPropagation()}>
           <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
-            <button type="button" className="history-item" key={entry.id} onClick={() => {
+            <button type="button" className="history-item" key={entry.id} onClick={async () => {
               setHistoryOpen(false);
-              if (entry.session.kind === 'ssh') {
-                setSshTarget(entry.session.host || entry.session.sshTarget || '');
-                setModal('ssh');
+              const hasScreen = !!entry.session.screenName;
+              const isPlainSsh = entry.session.kind === 'ssh' && !hasScreen;
+              if (hasScreen || entry.session.backend === 'screen') {
+                setSidebarTab('screens');
+                const screenSource = entry.session.screenName || entry.session.name;
+                const remoteMatch = sessions.find((s) => s.kind === 'ssh' && s.screenName === screenSource);
+                const localMatch = sessions.find((s) => s.screenName === screenSource && s.kind === 'local');
+                if (remoteMatch) {
+                  claimSession(remoteMatch);
+                  await attach(remoteMatch);
+                  setStatus(`Reconnecting to ${remoteMatch.name}…`);
+                  return;
+                }
+                if (localMatch) {
+                  claimSession(localMatch);
+                  await attach(localMatch);
+                  setStatus(`Reconnecting to ${localMatch.name}…`);
+                  return;
+                }
+                const currentApi = api();
+                if (!currentApi) return;
+                const known = knownConnections.find((c) => (entry.session.host || '').includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(entry.session.host || ''));
+                if (known) {
+                  await attachRemoteScreen({ ...entry.session, screenName: screenSource, host: known.hostName || known.alias } as any, known);
+                  return;
+                }
+                if (entry.session.host) {
+                  const target = entry.session.host;
+                  const newSession = await currentApi.createSshSession({ target, name: entry.session.name });
+                  setSessions((current) => [...current, newSession]);
+                  claimSession(newSession);
+                  setFocusedSessionId(newSession.id);
+                  setMaximizedSessionId(null);
+                  setLayout(layoutForSessionCount(workspaceSessions.length + 1));
+                  await attach(newSession);
+                  setStatus(`Connected to ${newSession.name}`);
+                }
                 return;
               }
-              if (entry.session.screenName) {
-                setSidebarTab('screens');
-                const match = sessions.find((s) => s.screenName === entry.session.screenName && s.kind === 'local');
-                if (match) {
-                  claimSession(match);
-                  void attach(match);
-                  setStatus(`Reconnecting to ${match.name}…`);
-                } else {
-                  const rawBackend = entry.session.backend || 'bash';
-                  const creationBackend = rawBackend === 'screen' ? 'bash' : rawBackend;
-                  const currentApi = api();
-                  if (currentApi) {
-                    currentApi.createLocalSession({ name: entry.session.name, backend: creationBackend as any, wslDistribution: entry.session.wslDistribution }).then((session) => {
-                      setSessions((current) => [...current, session]);
-                      claimSession(session);
-                      return attach(session);
-                    }).then(() => {
-                      setStatus(`Reconnected to ${entry.session.name}…`);
-                    }).catch((error) => {
-                      setStatus(error instanceof Error ? error.message : String(error));
-                    });
+              if (isPlainSsh) {
+                const target = entry.session.host || entry.session.sshTarget || '';
+                const defaultName = target.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 40);
+                setSshTarget(target);
+                setSshName(entry.session.name && entry.session.name !== defaultName ? entry.session.name : '');
+                const currentApi = api();
+                if (!currentApi) return;
+                const connection = knownConnections.find((c) => (target.includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(target)));
+                const fallbackName = entry.session.name || defaultName;
+                const ssh = await currentApi.createSshSession({ target, name: fallbackName });
+                setSessions((current) => [...current, ssh]);
+                claimSession(ssh);
+                await attach(ssh);
+                setStatus(`Connected to ${ssh.name}`);
+                if (currentApi.discoverRemoteScreens && connection) {
+                  try {
+                    const remote = await currentApi.discoverRemoteScreens(connection);
+                    if (remote.length) {
+                      const screen = remote.find((s) => s.status === 'detached') ?? remote[0];
+                      await attachRemoteScreen(screen, connection);
+                      return;
+                    }
+                  } catch {
+                    // keep the SSH session even if remote screen discovery fails.
                   }
                 }
                 return;

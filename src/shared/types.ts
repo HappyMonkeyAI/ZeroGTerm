@@ -66,6 +66,7 @@ export interface HistoryEntry {
 export interface TerminalApi {
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
+  removeHistory(entryId: string): Promise<boolean>;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;
   createLocalSession(request: CreateLocalRequest): Promise<SessionInfo>;
