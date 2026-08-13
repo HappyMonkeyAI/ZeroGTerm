@@ -8,7 +8,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 
 - Multi-pane workspaces with stack, vertical split, horizontal split, and four-pane grid layouts.
 - Maximize a focused pane and cycle between sessions without losing the other panes.
-- Persistent local terminal sessions backed by `screen`, with a process-only fallback when `screen` is unavailable.
+- Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable.
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
 - SSH configuration discovery from known connections, including remote `screen` session discovery.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
