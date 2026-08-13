@@ -36,7 +36,9 @@ Without `screen`, local terminals use a direct `bash` PTY and are explicitly non
 
 ## Making changes
 
-1. Create a branch from `main`.
+1. Create a branch from `dev` and open the pull request against `dev`. `dev` is
+   the integration branch; `main` receives work through a periodic `dev` to
+   `main` pull request, not directly.
 2. Keep changes focused and avoid committing generated output, `node_modules`, credentials, or `.env` files.
 3. Add or update tests for behavior changes.
 4. Run the verification commands before opening a pull request:
