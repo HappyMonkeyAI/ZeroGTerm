@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend } from '../shared/types';
+import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, TerminalApi } from '../shared/types';
 type LocalBackend = 'bash' | 'zsh' | 'powershell' | 'wsl';
 import { MAX_UTTERANCE_SECONDS, VoiceRecorder, isMostlySilence } from './voice';
 
@@ -540,8 +540,8 @@ function App() {
 
   useEffect(() => {
     const currentApi = api();
-    const sshHost = (active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '';
-    const matching = sshHost ? knownConnections.filter((connection) => connection.hostName === sshHost || connection.alias === sshHost) : [];
+    const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
+    const matching = sshHost ? knownConnections.filter((connection) => normalizeHost(connection.hostName ?? '') === sshHost || connection.alias === sshHost) : [];
     if (matching.length === 0) {
       setRemoteScreenEntries([]);
       return;
@@ -778,12 +778,29 @@ function App() {
       await attach(attached);
       await currentApi.attachSession(attached.id);
       const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${screenName}`;
+      await waitForShellPrompt(currentApi, attached.id);
       currentApi.write(attached.id, `${screenCommand}\r`);
+      await refresh();
       setStatus(`Connected to ${session.name} on ${connection.alias}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   };
+
+  const waitForShellPrompt = (currentApi: TerminalApi, sessionId: string) => new Promise<void>((resolve) => {
+    let finished = false;
+    let removeData: (() => void) | undefined;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      removeData?.();
+      resolve();
+    };
+    removeData = currentApi.onData((eventSessionId, data) => {
+      if (eventSessionId === sessionId && /(^|\r?\n)\S+[#$] /.test(data)) finish();
+    });
+    setTimeout(finish, 1000);
+  });
 
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
@@ -797,11 +814,13 @@ function App() {
     setModal('local');
   };
 
+  const normalizeHost = (value: string) => value.replace(/^.*@/, '');
+
   const renderScreensTab = () => {
-    const sshHost = (active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '';
+    const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
     const hostGroups: Record<string, Array<{ session: SessionInfo; connection: KnownConnection }>> = sshHost
       ? remoteScreenEntries
-          .filter((entry) => entry.connection.hostName === sshHost || entry.connection.alias === sshHost)
+          .filter((entry) => normalizeHost(entry.connection.hostName ?? '') === sshHost || entry.connection.alias === sshHost)
           .reduce((acc, entry) => {
             const key = entry.connection.hostName || entry.connection.alias;
             (acc[key] = acc[key] || []).push(entry);
@@ -839,8 +858,11 @@ function App() {
                   setSessions((current) => current.some((item) => item.id === attached.id) ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached]);
                   claimSession(attached);
                   await attach(attached);
+                  await currentApi.attachSession(attached.id);
                   const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${session.screenName ?? session.name}`;
+                  await waitForShellPrompt(currentApi, attached.id);
                   currentApi.write(attached.id, `${screenCommand}\r`);
+                  await refresh();
                   setStatus(`Connected to ${session.name}`);
                 } catch (error) {
                   setStatus(error instanceof Error ? error.message : String(error));
