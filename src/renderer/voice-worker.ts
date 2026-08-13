@@ -44,9 +44,7 @@ function loadPipeline(): Promise<AutomaticSpeechRecognitionPipeline> {
   return loading;
 }
 
-scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
-  const data = event.data;
-  if (!data || data.type !== 'transcribe' || !(data.audio instanceof Float32Array)) return;
+async function handleTranscribe(data: WorkerRequest): Promise<void> {
   try {
     const transcribePipeline = await loadPipeline();
     // No `task`/`language` options: whisper-tiny.en is English-only and
@@ -56,4 +54,13 @@ scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   } catch (error) {
     scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) });
   }
+}
+
+// onmessage is typed as returning void, so the handler stays synchronous and
+// the promise is consumed here. Assigning an async function returned a promise
+// nobody awaited, leaving any rejection thrown outside the try/catch unhandled.
+scope.onmessage = (event: MessageEvent<WorkerRequest>) => {
+  const data = event.data;
+  if (!data || data.type !== 'transcribe' || !(data.audio instanceof Float32Array)) return;
+  void handleTranscribe(data);
 };

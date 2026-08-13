@@ -5,7 +5,15 @@ import * as ort from 'onnxruntime-web';
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.proxy = false;
 
-const dir = process.argv[2] ?? '/tmp/whisper-repro';
+// Require the model directory explicitly. Defaulting to a path under /tmp
+// meant loading .onnx files from a world-writable location: on a shared host
+// another user can pre-create that directory and swap the models this script
+// then executes.
+const dir = process.argv[2];
+if (!dir) {
+  console.error('usage: node scripts/repro-voice-session.mjs <model-dir> [optimization] [...files]');
+  process.exit(1);
+}
 const optimization = process.argv[3]; // optional graphOptimizationLevel override
 const files = process.argv.slice(4).length
   ? process.argv.slice(4)
