@@ -71,11 +71,35 @@ export function shellBackendArgs(backend: SessionBackend, distribution?: string)
   return { backend: 'bash', executable: 'bash', args: [], label: 'bash' };
 }
 
-export async function discoverShellBackends(): Promise<ShellBackend[]> {
+/** Does this shell actually run here? Starts the real binary, so it is slow. */
+export async function probeShellBackend(candidate: ShellBackend): Promise<boolean> {
+  try {
+    await execFileAsync(
+      candidate.executable,
+      candidate.backend === 'wsl' ? ['--status'] : ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * bash is assumed present; the optional backends are included only when the
+ * probe says they run.
+ *
+ * The probe is injectable so tests can exercise the filtering without starting
+ * real processes. GitHub's ubuntu runners ship pwsh, so the live probe is not
+ * a fast ENOENT there — it cold-starts PowerShell, which intermittently
+ * exceeded vitest's 5s default and failed CI on unrelated pull requests.
+ */
+export async function discoverShellBackends(
+  isAvailable: (candidate: ShellBackend) => Promise<boolean> = probeShellBackend
+): Promise<ShellBackend[]> {
   const result: ShellBackend[] = [shellBackendArgs('bash')];
   for (const backend of ['powershell', 'wsl'] as const) {
     const candidate = shellBackendArgs(backend);
-    try { await execFileAsync(candidate.executable, backend === 'wsl' ? ['--status'] : ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']); result.push(candidate); } catch { /* unavailable */ }
+    if (await isAvailable(candidate)) result.push(candidate);
   }
   return result;
 }

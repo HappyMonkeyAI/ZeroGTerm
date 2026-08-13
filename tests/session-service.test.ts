@@ -24,9 +24,36 @@ describe('screen session contract', () => {
   });
 
   it('discovers only installed optional shell backends', async () => {
+    // Injected probe: the live one cold-starts pwsh, which is present on CI's
+    // ubuntu runners and intermittently blew the 5s timeout.
+    const seen: string[] = [];
+    const onlyWsl = async (candidate: { backend: string }) => {
+      seen.push(candidate.backend);
+      return candidate.backend === 'wsl';
+    };
+    const backends = await discoverShellBackends(onlyWsl);
+
+    expect(backends.map((item) => item.backend)).toEqual(['bash', 'wsl']);
+    // bash is assumed present rather than probed; only the optional two are.
+    expect(seen).toEqual(['powershell', 'wsl']);
+  });
+
+  it('returns bash alone when no optional backend is installed', async () => {
+    const backends = await discoverShellBackends(async () => false);
+    expect(backends.map((item) => item.backend)).toEqual(['bash']);
+  });
+
+  it('includes every optional backend the probe accepts', async () => {
+    const backends = await discoverShellBackends(async () => true);
+    expect(backends.map((item) => item.backend)).toEqual(['bash', 'powershell', 'wsl']);
+  });
+
+  // Opt in with ZEROG_LIVE_SHELL_PROBE=1. Kept out of the default run because
+  // it starts real shells, so its duration depends on the host.
+  it.runIf(process.env.ZEROG_LIVE_SHELL_PROBE === '1')('probes the real shells on this host', async () => {
     const backends = await discoverShellBackends();
     expect(backends.some((item) => item.backend === 'bash')).toBe(true);
-  });
+  }, 30000);
   it('builds SSH arguments without shell interpolation', () => {
     expect(validateSshTarget('dev@example.com:2222')).toEqual({ target: 'dev@example.com:2222', args: ['-tt', '-p', '2222', '--', 'dev@example.com'] });
     expect(() => validateSshTarget('dev@example.com; touch /tmp/pwned')).toThrow();
