@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    # dev is the integration branch, so most pull requests target it. Verifying
+    # only on main meant typecheck, tests, audit and build first ran when dev
+    # was already merged — the point where a failure is most expensive to fix.
+    branches: [main, dev]
 
 permissions:
   contents: read
