@@ -1,21 +1,34 @@
 # ZeroG Terminal
 
-ZeroG Terminal is a Linux-first Electron workspace for persistent `screen` sessions. This first vertical slice includes:
+ZeroG Terminal is an Electron workspace manager for persistent terminal and SSH sessions on Linux and Windows, with smart features to help keep you productive. It is designed with AI tooling in mind: leave Codex, Claude Code, or other terminal-based agents running in persistent sessions, then return to them without repeating setup and resume commands.
 
-- Electron security boundary: sandboxed renderer, context isolation, disabled Node integration, narrow typed preload API.
-- Session sidebar with create, discover, refresh, and attach actions.
-- Visible actions for opening a persistent local terminal and connecting to an SSH target (`host`, `user@host`, or `user@host:port`).
-- xterm.js terminal renderer and a split workspace surface.
-- Pane close button: closing detaches the session and removes the pane from the workspace; screen-backed sessions stay alive and remain discoverable.
-- Newly opened terminal and SSH panes receive keyboard focus so typing works immediately.
-- Persistent dark/light theme with an accessible sun/moon toggle.
-- Safe session-name validation and argument-array `screen` invocation.
-- AI command approval surface; suggestions are visible and require explicit approval before being sent to the terminal.
-- Voice input per pane: click the microphone, speak, and the utterance is transcribed locally with Whisper-tiny (via Transformers.js; the model is downloaded once on first use) and typed into the pane's prompt without auto-execution.
+ZeroG Terminal is an alpha project, but it is already useful as a multi-session terminal and SSH workspace. It uses `screen` where available for resumable sessions and falls back to a direct shell PTY when `screen` is not installed.
+
+## Features
+
+- Multi-pane workspaces with stack, vertical split, horizontal split, and four-pane grid layouts.
+- Maximize a focused pane and cycle between sessions without losing the other panes.
+- Persistent local terminal sessions backed by `screen`, with a process-only fallback when `screen` is unavailable.
+- SSH sessions for hosts, `user@host`, and `user@host:port` targets.
+- SSH configuration discovery from known connections, including remote `screen` session discovery.
+- Reconnect to existing local or remote `screen` sessions from the Screens view.
+- Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
+- Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
+- Workspaces for grouping sessions and quickly switching between projects or tasks.
+- Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
+- xterm.js terminal rendering with scrollback preservation while changing layouts.
+- Local voice input using Whisper-tiny through Transformers.js; transcribed text is typed into the selected terminal without automatic execution.
+- AI command suggestion and approval UI, keeping command execution explicit.
+- Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
+- Safe argument-array handling and validation around SSH and `screen` session operations.
+
+The project is particularly useful for terminal-based AI development workflows: start an agent in a persistent session, disconnect or suffer an interrupted connection, and reconnect later to see what it has done and continue working.
+
+See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The initial npm release is `0.1.0-alpha.1` and is configured for the `alpha` dist-tag. The version history is tracked in [versions.txt](versions.txt).
+ZeroG Terminal is currently a public alpha. The current release is `0.3.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt).
 
 The npm package contains the built Electron application and project documentation. It is intended for early adopters and testing rather than production use.
 
@@ -30,6 +43,21 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+B` — toggle sessions sidebar
 - `Esc` — close overview / dialogs, cancel voice recording
 
+## Installation and usage
+
+The simplest way to try the published package is through `npx`:
+
+```bash
+npx zerogterm
+```
+
+The package downloads the application and launches it. To use the launcher repeatedly without downloading on each invocation, install it globally:
+
+```bash
+npm install --global zerogterm
+zerogterm
+```
+
 ## Development
 
 ```bash
@@ -40,34 +68,30 @@ npm run build
 npm start
 ```
 
-After installing the published package, launch ZeroG Terminal with:
+Runtime prerequisites on the host include Node.js and the native build tools required by `node-pty`. Install `screen` as well for persistent, discoverable sessions.
 
-```bash
-npx zerogterm
-```
-
-Runtime prerequisites on the host:
+On Fedora/RHEL-like Linux systems:
 
 ```bash
 sudo dnf install screen make gcc-c++ python3
-npm install node-pty
 ```
 
-`node-pty` is required for terminal I/O. When `screen` is installed, local sessions are persistent and discoverable after relaunch. Without `screen`, ZeroG now falls back to a direct `bash` PTY and labels the session as process-only; that shell is lost when the application exits and the dependency warning remains visible. Install `screen` for full persistence:
+On Windows, use a supported Node.js installation and choose PowerShell or WSL when creating a local session. WSL distributions can be selected from the local-session dialog. Remote SSH sessions work independently of the local shell backend.
+
+`node-pty` is required for terminal I/O. When `screen` is installed, local sessions are persistent and discoverable after relaunch. Without `screen`, ZeroG falls back to a direct shell PTY and labels the session as process-only; that shell is lost when the application exits. Install `screen` for full persistence:
 
 ```bash
 sudo dnf install screen
 ```
 
-## Current verification
+## Verification
+
+The current main branch has the following local verification coverage:
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (9 tests covering name validation, `screen -ls` parsing, SSH argument validation, session close semantics, and voice silence detection).
+- `npm test`: passes (28 tests covering remote-screen parsing and prompt readiness, session history, SSH inventory and argument validation, session service behavior, and voice input helpers).
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
-- Electron is configured to disable hardware acceleration by default for the Fedora Toolbox/Wayland runtime; set `ZEROG_ENABLE_GPU=1` only when GPU launch is stable on the host.
-- `npm audit --omit=dev`: reports no known production vulnerabilities.
-
-The live screen + node-pty smoke test creates a temporary named session, writes a marker through the PTY, observes it, and cleans up the session.
+- `npm audit --omit=dev`: production dependency auditing is part of the project quality checks.
 
 ## License
 
