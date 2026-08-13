@@ -208,6 +208,8 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
   const terminalRef = useRef<Terminal | null>(null);
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
 
   useEffect(() => {
     if (!ref.current) return;
@@ -221,7 +223,7 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
       letterSpacing: 0,
       scrollback: 10000,
       allowProposedApi: true,
-      theme: terminalTheme(theme),
+      theme: terminalTheme(themeRef.current),
       convertEol: true,
     });
     const fit = new FitAddon();
@@ -364,6 +366,14 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
       terminalRef.current = null;
       terminal.dispose();
     };
+  }, [sessionId]);
+
+  // Theme is a mutable xterm option. Rebuilding the Terminal to restyle it
+  // would dispose the renderer and drop the pane's scrollback — the same
+  // content loss the layout code deliberately avoids.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (terminal) terminal.options.theme = terminalTheme(theme);
   }, [theme]);
 
   useEffect(() => {
@@ -612,6 +622,8 @@ function App() {
       }
       if (key === 'l') {
         event.preventDefault();
+        // Match the layout buttons: a maximized pane would otherwise mask the change.
+        setMaximizedSessionId(null);
         setLayout((value) => (value === 'stack' ? 'split-v' : 'stack'));
       }
       if (key === 'b') {
@@ -623,8 +635,38 @@ function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [overview, approval, modal, voice.status, workspaces, activeWorkspace, workspaceSessions]);
 
+  const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
+  // Keep every workspace terminal mounted while changing layouts. Hiding a
+  // pane must not dispose its xterm renderer and lose its scrollback/content.
+  const paneSessions = workspaceSessions.slice(0, 4);
+  const renderedPaneCount = Math.max(paneCount, paneSessions.length);
+  // A pane maximized in another workspace has no match here, and the grid would
+  // then hide every pane including placeholders. Derive the effective id so that
+  // state is unrepresentable, whatever leaves maximizedSessionId stale.
+  const maximizedPaneId = paneSessions.some((session) => session.id === maximizedSessionId)
+    ? maximizedSessionId
+    : null;
+  // Single-pane layouts show the selected session, not pane 0 — otherwise the
+  // breadcrumb and sidebar name one session while keystrokes go to another.
+  const stackedSessionId =
+    paneSessions.find((session) => session.id === active?.id)?.id ?? paneSessions[0]?.id;
+  const isPaneVisible = (session: SessionInfo, index: number) =>
+    layout === 'stack' ? session.id === stackedSessionId : index < paneCount;
+
   const attach = async (session: SessionInfo) => {
     setActive(session);
+    // Selecting a terminal makes it the keyboard target too, so typing goes
+    // where the sidebar says it does.
+    setFocusedSessionId(session.id);
+    const index = paneSessions.findIndex((item) => item.id === session.id);
+    if (maximizedPaneId) {
+      // A maximized pane is effectively single-pane: follow the selection
+      // rather than leaving the chosen terminal off screen.
+      setMaximizedSessionId(session.id);
+    } else if (index >= paneCount && layout !== 'stack') {
+      // The current split does not render this pane; widen so it is visible.
+      setLayout('grid');
+    }
     setStatus(
       session.persistence === 'process'
         ? `${session.host} · ${session.name} · process only (install screen for persistence)`
@@ -831,21 +873,13 @@ function App() {
         : layout === 'grid'
           ? 'pane-grid grid'
           : 'pane-grid';
-  const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
-  const visibleSessions = layout === 'stack'
-    ? (active ? [active] : workspaceSessions.slice(0, 1))
-    : workspaceSessions.slice(0, paneCount);
-  // Keep every workspace terminal mounted while changing layouts. Hiding a
-  // pane must not dispose its xterm renderer and lose its scrollback/content.
-  const paneSessions = workspaceSessions.slice(0, 4);
-  const renderedPaneCount = Math.max(paneCount, paneSessions.length);
   const toggleMaximize = (sessionId: string) => {
     setFocusedSessionId(sessionId);
     setMaximizedSessionId((current) => current === sessionId ? null : sessionId);
   };
   const cycleMaximizedSession = (direction: -1 | 1) => {
-    if (!maximizedSessionId || workspaceSessions.length < 2) return;
-    const currentIndex = workspaceSessions.findIndex((session) => session.id === maximizedSessionId);
+    if (!maximizedPaneId || workspaceSessions.length < 2) return;
+    const currentIndex = workspaceSessions.findIndex((session) => session.id === maximizedPaneId);
     const nextIndex = (currentIndex + direction + workspaceSessions.length) % workspaceSessions.length;
     const next = workspaceSessions[nextIndex];
     setFocusedSessionId(next.id);
@@ -982,6 +1016,8 @@ function App() {
                 setActiveWorkspaceId(workspace.id);
                 const first = sessions.find((session) => workspace.sessionIds.includes(session.id));
                 setActive(first ?? null);
+                // Do not leave focus pointing at a terminal in the workspace we just left.
+                setFocusedSessionId(first?.id);
               }}
             >
               <span className="tab-dot" />
@@ -1185,9 +1221,9 @@ function App() {
               <span className="control-label">LAYOUT</span>
               <button
                 type="button"
-                className={layout === 'stack' || maximizedSessionId ? 'layout-button active' : 'layout-button'}
+                className={layout === 'stack' || maximizedPaneId ? 'layout-button active' : 'layout-button'}
                 onClick={() => {
-                  if (maximizedSessionId) {
+                  if (maximizedPaneId) {
                     setMaximizedSessionId(null);
                   } else if (workspaceSessions.length > 1) {
                     const target = focusedSessionId ?? active?.id ?? workspaceSessions[0]?.id;
@@ -1196,23 +1232,23 @@ function App() {
                     setLayout('stack');
                   }
                 }}
-                title={maximizedSessionId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
+                title={maximizedPaneId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
               >
                 <Icon name="stack" />
               </button>
-              <button type="button" className={layout === 'split-v' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
+              <button type="button" className={layout === 'split-v' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
                 <Icon name="split-v" />
               </button>
-              <button type="button" className={layout === 'split-h' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
+              <button type="button" className={layout === 'split-h' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
                 <Icon name="split-h" />
               </button>
-              <button type="button" className={layout === 'grid' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
+              <button type="button" className={layout === 'grid' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
                 <Icon name="grid" />
               </button>
             </div>
           </div>
 
-          <div className={`${paneClass} ${maximizedSessionId ? 'maximized-pane-grid' : ''}`}>
+          <div className={`${paneClass} ${maximizedPaneId ? 'maximized-pane-grid' : ''}`}>
             {Array.from({ length: renderedPaneCount }, (_, index) => {
               const paneSession = paneSessions[index];
               if (!paneSession) {
@@ -1221,7 +1257,7 @@ function App() {
               const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
               return (
                 <article
-                  className={`pane terminal-pane ${focusedSessionId === paneSession.id ? 'focused' : ''} ${maximizedSessionId === paneSession.id ? 'maximized-pane' : ''} ${index >= paneCount ? 'overflow-pane' : ''}`}
+                  className={`pane terminal-pane ${focusedSessionId === paneSession.id ? 'focused' : ''} ${maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
                   key={paneSession.id}
                   onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
@@ -1230,7 +1266,7 @@ function App() {
                       <span className="pane-live" /> {paneSession.name}
                     </span>
                     <span className="pane-actions">
-                      {maximizedSessionId && (
+                      {maximizedPaneId && (
                         <>
                           <button type="button" className="pane-nav" onClick={() => cycleMaximizedSession(-1)} title="Previous session">
                             <Icon name="chevron-left" />
@@ -1251,8 +1287,8 @@ function App() {
                       >
                         <Icon name="mic" />
                       </button>
-                      <button type="button" className="pane-maximize" onClick={() => toggleMaximize(paneSession.id)} title={maximizedSessionId ? 'Restore pane' : 'Maximize pane'}>
-                        <Icon name={maximizedSessionId ? 'restore' : 'maximize'} />
+                      <button type="button" className="pane-maximize" onClick={() => toggleMaximize(paneSession.id)} title={maximizedPaneId ? 'Restore pane' : 'Maximize pane'}>
+                        <Icon name={maximizedPaneId ? 'restore' : 'maximize'} />
                       </button>
                       <button type="button" className="pane-close" onClick={() => void closePane(paneSession)} title="Close pane" aria-label={`Close ${paneSession.name}`}>
                         <Icon name="x" />
@@ -1275,7 +1311,7 @@ function App() {
             <span className="status-separator" />
             <span>{activeWorkspace?.name ?? 'Workspace'}</span>
             <span className="status-separator" />
-            <span>{maximizedSessionId ? 'maximized pane' : layout === 'stack' ? '1 pane' : `${paneCount} panes`}</span>
+            <span>{maximizedPaneId ? 'maximized pane' : layout === 'stack' ? '1 pane' : `${paneCount} panes`}</span>
             <span className="status-separator" />
             <span>Esc closes overlays · ⌘⇧B sidebar</span>
             <span className="status-spacer" />
