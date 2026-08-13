@@ -13,7 +13,10 @@ export interface KnownConnection {
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const HOST = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,253}$/;
-const USER = /^[A-Za-z0-9._-]{1,64}$/;
+// Must start alphanumeric like TOKEN/HOST above: the user is concatenated into
+// `user@host`, so a leading '-' makes the whole destination look like an option
+// to ssh's getopt (`-Fevil.cfg@host` reads an attacker-chosen config file).
+const USER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SCREEN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,48}$/;
 
 function words(value: string): string[] {
