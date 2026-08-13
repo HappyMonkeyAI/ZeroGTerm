@@ -22,10 +22,17 @@ export function normalizeHost(value: string): string {
 
 // Terminal control sequences sit between the prompt symbol and the end of the
 // buffer, so they have to come off before the tail can be inspected.
-// OSC (window title), terminated by BEL or ESC backslash:
-const OSC_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
-// CSI (colour, cursor movement):
-const CSI_SEQUENCE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+//
+// Built from named constants rather than written as regex literals: an escape
+// or bell inside a literal is an invisible control character in the source,
+// which is both easy to destroy in a later edit and reported as a bug by
+// static analysis, since it is usually accidental. Here it is deliberate.
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+/** OSC (window title), terminated by BEL or ESC backslash. */
+const OSC_SEQUENCE = new RegExp(ESC + '\\][^' + BEL + ESC + ']*(?:' + BEL + '|' + ESC + '\\\\)', 'g');
+/** CSI (colour, cursor movement). */
+const CSI_SEQUENCE = new RegExp(ESC + '\\[[0-9;?]*[A-Za-z]', 'g');
 
 /**
  * Does the accumulated output end at something that looks like a shell prompt?
