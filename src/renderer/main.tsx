@@ -4,11 +4,24 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { SessionInfo } from '../shared/types';
+import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, TerminalApi } from '../shared/types';
+type LocalBackend = 'bash' | 'zsh' | 'powershell' | 'wsl';
+import { MAX_UTTERANCE_SECONDS, VoiceRecorder, isMostlySilence } from './voice';
+import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
+
+/** Settle once output has been quiet this long — the primary readiness signal. */
+const PROMPT_QUIET_MS = 150;
+/** Give up waiting and send anyway; matches the previous unconditional delay's role. */
+const PROMPT_WAIT_CAP_MS = 3000;
+/** Enough tail to hold a prompt spanning several chunks, without growing forever. */
+const PROMPT_BUFFER_CHARS = 512;
+
+type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 
 type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
 type ModalKind = 'workspace' | 'local' | 'ssh' | null;
 type Theme = 'dark' | 'light';
+type SidebarTab = 'terminals' | 'screens' | 'connections';
 
 type Workspace = {
   id: string;
@@ -70,6 +83,13 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
       return (
         <svg {...common}>
           <path d="M7 17l5-5-5-5M12 17h7" />
+        </svg>
+      );
+    case 'history':
+      return (
+        <svg {...common}>
+          <path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5M4 4v4.5h4.5" />
+          <path d="M12 7v5l3 2" />
         </svg>
       );
     case 'spark':
@@ -142,15 +162,62 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
           <rect x="4" y="13" width="16" height="7" rx="1" />
         </svg>
       );
+    case 'x':
+      return (
+        <svg {...common}>
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      );
+    case 'mic':
+      return (
+        <svg {...common}>
+          <rect x="9" y="2.5" width="6" height="12" rx="3" />
+          <path d="M5 11.5a7 7 0 0 0 14 0" />
+          <path d="M12 18.5V21" />
+        </svg>
+      );
     default:
       return <span className="icon" aria-hidden="true">•</span>;
   }
 }
 
-function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onStatus: (message: string) => void; theme: Theme }) {
+function SessionRow({ session, active = false, ghosted = false, onClick }: { session: SessionInfo; active?: boolean; ghosted?: boolean; onClick: () => void }) {
+  const backend = session.kind === 'ssh'
+    ? `SSH · ${session.host}`
+    : session.backend === 'powershell'
+      ? `PowerShell · ${session.cwd}`
+      : session.backend === 'wsl'
+        ? `WSL${session.wslDistribution ? ` · ${session.wslDistribution}` : ''} · ${session.cwd}`
+        : session.backend === 'zsh'
+          ? `zsh · ${session.cwd}`
+          : session.persistence === 'screen'
+            ? `screen · ${session.cwd}`
+            : `local · process only · ${session.cwd}`;
+  return (
+    <button type="button" className={`session-row ${active ? 'active' : ''} ${ghosted ? 'session-ghosted' : ''}`} onClick={onClick}>
+      <span className={`status-dot ${session.status}`} />
+      <span className="session-copy"><b>{session.name}</b><small>{backend}</small></span>
+      <span className="session-state">{ghosted ? '↗' : session.status === 'connected' ? '●' : '○'}</span>
+    </button>
+  );
+}
+
+function sessionBackendTag(session: SessionInfo): string {
+  if (session.kind === 'ssh') return 'SSH';
+  if (session.backend === 'screen') return 'screen';
+  if (session.backend === 'powershell') return 'PowerShell';
+  if (session.backend === 'zsh') return 'zsh';
+  if (session.backend === 'wsl') return session.wslDistribution ? `WSL · ${session.wslDistribution}` : 'WSL';
+  return 'bash';
+}
+
+function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: string; focused?: boolean; onStatus: (message: string) => void; theme: Theme }) {
   const ref = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
 
   useEffect(() => {
     if (!ref.current) return;
@@ -163,13 +230,14 @@ function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onSt
       lineHeight: 1.2,
       letterSpacing: 0,
       scrollback: 10000,
-      theme: terminalTheme(theme),
+      allowProposedApi: true,
+      theme: terminalTheme(themeRef.current),
       convertEol: true,
-      allowProposedApi: false
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
+    terminalRef.current = terminal;
 
     const currentApi = api();
     let disposed = false;
@@ -206,6 +274,7 @@ function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onSt
       return () => {
         disposed = true;
         cancelAnimationFrame(fitFrame);
+        terminalRef.current = null;
         terminal.dispose();
       };
     }
@@ -261,6 +330,15 @@ function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onSt
       return true;
     });
 
+    if (typeof terminal.onSelectionChange === 'function') {
+      terminal.onSelectionChange(() => {
+        const selection = terminal.getSelection();
+        if (selection) {
+          void currentApi.copyText(selection).catch(() => undefined);
+        }
+      });
+    }
+
     const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(host);
     window.addEventListener('resize', scheduleFit);
@@ -293,11 +371,26 @@ function TerminalView({ sessionId, onStatus, theme }: { sessionId?: string; onSt
       removeStatus();
       observer.disconnect();
       window.removeEventListener('resize', scheduleFit);
+      terminalRef.current = null;
       terminal.dispose();
     };
+  }, [sessionId]);
+
+  // Theme is a mutable xterm option. Rebuilding the Terminal to restyle it
+  // would dispose the renderer and drop the pane's scrollback — the same
+  // content loss the layout code deliberately avoids.
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (terminal) terminal.options.theme = terminalTheme(theme);
   }, [theme]);
 
-  return <div className="terminal" ref={ref} />;
+  useEffect(() => {
+    if (focused) terminalRef.current?.focus();
+  }, [focused]);
+
+  return (
+    <div className="terminal" ref={ref} onMouseDownCapture={(event) => event.preventDefault()} />
+  );
 }
 
 function PanePlaceholder({ index, onCreate }: { index: number; onCreate: () => void }) {
@@ -343,6 +436,10 @@ function App() {
   const [status, setStatus] = useState('Ready');
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [overview, setOverview] = useState(false);
   const [layout, setLayout] = useState<Layout>('stack');
@@ -353,6 +450,19 @@ function App() {
   const [sshName, setSshName] = useState('');
   const [sshTarget, setSshTarget] = useState('');
   const [approval, setApproval] = useState<{ command: string; explanation: string } | null>(null);
+  const [voice, setVoice] = useState<{ status: VoiceStatus; sessionId: string | null }>({ status: 'idle', sessionId: null });
+  const recorderRef = useRef<VoiceRecorder | null>(null);
+  const voiceWorkerRef = useRef<Worker | null>(null);
+  const voiceTargetRef = useRef<string | null>(null);
+  const voiceLimitRef = useRef<number | undefined>(undefined);
+  const [localBackends, setLocalBackends] = useState<ShellBackend[]>([]);
+  const [selectedBackend, setSelectedBackend] = useState<LocalBackend>('bash');
+  const [wslDistribution, setWslDistribution] = useState<string>('');
+  const [wslDistributions, setWslDistributions] = useState<string[]>([]);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [knownConnections, setKnownConnections] = useState<KnownConnection[]>([]);
+  const [remoteScreenEntries, setRemoteScreenEntries] = useState<Array<{ session: SessionInfo; connection: KnownConnection }>>([]);
+  const [remoteScreensLoading, setRemoteScreensLoading] = useState(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -384,8 +494,12 @@ function App() {
 
   const refresh = useCallback(async () => {
     const currentApi = api();
+    setSessionsLoading(true);
+    setSessionsError(null);
     if (!currentApi) {
+      setSessionsError('Preload API unavailable');
       setStatus('Preload API unavailable');
+      setSessionsLoading(false);
       return;
     }
     try {
@@ -393,13 +507,78 @@ function App() {
       setSessions(items);
       setStatus(items.length ? `${items.length} session${items.length === 1 ? '' : 's'}` : 'No sessions');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setSessionsError(message);
+      setStatus(message);
+    } finally {
+      setSessionsLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listBackends?.().then(setLocalBackends).catch(() => setLocalBackends([]));
+  }, []);
+
+  useEffect(() => {
+    if (selectedBackend !== 'wsl') {
+      setWslDistributions([]);
+      setWslDistribution('');
+      return;
+    }
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listWslDistributions?.().then(setWslDistributions).catch(() => setWslDistributions([]));
+  }, [selectedBackend]);
+
+  useEffect(() => {
+    if (!historyOpen) {
+      setHistoryEntries([]);
+      return;
+    }
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listHistory?.().then(setHistoryEntries).catch(() => setHistoryEntries([]));
+  }, [historyOpen]);
+
+  useEffect(() => {
+    const currentApi = api();
+    const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
+    const matching = sshHost ? knownConnections.filter((connection) => normalizeHost(connection.hostName ?? '') === sshHost || connection.alias === sshHost) : [];
+    if (matching.length === 0) {
+      setRemoteScreenEntries([]);
+      return;
+    }
+    if (!currentApi?.discoverRemoteScreens) return;
+    setRemoteScreensLoading(true);
+    Promise.allSettled(
+      matching.map((connection) => currentApi.discoverRemoteScreens(connection))
+    )
+      .then((results) => {
+        const entries: Array<{ session: SessionInfo; connection: KnownConnection }> = [];
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+            result.value.forEach((session) => {
+              entries.push({ session, connection: matching[index] });
+            });
+          }
+        });
+        setRemoteScreenEntries(entries);
+      })
+      .catch(() => setRemoteScreenEntries([]))
+      .finally(() => setRemoteScreensLoading(false));
+  }, [knownConnections, active?.host, sessions, focusedSessionId]);
+
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.listKnownConnections?.().then(setKnownConnections).catch(() => setKnownConnections([]));
+  }, []);
 
   useEffect(() => {
     if (!active && workspaceSessions.length) {
@@ -410,6 +589,12 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (voice.status === 'listening') {
+          event.preventDefault();
+          cancelVoice();
+          setStatus('Voice cancelled');
+          return;
+        }
         if (overview) {
           event.preventDefault();
           setOverview(false);
@@ -423,6 +608,11 @@ function App() {
         if (modal) {
           event.preventDefault();
           setModal(null);
+          return;
+        }
+        if (historyOpen) {
+          event.preventDefault();
+          setHistoryOpen(false);
           return;
         }
       }
@@ -445,6 +635,8 @@ function App() {
       }
       if (key === 'l') {
         event.preventDefault();
+        // Match the layout buttons: a maximized pane would otherwise mask the change.
+        setMaximizedSessionId(null);
         setLayout((value) => (value === 'stack' ? 'split-v' : 'stack'));
       }
       if (key === 'b') {
@@ -454,10 +646,40 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overview, approval, modal, workspaces, activeWorkspace, workspaceSessions]);
+  }, [overview, approval, modal, historyOpen, voice.status, workspaces, activeWorkspace, workspaceSessions]);
+
+  const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
+  // Keep every workspace terminal mounted while changing layouts. Hiding a
+  // pane must not dispose its xterm renderer and lose its scrollback/content.
+  const paneSessions = workspaceSessions.slice(0, 4);
+  const renderedPaneCount = Math.max(paneCount, paneSessions.length);
+  // A pane maximized in another workspace has no match here, and the grid would
+  // then hide every pane including placeholders. Derive the effective id so that
+  // state is unrepresentable, whatever leaves maximizedSessionId stale.
+  const maximizedPaneId = paneSessions.some((session) => session.id === maximizedSessionId)
+    ? maximizedSessionId
+    : null;
+  // Single-pane layouts show the selected session, not pane 0 — otherwise the
+  // breadcrumb and sidebar name one session while keystrokes go to another.
+  const stackedSessionId =
+    paneSessions.find((session) => session.id === active?.id)?.id ?? paneSessions[0]?.id;
+  const isPaneVisible = (session: SessionInfo, index: number) =>
+    layout === 'stack' ? session.id === stackedSessionId : index < paneCount;
 
   const attach = async (session: SessionInfo) => {
     setActive(session);
+    // Selecting a terminal makes it the keyboard target too, so typing goes
+    // where the sidebar says it does.
+    setFocusedSessionId(session.id);
+    const index = paneSessions.findIndex((item) => item.id === session.id);
+    if (maximizedPaneId) {
+      // A maximized pane is effectively single-pane: follow the selection
+      // rather than leaving the chosen terminal off screen.
+      setMaximizedSessionId(session.id);
+    } else if (index >= paneCount && layout !== 'stack') {
+      // The current split does not render this pane; widen so it is visible.
+      setLayout('grid');
+    }
     setStatus(
       session.persistence === 'process'
         ? `${session.host} · ${session.name} · process only (install screen for persistence)`
@@ -503,9 +725,10 @@ function App() {
     }
     setBusy(true);
     try {
-      const session = await currentApi.createLocalSession({ name: localName });
+      const session = await currentApi.createLocalSession({ name: localName, backend: selectedBackend, wslDistribution: selectedBackend === 'wsl' ? wslDistribution : undefined });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
+      setFocusedSessionId(session.id);
       setMaximizedSessionId(null);
       setLayout(layoutForSessionCount(workspaceSessions.length + 1));
       setModal(null);
@@ -531,6 +754,7 @@ function App() {
       const session = await currentApi.createSshSession({ name: sshName || undefined, target: sshTarget });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
+      setFocusedSessionId(session.id);
       setMaximizedSessionId(null);
       setLayout(layoutForSessionCount(workspaceSessions.length + 1));
       setModal(null);
@@ -542,6 +766,68 @@ function App() {
     }
   };
 
+  const attachRemoteScreen = async (session: SessionInfo, connection: KnownConnection) => {
+    try {
+      const currentApi = api();
+      if (!currentApi) return;
+      setStatus(`Attaching to ${session.name} on ${connection.alias}…`);
+      const result = await currentApi.buildRemoteScreenAttach?.(connection, session.screenName ?? session.name);
+      const args = result?.args;
+      const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
+      const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
+      const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+      const screenName = session.screenName ?? session.name;
+      const attached = { ...ssh, screenName, persistence: 'screen' as const, backend: 'screen' as const };
+      setSessions((current) => {
+        const exists = current.some((item) => item.id === attached.id);
+        return exists ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached];
+      });
+      claimSession(attached);
+      await attach(attached);
+      await currentApi.attachSession(attached.id);
+      const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${screenName}`;
+      await waitForShellPrompt(currentApi, attached.id);
+      currentApi.write(attached.id, `${screenCommand}\r`);
+      await refresh();
+      setStatus(`Connected to ${session.name} on ${connection.alias}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  // Wait until a freshly attached remote shell looks ready for input.
+  //
+  // PTY output arrives in arbitrary chunks, so matching has to run against a
+  // rolling buffer: a prompt split across two reads ("user@host:~" then "$ ")
+  // would never match a per-chunk test. Prompt shape is only the fast path —
+  // it varies too much across shells and colour schemes to depend on — so the
+  // primary signal is output going quiet, with an overall cap as a backstop.
+  const waitForShellPrompt = (currentApi: TerminalApi, sessionId: string) => new Promise<void>((resolve) => {
+    let finished = false;
+    let buffer = '';
+    let quietTimer: ReturnType<typeof setTimeout> | undefined;
+    let removeData: (() => void) | undefined;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(quietTimer);
+      clearTimeout(capTimer);
+      removeData?.();
+      resolve();
+    };
+    const capTimer = setTimeout(finish, PROMPT_WAIT_CAP_MS);
+    removeData = currentApi.onData((eventSessionId, data) => {
+      if (eventSessionId !== sessionId) return;
+      buffer = (buffer + data).slice(-PROMPT_BUFFER_CHARS);
+      if (looksLikeShellPrompt(buffer)) {
+        finish();
+        return;
+      }
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, PROMPT_QUIET_MS);
+    });
+  });
+
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
     setModal('workspace');
@@ -549,7 +835,85 @@ function App() {
 
   const openNewLocalTerminal = () => {
     setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
+    setSelectedBackend('bash');
+    setWslDistribution('');
     setModal('local');
+  };
+
+  const renderScreensTab = () => {
+    const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
+    const hostGroups: Record<string, Array<{ session: SessionInfo; connection: KnownConnection }>> = sshHost
+      ? remoteScreenEntries
+          .filter((entry) => normalizeHost(entry.connection.hostName ?? '') === sshHost || entry.connection.alias === sshHost)
+          .reduce((acc, entry) => {
+            const key = entry.connection.hostName || entry.connection.alias;
+            (acc[key] = acc[key] || []).push(entry);
+            return acc;
+          }, {} as Record<string, Array<{ session: SessionInfo; connection: KnownConnection }>>)
+      : {};
+    const localScreens = sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id));
+    const hasRemote = Object.keys(hostGroups).length > 0;
+    const hasLocal = localScreens.length > 0;
+    if (!hasRemote && !hasLocal) return <div className="session-empty"><b>No screens</b><small>{sshHost ? 'No remote screens found for this host.' : 'Open a remote session to discover screens, or start a local screen.'}</small></div>;
+    const nodes: React.ReactNode[] = [];
+    if (hasRemote) {
+      for (const [host, group] of Object.entries(hostGroups)) {
+        const remoteGroup = group as Array<{ session: SessionInfo; connection: KnownConnection }>;
+        const label = <div key={`${host}-label`} className="session-group-label">{host}</div>;
+        const items = remoteGroup.map(({ session }) => {
+          const connection = remoteGroup.find((item) => item.session.id === session.id)?.connection;
+          return (
+            <SessionRow
+              key={session.id}
+              session={session}
+              ghosted
+              onClick={async () => {
+                if (!connection) return;
+                setStatus(`Attaching ${session.name}…`);
+                const currentApi = api();
+                if (!currentApi) return;
+                try {
+                  const result = await currentApi.buildRemoteScreenAttach?.(connection, session.screenName ?? session.name);
+                  const args = result?.args;
+                  const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
+                  const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
+                  const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+                  const attached = { ...ssh, screenName: session.screenName ?? session.name, persistence: 'screen' as const, backend: 'screen' as const };
+                  setSessions((current) => current.some((item) => item.id === attached.id) ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached]);
+                  claimSession(attached);
+                  await attach(attached);
+                  await currentApi.attachSession(attached.id);
+                  const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${session.screenName ?? session.name}`;
+                  await waitForShellPrompt(currentApi, attached.id);
+                  currentApi.write(attached.id, `${screenCommand}\r`);
+                  await refresh();
+                  setStatus(`Connected to ${session.name}`);
+                } catch (error) {
+                  setStatus(error instanceof Error ? error.message : String(error));
+                }
+              }}
+            />
+          );
+        });
+        nodes.push(label, ...items);
+      }
+    }
+
+    if (hasLocal && !hasRemote) {
+      nodes.push(<div key="local-label" className="session-group-label">local</div>);
+      localScreens.forEach((session) => {
+        nodes.push(
+          <SessionRow
+            key={session.id}
+            session={session}
+            ghosted
+            onClick={() => { claimSession(session); void attach(session); setStatus(`Reconnecting to ${session.name}…`); }}
+          />
+        );
+      });
+    }
+
+    return <>{nodes}</>;
   };
 
   const paneClass =
@@ -560,26 +924,130 @@ function App() {
         : layout === 'grid'
           ? 'pane-grid grid'
           : 'pane-grid';
-  const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
-  const visibleSessions = layout === 'stack'
-    ? (active ? [active] : workspaceSessions.slice(0, 1))
-    : workspaceSessions.slice(0, paneCount);
-  // Keep every workspace terminal mounted while changing layouts. Hiding a
-  // pane must not dispose its xterm renderer and lose its scrollback/content.
-  const paneSessions = workspaceSessions.slice(0, 4);
-  const renderedPaneCount = Math.max(paneCount, paneSessions.length);
   const toggleMaximize = (sessionId: string) => {
     setFocusedSessionId(sessionId);
     setMaximizedSessionId((current) => current === sessionId ? null : sessionId);
   };
   const cycleMaximizedSession = (direction: -1 | 1) => {
-    if (!maximizedSessionId || workspaceSessions.length < 2) return;
-    const currentIndex = workspaceSessions.findIndex((session) => session.id === maximizedSessionId);
+    if (!maximizedPaneId || workspaceSessions.length < 2) return;
+    const currentIndex = workspaceSessions.findIndex((session) => session.id === maximizedPaneId);
     const nextIndex = (currentIndex + direction + workspaceSessions.length) % workspaceSessions.length;
     const next = workspaceSessions[nextIndex];
     setFocusedSessionId(next.id);
     setActive(next);
     setMaximizedSessionId(next.id);
+  };
+
+  const ensureVoiceWorker = () => {
+    if (!voiceWorkerRef.current) {
+      const worker = new Worker(new URL('./voice-worker.ts', import.meta.url), { type: 'module' });
+      worker.onmessage = (event) => {
+        const data = event.data as
+          | { type: 'loading'; progress: number | null }
+          | { type: 'result'; text: string }
+          | { type: 'error'; message: string };
+        if (data.type === 'result') {
+          const target = voiceTargetRef.current;
+          voiceTargetRef.current = null;
+          setVoice({ status: 'idle', sessionId: null });
+          if (data.text && target) {
+            api()?.write(target, data.text);
+            setStatus(`Voice: "${data.text}"`);
+          } else {
+            setStatus('Voice: nothing transcribed');
+          }
+        } else if (data.type === 'error') {
+          voiceTargetRef.current = null;
+          setVoice({ status: 'idle', sessionId: null });
+          setStatus(`Voice error: ${data.message}`);
+        } else if (data.type === 'loading' && typeof data.progress === 'number') {
+          setStatus(`Loading speech model… ${Math.round(data.progress)}%`);
+        }
+      };
+      voiceWorkerRef.current = worker;
+    }
+    return voiceWorkerRef.current;
+  };
+
+  const cancelVoice = () => {
+    window.clearTimeout(voiceLimitRef.current);
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    voiceTargetRef.current = null;
+    setVoice({ status: 'idle', sessionId: null });
+  };
+
+  const finishListening = async () => {
+    const recorder = recorderRef.current;
+    const target = voiceTargetRef.current;
+    if (!recorder || !target) return;
+    window.clearTimeout(voiceLimitRef.current);
+    recorderRef.current = null;
+    setVoice({ status: 'transcribing', sessionId: target });
+    setStatus('Transcribing…');
+    const audio = await recorder.stop();
+    if (!audio || isMostlySilence(audio)) {
+      voiceTargetRef.current = null;
+      setVoice({ status: 'idle', sessionId: null });
+      setStatus('Voice: no speech detected');
+      return;
+    }
+    ensureVoiceWorker().postMessage({ type: 'transcribe', audio }, [audio.buffer]);
+  };
+
+  const toggleVoice = async (session: SessionInfo) => {
+    if (voice.status === 'listening' && voice.sessionId === session.id) {
+      await finishListening();
+      return;
+    }
+    if (voice.status !== 'idle') return;
+    const recorder = new VoiceRecorder();
+    try {
+      await recorder.start();
+    } catch (error) {
+      setStatus(`Microphone unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    recorderRef.current = recorder;
+    voiceTargetRef.current = session.id;
+    setVoice({ status: 'listening', sessionId: session.id });
+    setFocusedSessionId(session.id);
+    window.clearTimeout(voiceLimitRef.current);
+    voiceLimitRef.current = window.setTimeout(() => void finishListening(), MAX_UTTERANCE_SECONDS * 1000);
+    setStatus(`Listening on ${session.name}… click the mic again or press Esc to finish`);
+  };
+
+  const closePane = async (session: SessionInfo) => {
+    if (voice.sessionId === session.id) cancelVoice();
+    const remaining = workspaceSessions.filter((item) => item.id !== session.id);
+    setWorkspaces((current) =>
+      current.map((workspace) => ({
+        ...workspace,
+        sessionIds: workspace.sessionIds.filter((id) => id !== session.id)
+      }))
+    );
+    if (active?.id === session.id) setActive(remaining[0] ?? null);
+    if (focusedSessionId === session.id) setFocusedSessionId(remaining[0]?.id);
+    if (maximizedSessionId === session.id) setMaximizedSessionId(null);
+    setLayout(layoutForSessionCount(remaining.length));
+
+    const currentApi = api();
+    if (currentApi) {
+      try {
+        await currentApi.closeSession(session.id);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+    setStatus(
+      session.persistence === 'screen'
+        ? `Closed ${session.name} · screen session survives`
+        : session.kind === 'ssh'
+          ? `Closed ${session.name} · SSH connection ended`
+          : `Closed ${session.name} · process ended`
+    );
+    void refresh();
   };
 
   return (
@@ -599,6 +1067,8 @@ function App() {
                 setActiveWorkspaceId(workspace.id);
                 const first = sessions.find((session) => workspace.sessionIds.includes(session.id));
                 setActive(first ?? null);
+                // Do not leave focus pointing at a terminal in the workspace we just left.
+                setFocusedSessionId(first?.id);
               }}
             >
               <span className="tab-dot" />
@@ -694,52 +1164,72 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  className="square-button history-button"
+                  onClick={() => setHistoryOpen((value) => !value)}
+                  title="Session history"
+                  aria-label="Open session history"
+                  aria-expanded={historyOpen}
+                >
+                  <Icon name="history" />
+                </button>
+                <button
+                  type="button"
                   className="square-button"
                   onClick={openNewLocalTerminal}
                   title="New local terminal"
+                  aria-label="New local terminal"
                 >
                   <Icon name="plus" />
                 </button>
               </div>
             </div>
 
-            <div className="drawer-tools">
-              <button type="button" className="drawer-tool active">
-                Terminals <span>{workspaceSessions.length}</span>
-              </button>
-              <button type="button" className="drawer-tool" onClick={() => setModal('ssh')}>
-                Remote
-              </button>
-            </div>
-
-            <div className="session-list">
-              {workspaceSessions.length ? (
-                workspaceSessions.map((session) => (
+            <div className="drawer-tools" role="tablist" aria-label="Session inventory">
+              {(['terminals', 'screens', 'connections'] as const).map((tab) => {
+                const labels: Record<SidebarTab, string> = { terminals: 'Terminals', screens: 'Screens', connections: 'Connections' };
+                const count = tab === 'terminals'
+                  ? workspaceSessions.length
+                  : tab === 'screens'
+                    ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length + remoteScreenEntries.length
+                    : sessions.filter((session) => session.kind === 'ssh').length;
+                return (
                   <button
                     type="button"
-                    className={`session-row ${active?.id === session.id ? 'active' : ''}`}
-                    key={session.id}
-                    onClick={() => void attach(session)}
+                    role="tab"
+                    aria-selected={sidebarTab === tab}
+                    className={`drawer-tool ${sidebarTab === tab ? 'active' : ''}`}
+                    key={tab}
+                    onClick={() => setSidebarTab(tab)}
                   >
-                    <span className={`status-dot ${session.status}`} />
-                    <span className="session-copy">
-                      <b>{session.name}</b>
-                      <small>
-                        {session.kind === 'ssh'
-                          ? `SSH · ${session.host}`
-                          : session.persistence === 'process'
-                            ? 'local · process only'
-                            : `local · ${session.cwd}`}
-                      </small>
-                    </span>
-                    <span className="session-state">{session.status === 'connected' ? '●' : '○'}</span>
+                    {labels[tab]} <span>{count}</span>
                   </button>
-                ))
+                );
+              })}
+            </div>
+
+            <div className="session-list" role="tabpanel">
+              {sessionsLoading ? (
+                <div className="session-empty"><b>Loading sessions…</b><small>Checking available terminals and durable sessions.</small></div>
+              ) : sessionsError ? (
+                <div className="session-empty session-error"><b>Session inventory unavailable</b><small>{sessionsError}</small><button type="button" onClick={() => void refresh()}>Retry</button></div>
+              ) : sidebarTab === 'terminals' ? (
+                workspaceSessions.length ? workspaceSessions.map((session) => (
+                  <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
+                )) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
+              ) : sidebarTab === 'screens' ? (
+                  renderScreensTab()
+                ) : sidebarTab === 'connections' ? (
+                knownConnections.length ? knownConnections.map((connection) => (
+                  <button type="button" className="session-row" key={connection.alias} onClick={() => { setSshTarget(connection.hostName ?? connection.alias); setModal('ssh'); }}>
+                    <span className="status-dot" />
+                    <span className="session-copy"><b>{connection.alias}</b><small>{connection.hostName ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}` : 'Saved SSH connection'}</small></span>
+                    <span className="session-state">→</span>
+                  </button>
+                )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
               ) : (
-                <div className="session-empty">
-                  <b>No terminals yet</b>
-                  <small>Add a local terminal or SSH connection to this workspace.</small>
-                </div>
+                sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').length ? sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').map((session) => (
+                  <SessionRow key={session.id} session={session} ghosted onClick={async () => { claimSession(session); setStatus(`Attaching remote screen ${session.name}…`); const currentApi = api(); if (!currentApi) return; try { const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name); const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host; const ssh = await currentApi.createSshSession({ target: destination, name: session.name }); setSessions((current) => current.map((item) => item.id === session.id ? ssh : item)); await attach(ssh); } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); } }} />
+                )) : <div className="session-empty"><b>No remote screens</b><small>Remote screen sessions will appear here after discovery.</small></div>
               )}
             </div>
 
@@ -782,9 +1272,9 @@ function App() {
               <span className="control-label">LAYOUT</span>
               <button
                 type="button"
-                className={layout === 'stack' || maximizedSessionId ? 'layout-button active' : 'layout-button'}
+                className={layout === 'stack' || maximizedPaneId ? 'layout-button active' : 'layout-button'}
                 onClick={() => {
-                  if (maximizedSessionId) {
+                  if (maximizedPaneId) {
                     setMaximizedSessionId(null);
                   } else if (workspaceSessions.length > 1) {
                     const target = focusedSessionId ?? active?.id ?? workspaceSessions[0]?.id;
@@ -793,36 +1283,41 @@ function App() {
                     setLayout('stack');
                   }
                 }}
-                title={maximizedSessionId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
+                title={maximizedPaneId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
               >
                 <Icon name="stack" />
               </button>
-              <button type="button" className={layout === 'split-v' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
+              <button type="button" className={layout === 'split-v' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
                 <Icon name="split-v" />
               </button>
-              <button type="button" className={layout === 'split-h' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
+              <button type="button" className={layout === 'split-h' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
                 <Icon name="split-h" />
               </button>
-              <button type="button" className={layout === 'grid' && !maximizedSessionId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
+              <button type="button" className={layout === 'grid' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
                 <Icon name="grid" />
               </button>
             </div>
           </div>
 
-          <div className={`${paneClass} ${maximizedSessionId ? 'maximized-pane-grid' : ''}`}>
-            {Array.from({ length: renderedPaneCount }, (_, index) =>
-              paneSessions[index] ? (
+          <div className={`${paneClass} ${maximizedPaneId ? 'maximized-pane-grid' : ''}`}>
+            {Array.from({ length: renderedPaneCount }, (_, index) => {
+              const paneSession = paneSessions[index];
+              if (!paneSession) {
+                return <PanePlaceholder key={index} index={index + 1} onCreate={openNewLocalTerminal} />;
+              }
+              const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
+              return (
                 <article
-                  className={`pane terminal-pane ${focusedSessionId === paneSessions[index].id ? 'focused' : ''} ${maximizedSessionId === paneSessions[index].id ? 'maximized-pane' : ''} ${index >= paneCount ? 'overflow-pane' : ''}`}
-                  key={paneSessions[index].id}
-                  onMouseDown={() => setFocusedSessionId(paneSessions[index].id)}
+                  className={`pane terminal-pane ${focusedSessionId === paneSession.id ? 'focused' : ''} ${maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
+                  key={paneSession.id}
+                  onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
                   <div className="pane-title">
                     <span>
-                      <span className="pane-live" /> {paneSessions[index].name}
+                      <span className="pane-live" /> {paneSession.name}
                     </span>
                     <span className="pane-actions">
-                      {maximizedSessionId && (
+                      {maximizedPaneId && (
                         <>
                           <button type="button" className="pane-nav" onClick={() => cycleMaximizedSession(-1)} title="Previous session">
                             <Icon name="chevron-left" />
@@ -832,18 +1327,34 @@ function App() {
                           </button>
                         </>
                       )}
-                      {busy ? 'connecting…' : paneSessions[index].kind === 'ssh' ? 'ssh' : 'bash'}
-                      <button type="button" className="pane-maximize" onClick={() => toggleMaximize(paneSessions[index].id)} title={maximizedSessionId ? 'Restore pane' : 'Maximize pane'}>
-                        <Icon name={maximizedSessionId ? 'restore' : 'maximize'} />
+                      {busy ? 'connecting…' : paneVoice ? `${paneVoice}…` : paneSession.kind === 'ssh' ? 'ssh' : 'bash'}
+                      <button
+                        type="button"
+                        className={paneVoice ? `pane-mic ${paneVoice}` : 'pane-mic'}
+                        onClick={() => void toggleVoice(paneSession)}
+                        disabled={voice.status !== 'idle' && !paneVoice}
+                        title={paneVoice === 'listening' ? 'Stop and transcribe' : paneVoice === 'transcribing' ? 'Transcribing…' : 'Voice input'}
+                        aria-label={paneVoice === 'listening' ? `Stop recording ${paneSession.name}` : `Voice input for ${paneSession.name}`}
+                      >
+                        <Icon name="mic" />
+                      </button>
+                      <button type="button" className="pane-maximize" onClick={() => toggleMaximize(paneSession.id)} title={maximizedPaneId ? 'Restore pane' : 'Maximize pane'}>
+                        <Icon name={maximizedPaneId ? 'restore' : 'maximize'} />
+                      </button>
+                      <button type="button" className="pane-close" onClick={() => void closePane(paneSession)} title="Close pane" aria-label={`Close ${paneSession.name}`}>
+                        <Icon name="x" />
                       </button>
                     </span>
                   </div>
-                  <TerminalView sessionId={paneSessions[index].id} onStatus={setStatus} theme={theme} />
+                  <TerminalView
+                    sessionId={paneSession.id}
+                    focused={focusedSessionId === paneSession.id}
+                    onStatus={setStatus}
+                    theme={theme}
+                  />
                 </article>
-              ) : (
-                <PanePlaceholder key={index} index={index + 1} onCreate={openNewLocalTerminal} />
-              )
-            )}
+              );
+            })}
           </div>
 
           <footer className="status-bar">
@@ -851,7 +1362,7 @@ function App() {
             <span className="status-separator" />
             <span>{activeWorkspace?.name ?? 'Workspace'}</span>
             <span className="status-separator" />
-            <span>{maximizedSessionId ? 'maximized pane' : layout === 'stack' ? '1 pane' : `${paneCount} panes`}</span>
+            <span>{maximizedPaneId ? 'maximized pane' : layout === 'stack' ? '1 pane' : `${paneCount} panes`}</span>
             <span className="status-separator" />
             <span>Esc closes overlays · ⌘⇧B sidebar</span>
             <span className="status-spacer" />
@@ -909,6 +1420,107 @@ function App() {
         </div>
       )}
 
+      {/* The history backdrop is decorative: dismissal is also available on
+          Escape and the close button, so it carries no keyboard handler of its
+          own. Closing only on a direct hit removes the need for the popover to
+          stop propagation, which was a click handler on a non-interactive
+          dialog element. */}
+      {historyOpen && (
+        <div
+          className="history-layer"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setHistoryOpen(false);
+          }}
+        >
+          <div className="history-popover" role="dialog" aria-label="Session history">
+          <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
+          {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
+            <button type="button" className="history-item" key={entry.id} onClick={async () => {
+              setHistoryOpen(false);
+              const hasScreen = !!entry.session.screenName;
+              const isPlainSsh = entry.session.kind === 'ssh' && !hasScreen;
+              if (hasScreen || entry.session.backend === 'screen') {
+                setSidebarTab('screens');
+                const screenSource = entry.session.screenName || entry.session.name;
+                const remoteMatch = sessions.find((s) => s.kind === 'ssh' && s.screenName === screenSource);
+                const localMatch = sessions.find((s) => s.screenName === screenSource && s.kind === 'local');
+                if (remoteMatch) {
+                  claimSession(remoteMatch);
+                  await attach(remoteMatch);
+                  setStatus(`Reconnecting to ${remoteMatch.name}…`);
+                  return;
+                }
+                if (localMatch) {
+                  claimSession(localMatch);
+                  await attach(localMatch);
+                  setStatus(`Reconnecting to ${localMatch.name}…`);
+                  return;
+                }
+                const currentApi = api();
+                if (!currentApi) return;
+                const known = knownConnections.find((c) => (entry.session.host || '').includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(entry.session.host || ''));
+                if (known) {
+                  await attachRemoteScreen({ ...entry.session, screenName: screenSource, host: known.hostName || known.alias } as any, known);
+                  return;
+                }
+                if (entry.session.host) {
+                  const target = entry.session.host;
+                  const newSession = await currentApi.createSshSession({ target, name: entry.session.name });
+                  setSessions((current) => [...current, newSession]);
+                  claimSession(newSession);
+                  setFocusedSessionId(newSession.id);
+                  setMaximizedSessionId(null);
+                  setLayout(layoutForSessionCount(workspaceSessions.length + 1));
+                  await attach(newSession);
+                  const screenSource = entry.session.screenName || entry.session.name;
+                  currentApi.write(newSession.id, `screen -x ${screenSource}\r`);
+                  setStatus(`Connected to ${newSession.name}`);
+                }
+                return;
+              }
+              if (isPlainSsh) {
+                const target = entry.session.host || entry.session.sshTarget || '';
+                const defaultName = target.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 40);
+                setSshTarget(target);
+                setSshName(entry.session.name && entry.session.name !== defaultName ? entry.session.name : '');
+                const currentApi = api();
+                if (!currentApi) return;
+                const connection = knownConnections.find((c) => (target.includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(target)));
+                const fallbackName = entry.session.name || defaultName;
+                const ssh = await currentApi.createSshSession({ target, name: fallbackName });
+                setSessions((current) => [...current, ssh]);
+                claimSession(ssh);
+                await attach(ssh);
+                setStatus(`Connected to ${ssh.name}`);
+                if (currentApi.discoverRemoteScreens && connection) {
+                  try {
+                    const remote = await currentApi.discoverRemoteScreens(connection);
+                    if (remote.length) {
+                      const screen = remote.find((s) => s.status === 'detached') ?? remote[0];
+                      await attachRemoteScreen(screen, connection);
+                      return;
+                    }
+                  } catch {
+                    // keep the SSH session even if remote screen discovery fails.
+                  }
+                }
+                return;
+              }
+              setSidebarTab('terminals');
+            }}>
+              <span className="history-main">
+                <span className="history-kind">{entry.event.toUpperCase()}</span>
+                <span className="history-text"><b>{entry.session.name}</b><small>{entry.session.host} · {entry.available ? 'available' : 'unavailable'}</small></span>
+              </span>
+              <button type="button" className="history-remove" aria-label="Remove history entry" onClick={(event) => { event.stopPropagation(); void api()?.removeHistory(entry.id).then(() => setHistoryEntries((current) => current.filter((item) => item.id !== entry.id))).catch(() => {}); }}>×</button>
+            </button>
+          )) : <p className="history-empty">No history entries yet.</p>}
+          <small className="history-note">Persisted session lifecycle from the main process.</small>
+          </div>
+        </div>
+      )}
+
       {modal && (
         <div className="modal-layer" onClick={() => setModal(null)}>
           <form
@@ -946,7 +1558,7 @@ function App() {
 
             {modal === 'local' && (
               <>
-                <p>Start a persistent named screen session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
+                <p>Start a local session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
                 <label>
                   Terminal name
                   <input
@@ -957,6 +1569,18 @@ function App() {
                     required
                   />
                 </label>
+                <label>
+                  Shell backend
+                  <select value={selectedBackend} onChange={(event) => { const value = event.target.value as LocalBackend; setSelectedBackend(value); }}>
+                    {localBackends.length ? localBackends.map((item) => <option key={item.backend} value={item.backend}>{item.label}</option>) : <option value="bash">bash</option>}
+                  </select>
+                </label>
+                {selectedBackend === 'wsl' && (
+                  <label>
+                    WSL distribution
+                    <input value={wslDistribution} onChange={(event) => setWslDistribution(event.target.value)} placeholder="Ubuntu" />
+                  </label>
+                )}
               </>
             )}
 

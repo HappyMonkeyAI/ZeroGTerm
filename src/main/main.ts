@@ -1,10 +1,13 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, session } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ScreenService } from './session-service.js';
+import { ScreenService, discoverShellBackends, parseWslDistributions } from './session-service.js';
+import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
+import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const service = new ScreenService();
+const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
+const service = new ScreenService({ onEvent: (event, session, available) => { void history.record(event, session, available); } });
 let win: BrowserWindow | undefined;
 
 // GPU is unstable under Toolbox/Wayland on this host; allow override.
@@ -60,13 +63,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 ipcMain.handle('sessions:list', () => service.list());
+ipcMain.handle('sessions:history', () => history.list());
+ipcMain.handle('sessions:historyRemove', (_event, entryId: string) => history.remove(entryId));
+
+ipcMain.handle('sessions:backends', () => discoverShellBackends());
+ipcMain.handle('sessions:wslDistributions', async () => {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { stdout } = await promisify(execFile)(process.platform === 'win32' ? 'wsl.exe' : 'wsl', ['--list', '--quiet']);
+    return parseWslDistributions(stdout);
+  } catch { return []; }
+});
 
 ipcMain.handle('sessions:createLocal', async (_event, request: unknown) => {
   if (!isRecord(request) || typeof request.name !== 'string') {
     throw new Error('createLocalSession requires { name: string }');
   }
   const cwd = typeof request.cwd === 'string' ? request.cwd : undefined;
-  return service.createLocal(request.name, cwd);
+  const backend = request.backend === 'bash' || request.backend === 'zsh' || request.backend === 'powershell' || request.backend === 'wsl' ? request.backend : undefined;
+  const wslDistribution = typeof request.wslDistribution === 'string' ? request.wslDistribution : undefined;
+  return service.createLocal({ name: request.name, cwd, ...(backend ? { backend } : {}), wslDistribution });
 });
 
 ipcMain.handle('sessions:createSsh', async (_event, request: unknown) => {
@@ -77,6 +94,25 @@ ipcMain.handle('sessions:createSsh', async (_event, request: unknown) => {
   return service.createSsh(request.target, name);
 });
 
+ipcMain.handle('connections:listKnown', () => listKnownConnections());
+ipcMain.handle('screens:discoverRemote', async (_event, input: unknown) => {
+  const connection = validateKnownConnection(input);
+  const command = buildRemoteScreenDiscoveryArgs(connection);
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  try {
+    const { stdout } = await promisify(execFile)(command.file, command.args);
+    return parseRemoteScreenList(stdout, connection.alias);
+  } catch (error: any) {
+    return { status: 'unavailable', host: connection.alias, reason: error?.code === 'ENOENT' ? 'ssh-unavailable' : 'host-unreachable', sessions: [] };
+  }
+});
+ipcMain.handle('screens:attachRemote', (_event, input: unknown, screenName: unknown) => {
+  const connection = validateKnownConnection(input);
+  if (typeof screenName !== 'string') throw new Error('screenName is required');
+  return buildRemoteScreenAttachArgs(connection, screenName);
+});
+
 ipcMain.handle('sessions:attach', (_event, id: unknown) => {
   if (typeof id !== 'string' || !id) throw new Error('attachSession requires a session id');
   return service.attach(
@@ -84,6 +120,11 @@ ipcMain.handle('sessions:attach', (_event, id: unknown) => {
     (data) => win?.webContents.send('terminal:data', id, data),
     (message) => win?.webContents.send('terminal:status', id, message)
   );
+});
+
+ipcMain.handle('sessions:close', (_event, id: unknown) => {
+  if (typeof id !== 'string' || !id) throw new Error('closeSession requires a session id');
+  service.close(id);
 });
 
 ipcMain.on('terminal:write', (_event, sessionId: unknown, data: unknown) => {
@@ -109,6 +150,12 @@ ipcMain.handle('ai:suggest', () => ({
 }));
 
 app.whenReady().then(() => {
+  // Voice input captures the local microphone only. Electron denies all
+  // permission requests unless a handler answers, so grant media explicitly.
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'media');
+  });
+
   // Keep the normal window chrome, but let the ZeroG UI occupy the full
   // client area instead of showing Electron's default File/Edit/etc. menu.
   Menu.setApplicationMenu(null);

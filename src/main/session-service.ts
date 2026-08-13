@@ -3,13 +3,18 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import type { SessionInfo } from '../shared/types.js';
+import type { CreateLocalRequest, SessionBackend, SessionInfo, ShellBackend } from '../shared/types.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,48}$/;
-/** host, user@host, host:port, user@host:port — no shell metacharacters. */
-const SSH_TARGET = /^(?:([A-Za-z0-9._-]+)@)?([A-Za-z0-9.-]+)(?::(\d{1,5}))?$/;
+/**
+ * host, user@host, host:port, user@host:port — no shell metacharacters.
+ * Host and user must start alphanumeric: a leading '-' would be parsed by
+ * ssh's getopt as an option, and `-Fsome.cfg` can point ssh at an attacker
+ * -chosen config file (hence ProxyCommand) without any shell involvement.
+ */
+const SSH_TARGET = /^(?:([A-Za-z0-9][A-Za-z0-9._-]*)@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::(\d{1,5}))?$/;
 
 export type PtyHandle = {
   write: (data: string) => void;
@@ -46,8 +51,33 @@ export function validateSshTarget(input: string): { target: string; args: string
   const destination = user ? `${user}@${host}` : host;
   const args = ['-tt'];
   if (portText) args.push('-p', portText);
-  args.push(destination);
+  // '--' ends option parsing, so the destination can never be read as a flag.
+  args.push('--', destination);
   return { target: value, args };
+}
+
+export function parseWslDistributions(output: string): string[] {
+  return output.split(/\r?\n/).slice(1).map((line) => line.replace(/^\*?\s*/, '').trim())
+    .map((line) => line.split(/\s{2,}/)[0]).filter((name) => /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(name));
+}
+
+export function shellBackendArgs(backend: SessionBackend, distribution?: string): ShellBackend {
+  if (backend === 'wsl') {
+    if (distribution && !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(distribution.trim())) throw new Error('Invalid WSL distribution name.');
+    return { backend, executable: process.platform === 'win32' ? 'wsl.exe' : 'wsl', args: distribution ? ['-d', distribution.trim()] : [], label: distribution ? `WSL · ${distribution.trim()}` : 'WSL', wslDistribution: distribution?.trim() };
+  }
+  if (backend === 'powershell') return { backend, executable: process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', args: [], label: 'PowerShell' };
+  if (backend === 'zsh') return { backend, executable: 'zsh', args: [], label: 'zsh' };
+  return { backend: 'bash', executable: 'bash', args: [], label: 'bash' };
+}
+
+export async function discoverShellBackends(): Promise<ShellBackend[]> {
+  const result: ShellBackend[] = [shellBackendArgs('bash')];
+  for (const backend of ['powershell', 'wsl'] as const) {
+    const candidate = shellBackendArgs(backend);
+    try { await execFileAsync(candidate.executable, backend === 'wsl' ? ['--status'] : ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']); result.push(candidate); } catch { /* unavailable */ }
+  }
+  return result;
 }
 
 export function parseScreenList(output: string): SessionInfo[] {
@@ -68,7 +98,11 @@ export function parseScreenList(output: string): SessionInfo[] {
           cwd: homedir(),
           status: attached ? 'connected' : 'detached',
           lastSeen: new Date().toISOString(),
-          persistence: 'screen' as const
+          persistence: 'screen' as const,
+          backend: 'screen' as const,
+          scope: 'local' as const,
+          source: 'discovered' as const,
+          screenName: name
         }
       ];
     });
@@ -86,6 +120,9 @@ export class ScreenService {
   private ptys = new Map<string, SessionPty>();
   private sshSessions = new Map<string, SessionInfo>();
   private fallbackLocalSessions = new Map<string, SessionInfo>();
+  private readonly onEvent?: (event: 'created' | 'attached' | 'detached' | 'closed' | 'reconnect-failed', session: SessionInfo, available: boolean) => void;
+
+  constructor(options: { onEvent?: ScreenService['onEvent'] } = {}) { this.onEvent = options.onEvent; }
 
   async available(): Promise<boolean> {
     try {
@@ -128,33 +165,23 @@ export class ScreenService {
     }
   }
 
-  async createLocal(name: string, cwd = homedir()): Promise<SessionInfo> {
-    const safeName = validateSessionName(name);
+  async createLocal(nameOrRequest: string | CreateLocalRequest, cwd = homedir()): Promise<SessionInfo> {
+    const request = typeof nameOrRequest === 'string' ? { name: nameOrRequest, cwd } : nameOrRequest;
+    const safeName = validateSessionName(request.name);
+    const backend = request.backend ?? 'bash';
+    const shell = shellBackendArgs(backend, request.wslDistribution);
+    const requestedCwd = request.cwd ?? homedir();
+    if (backend !== 'bash' && !(await executableAvailable(shell.executable))) throw new Error(`${shell.label} is not installed or unavailable.`);
     if (!(await this.available())) {
-      const fallback: SessionInfo = {
-        id: `local:${safeName}`,
-        name: safeName,
-        kind: 'local',
-        host: 'local',
-        cwd,
-        status: 'detached',
-        lastSeen: new Date().toISOString(),
-        persistence: 'process'
-      };
+      const fallback: SessionInfo = { id: `local:${safeName}`, name: safeName, kind: 'local', host: 'local', cwd: requestedCwd, status: 'detached', lastSeen: new Date().toISOString(), persistence: 'process', backend, scope: 'local', source: 'active', wslDistribution: shell.wslDistribution };
       this.fallbackLocalSessions.set(fallback.id, fallback);
+      this.onEvent?.('created', fallback, true);
       return fallback;
     }
-    await execFileAsync('screen', ['-dmS', safeName, 'bash'], { cwd });
-    return {
-      id: `local:${safeName}`,
-      name: safeName,
-      kind: 'local',
-      host: 'local',
-      cwd,
-      status: 'detached',
-      lastSeen: new Date().toISOString(),
-      persistence: 'screen'
-    };
+    await execFileAsync('screen', ['-dmS', safeName, shell.executable, ...shell.args], { cwd: requestedCwd });
+    const session: SessionInfo = { id: `local:${safeName}`, name: safeName, kind: 'local', host: 'local', cwd: requestedCwd, status: 'detached', lastSeen: new Date().toISOString(), persistence: 'screen', backend: 'screen', scope: 'local', source: 'active', screenName: safeName, wslDistribution: shell.wslDistribution };
+    this.onEvent?.('created', session, true);
+    return session;
   }
 
   async createSsh(targetInput: string, name?: string): Promise<SessionInfo> {
@@ -168,9 +195,13 @@ export class ScreenService {
       cwd: '~',
       status: 'detached',
       lastSeen: new Date().toISOString(),
-      sshTarget: target
+      sshTarget: target,
+      backend: 'ssh',
+      scope: 'remote',
+      source: 'active'
     };
     this.sshSessions.set(session.id, session);
+    this.onEvent?.('created', session, true);
     return session;
   }
 
@@ -183,11 +214,16 @@ export class ScreenService {
       if (fallback) {
         fallback.status = 'connected';
         fallback.lastSeen = new Date().toISOString();
-        this.spawnCommand(id, 'bash', [], onData, onExit, fallback.cwd);
+        const shell = shellBackendArgs(fallback.backend ?? 'bash', fallback.wslDistribution);
+        this.spawnCommand(id, shell.executable, shell.args, onData, onExit, fallback.cwd);
+        this.onEvent?.('attached', fallback, true);
         return { ...fallback };
       }
-      const name = id.slice('local:'.length);
+      // Session ids cross the IPC boundary from the renderer, so re-validate
+      // rather than trusting that createLocal produced this one.
+      const name = validateSessionName(id.slice('local:'.length));
       this.spawnCommand(id, 'screen', ['-x', name], onData, onExit);
+      this.onEvent?.('attached', existing, true);
       return { ...existing, status: 'connected', persistence: 'screen' };
     }
 
@@ -198,7 +234,14 @@ export class ScreenService {
     const { args } = validateSshTarget(session.sshTarget);
     session.status = 'connected';
     session.lastSeen = new Date().toISOString();
-    this.spawnCommand(id, 'ssh', args, onData, onExit);
+    try {
+      this.spawnCommand(id, 'ssh', args, onData, onExit);
+    } catch (error) {
+      session.status = 'error';
+      this.onEvent?.('reconnect-failed', session, false);
+      throw error;
+    }
+    this.onEvent?.('attached', session, true);
     return { ...session };
   }
 
@@ -206,7 +249,7 @@ export class ScreenService {
     if (id.startsWith('local:')) {
       const fallback = this.fallbackLocalSessions.get(id);
       if (fallback) return fallback;
-      const name = id.slice('local:'.length);
+      const name = validateSessionName(id.slice('local:'.length));
       return {
         id,
         name,
@@ -255,9 +298,9 @@ export class ScreenService {
     proc.onExit(() => {
       this.ptys.delete(sessionId);
       const fallback = this.fallbackLocalSessions.get(sessionId);
-      if (fallback) fallback.status = 'detached';
+      if (fallback) { fallback.status = 'detached'; this.onEvent?.('detached', fallback, false); }
       const ssh = this.sshSessions.get(sessionId);
-      if (ssh) ssh.status = 'detached';
+      if (ssh) { ssh.status = 'detached'; this.onEvent?.('detached', ssh, false); }
       onExit(
         fallback
           ? 'Terminal detached. This process-only local session will not survive app exit; install screen for persistence.'
@@ -282,4 +325,19 @@ export class ScreenService {
   detachAll(): void {
     for (const sessionId of this.ptys.keys()) this.detach(sessionId);
   }
+
+  /**
+   * Close a pane's session: detach its PTY and drop transient bookkeeping.
+   * Screen-backed sessions are deliberately left running so they remain
+   * discoverable via `screen -ls`; SSH and process-only sessions end.
+   */
+  close(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    this.detach(sessionId);
+    this.sshSessions.delete(sessionId);
+    this.fallbackLocalSessions.delete(sessionId);
+    this.onEvent?.('closed', session, false);
+  }
 }
+
+async function executableAvailable(executable: string): Promise<boolean> { try { await execFileAsync(executable, ['--version']); return true; } catch { return false; } }
