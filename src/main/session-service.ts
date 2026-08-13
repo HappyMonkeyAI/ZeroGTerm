@@ -16,6 +16,21 @@ const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,48}$/;
  */
 const SSH_TARGET = /^(?:([A-Za-z0-9][A-Za-z0-9._-]*)@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::(\d{1,5}))?$/;
 
+/** The slice of node-pty's process this service actually uses. */
+export type PtyProcess = {
+  write: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  kill: () => void;
+  onData: (listener: (data: string) => void) => void;
+  onExit: (listener: () => void) => void;
+};
+
+export type SpawnPty = (
+  file: string,
+  args: string[],
+  options: { name: string; cols: number; rows: number; cwd: string; env: NodeJS.ProcessEnv }
+) => PtyProcess;
+
 export type PtyHandle = {
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;
@@ -71,11 +86,35 @@ export function shellBackendArgs(backend: SessionBackend, distribution?: string)
   return { backend: 'bash', executable: 'bash', args: [], label: 'bash' };
 }
 
-export async function discoverShellBackends(): Promise<ShellBackend[]> {
+/** Does this shell actually run here? Starts the real binary, so it is slow. */
+export async function probeShellBackend(candidate: ShellBackend): Promise<boolean> {
+  try {
+    await execFileAsync(
+      candidate.executable,
+      candidate.backend === 'wsl' ? ['--status'] : ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * bash is assumed present; the optional backends are included only when the
+ * probe says they run.
+ *
+ * The probe is injectable so tests can exercise the filtering without starting
+ * real processes. GitHub's ubuntu runners ship pwsh, so the live probe is not
+ * a fast ENOENT there — it cold-starts PowerShell, which intermittently
+ * exceeded vitest's 5s default and failed CI on unrelated pull requests.
+ */
+export async function discoverShellBackends(
+  isAvailable: (candidate: ShellBackend) => Promise<boolean> = probeShellBackend
+): Promise<ShellBackend[]> {
   const result: ShellBackend[] = [shellBackendArgs('bash')];
   for (const backend of ['powershell', 'wsl'] as const) {
     const candidate = shellBackendArgs(backend);
-    try { await execFileAsync(candidate.executable, backend === 'wsl' ? ['--status'] : ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']); result.push(candidate); } catch { /* unavailable */ }
+    if (await isAvailable(candidate)) result.push(candidate);
   }
   return result;
 }
@@ -121,8 +160,13 @@ export class ScreenService {
   private sshSessions = new Map<string, SessionInfo>();
   private fallbackLocalSessions = new Map<string, SessionInfo>();
   private readonly onEvent?: (event: 'created' | 'attached' | 'detached' | 'closed' | 'reconnect-failed', session: SessionInfo, available: boolean) => void;
+  /** Injectable so tests can exercise routing and teardown without a real shell. */
+  private readonly spawnPty: SpawnPty;
 
-  constructor(options: { onEvent?: ScreenService['onEvent'] } = {}) { this.onEvent = options.onEvent; }
+  constructor(options: { onEvent?: ScreenService['onEvent']; spawnPty?: SpawnPty } = {}) {
+    this.onEvent = options.onEvent;
+    this.spawnPty = options.spawnPty ?? ((file, args, ptyOptions) => loadPty().spawn(file, args, ptyOptions));
+  }
 
   async available(): Promise<boolean> {
     try {
@@ -274,8 +318,7 @@ export class ScreenService {
     onExit: (message: string) => void,
     cwd = homedir()
   ): void {
-    const pty = loadPty();
-    const proc = pty.spawn(file, args, {
+    const proc = this.spawnPty(file, args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 32,

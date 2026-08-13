@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { createFakePty } from './helpers/fake-pty';
 import { ScreenService, discoverShellBackends, parseScreenList, parseWslDistributions, shellBackendArgs, validateSessionName, validateSshTarget } from '../src/main/session-service';
 
 const execFileAsync = promisify(execFile);
@@ -24,9 +25,37 @@ describe('screen session contract', () => {
   });
 
   it('discovers only installed optional shell backends', async () => {
+    // Injected probe: the live one cold-starts pwsh, which is present on CI's
+    // ubuntu runners and intermittently blew the 5s timeout.
+    const seen: string[] = [];
+    const onlyWsl = async (candidate: { backend: string }) => {
+      seen.push(candidate.backend);
+      return candidate.backend === 'wsl';
+    };
+    const backends = await discoverShellBackends(onlyWsl);
+
+    expect(backends.map((item) => item.backend)).toEqual(['bash', 'wsl']);
+    // bash is assumed present rather than probed; only the optional two are.
+    expect(seen).toEqual(['powershell', 'wsl']);
+  });
+
+  it('returns bash alone when no optional backend is installed', async () => {
+    const backends = await discoverShellBackends(async () => false);
+    expect(backends.map((item) => item.backend)).toEqual(['bash']);
+  });
+
+  it('includes every optional backend the probe accepts', async () => {
+    const backends = await discoverShellBackends(async () => true);
+    expect(backends.map((item) => item.backend)).toEqual(['bash', 'powershell', 'wsl']);
+  });
+
+  // Opt in with ZEROG_LIVE_SHELL_PROBE=1. Kept out of the default run because
+  // it starts real shells, so its duration depends on the host.
+  it.runIf(process.env.ZEROG_LIVE_SHELL_PROBE === '1')('probes the real shells on this host', async () => {
     const backends = await discoverShellBackends();
     expect(backends.some((item) => item.backend === 'bash')).toBe(true);
-  });
+  }, 30000);
+
   it('builds SSH arguments without shell interpolation', () => {
     expect(validateSshTarget('dev@example.com:2222')).toEqual({ target: 'dev@example.com:2222', args: ['-tt', '-p', '2222', '--', 'dev@example.com'] });
     expect(() => validateSshTarget('dev@example.com; touch /tmp/pwned')).toThrow();
@@ -51,28 +80,29 @@ describe('screen session contract', () => {
   });
 
   it('routes input and output independently for two attached sessions', async () => {
-    const service = new ScreenService();
-    const first = await service.createLocal(`first-${Date.now()}`);
-    const second = await service.createLocal(`second-${Date.now()}`);
+    // SSH sessions rather than local ones: createLocal shells out to `screen`
+    // where it is installed, which would put a real process back in the test.
+    const pty = createFakePty();
+    const service = new ScreenService({ spawnPty: pty.spawn });
+    const first = await service.createSsh('first.example.com', 'first-routing');
+    const second = await service.createSsh('second.example.com', 'second-routing');
     let firstOutput = '';
     let secondOutput = '';
 
     service.attach(first.id, (data) => { firstOutput += data; }, () => undefined);
     service.attach(second.id, (data) => { secondOutput += data; }, () => undefined);
-    service.write(first.id, "printf 'FIRST_SESSION_OK\\n'\r");
-    service.write(second.id, "printf 'SECOND_SESSION_OK\\n'\r");
-
-    const deadline = Date.now() + 3000;
-    while ((!firstOutput.includes('FIRST_SESSION_OK') || !secondOutput.includes('SECOND_SESSION_OK')) && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    service.write(first.id, 'FIRST_INPUT');
+    service.write(second.id, 'SECOND_INPUT');
+    pty.spawned[0].emit('FIRST_SESSION_OK');
+    pty.spawned[1].emit('SECOND_SESSION_OK');
     service.detachAll();
 
-    expect(firstOutput).toContain('FIRST_SESSION_OK');
-    expect(firstOutput).not.toContain('SECOND_SESSION_OK');
-    expect(secondOutput).toContain('SECOND_SESSION_OK');
-    expect(secondOutput).not.toContain('FIRST_SESSION_OK');
-  }, 5000);
+    expect(firstOutput).toBe('FIRST_SESSION_OK');
+    expect(secondOutput).toBe('SECOND_SESSION_OK');
+    expect(pty.spawned[0].writes).toEqual(['FIRST_INPUT']);
+    expect(pty.spawned[1].writes).toEqual(['SECOND_INPUT']);
+    expect(pty.spawned.map((item) => item.killed)).toEqual([true, true]);
+  });
 
   it('close removes transient SSH bookkeeping so the session no longer lists', async () => {
     const service = new ScreenService();
@@ -83,26 +113,34 @@ describe('screen session contract', () => {
     expect((await service.list()).some((item) => item.id === session.id)).toBe(false);
   });
 
-  it('close detaches the pane PTY without killing a screen-backed session', async () => {
-    const service = new ScreenService();
-    const name = `close-${Date.now()}`;
-    const session = await service.createLocal(name);
+  it('close kills the pane PTY and drops transient bookkeeping', async () => {
+    const pty = createFakePty();
+    const service = new ScreenService({ spawnPty: pty.spawn });
+    const session = await service.createSsh('close.example.com', 'close-pane');
     let exited = false;
     service.attach(session.id, () => undefined, () => { exited = true; });
 
     service.close(session.id);
-    const deadline = Date.now() + 3000;
-    while (!exited && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    expect(exited).toBe(true);
 
-    const stillListed = (await service.list()).some((item) => item.id === session.id);
-    if (session.persistence === 'screen') {
-      expect(stillListed).toBe(true);
-      await execFileAsync('screen', ['-S', name, '-X', 'quit']);
-    } else {
-      expect(stillListed).toBe(false);
-    }
-  }, 5000);
+    // The fake exits synchronously, so no polling: closing must kill the pty,
+    // surface the exit to the pane, and forget the session.
+    expect(pty.spawned[0].killed).toBe(true);
+    expect(exited).toBe(true);
+    expect((await service.list()).some((item) => item.id === session.id)).toBe(false);
+  });
+
+  // Covers the screen-backed half of close(): the pane detaches but the screen
+  // session survives. Needs a real `screen`, so it is opt-in rather than a
+  // source of environment-dependent CI failures.
+  it.runIf(process.env.ZEROG_LIVE_SCREEN === '1')('close leaves a screen-backed session alive', async () => {
+    const service = new ScreenService();
+    const name = `close-${Date.now()}`;
+    const session = await service.createLocal(name);
+    expect(session.persistence).toBe('screen');
+    service.attach(session.id, () => undefined, () => undefined);
+
+    service.close(session.id);
+    expect((await service.list()).some((item) => item.id === session.id)).toBe(true);
+    await execFileAsync('screen', ['-S', name, '-X', 'quit']);
+  }, 30000);
 });
