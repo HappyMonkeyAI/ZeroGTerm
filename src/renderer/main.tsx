@@ -602,6 +602,11 @@ function App() {
           setModal(null);
           return;
         }
+        if (historyOpen) {
+          event.preventDefault();
+          setHistoryOpen(false);
+          return;
+        }
       }
 
       if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
@@ -633,7 +638,7 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overview, approval, modal, voice.status, workspaces, activeWorkspace, workspaceSessions]);
+  }, [overview, approval, modal, historyOpen, voice.status, workspaces, activeWorkspace, workspaceSessions]);
 
   const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
   // Keep every workspace terminal mounted while changing layouts. Hiding a
@@ -1369,9 +1374,20 @@ function App() {
         </div>
       )}
 
+      {/* The history backdrop is decorative: dismissal is also available on
+          Escape and the close button, so it carries no keyboard handler of its
+          own. Closing only on a direct hit removes the need for the popover to
+          stop propagation, which was a click handler on a non-interactive
+          dialog element. */}
       {historyOpen && (
-        <div className="history-layer" onClick={() => setHistoryOpen(false)}>
-          <div className="history-popover" role="dialog" aria-label="Session history" onClick={(event) => event.stopPropagation()}>
+        <div
+          className="history-layer"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setHistoryOpen(false);
+          }}
+        >
+          <div className="history-popover" role="dialog" aria-label="Session history">
           <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
             <button type="button" className="history-item" key={entry.id} onClick={async () => {
