@@ -28,8 +28,26 @@ describe('screen session contract', () => {
     expect(backends.some((item) => item.backend === 'bash')).toBe(true);
   });
   it('builds SSH arguments without shell interpolation', () => {
-    expect(validateSshTarget('dev@example.com:2222')).toEqual({ target: 'dev@example.com:2222', args: ['-tt', '-p', '2222', 'dev@example.com'] });
+    expect(validateSshTarget('dev@example.com:2222')).toEqual({ target: 'dev@example.com:2222', args: ['-tt', '-p', '2222', '--', 'dev@example.com'] });
     expect(() => validateSshTarget('dev@example.com; touch /tmp/pwned')).toThrow();
+  });
+
+  it('rejects SSH targets that ssh would parse as options', () => {
+    // `ssh -F<file>` reads an attacker-chosen config, which can set ProxyCommand.
+    expect(() => validateSshTarget('-Fevil.cfg')).toThrow();
+    expect(() => validateSshTarget('-oProxyCommand')).toThrow();
+    expect(() => validateSshTarget('-4')).toThrow();
+    expect(() => validateSshTarget('-bad@example.com')).toThrow();
+    // The destination is also fenced off from option parsing.
+    expect(validateSshTarget('example.com').args).toEqual(['-tt', '--', 'example.com']);
+  });
+
+  it('revalidates session ids arriving from the renderer', () => {
+    const service = new ScreenService();
+    const attachBadId = (id: string) => () => service.attach(id, () => undefined, () => undefined);
+    expect(attachBadId('local:-Fevil.cfg')).toThrow();
+    expect(attachBadId('local:-X')).toThrow();
+    expect(attachBadId('local:a;rm -rf /')).toThrow();
   });
 
   it('routes input and output independently for two attached sessions', async () => {

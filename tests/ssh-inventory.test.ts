@@ -32,6 +32,15 @@ describe('SSH config inventory', () => {
     expect(() => validateKnownConnection({ alias: 'dev;rm', hostName: 'example.com' })).toThrow();
     expect(() => validateKnownConnection({ alias: 'dev', hostName: 'example.com', port: 0 })).toThrow();
   });
+
+  it('rejects connection fields that ssh would parse as options', () => {
+    // user is concatenated into `user@host`, so a leading '-' makes the whole
+    // destination an option: `-Fevil.cfg@host` reads an attacker-chosen config.
+    expect(() => validateKnownConnection({ alias: 'dev', hostName: 'example.com', user: '-Fevil.cfg' })).toThrow();
+    expect(() => validateKnownConnection({ alias: '-Fevil.cfg' })).toThrow();
+    expect(() => validateKnownConnection({ alias: 'dev', hostName: '-Fevil.cfg' })).toThrow();
+    expect(buildRemoteScreenDiscoveryArgs({ alias: 'dev', hostName: 'example.com', user: 'alice' }).args[0]).toBe('alice@example.com');
+  });
 });
 
 describe('remote screen contract', () => {

@@ -8,8 +8,13 @@ import type { CreateLocalRequest, SessionBackend, SessionInfo, ShellBackend } fr
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,48}$/;
-/** host, user@host, host:port, user@host:port — no shell metacharacters. */
-const SSH_TARGET = /^(?:([A-Za-z0-9._-]+)@)?([A-Za-z0-9.-]+)(?::(\d{1,5}))?$/;
+/**
+ * host, user@host, host:port, user@host:port — no shell metacharacters.
+ * Host and user must start alphanumeric: a leading '-' would be parsed by
+ * ssh's getopt as an option, and `-Fsome.cfg` can point ssh at an attacker
+ * -chosen config file (hence ProxyCommand) without any shell involvement.
+ */
+const SSH_TARGET = /^(?:([A-Za-z0-9][A-Za-z0-9._-]*)@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::(\d{1,5}))?$/;
 
 export type PtyHandle = {
   write: (data: string) => void;
@@ -46,7 +51,8 @@ export function validateSshTarget(input: string): { target: string; args: string
   const destination = user ? `${user}@${host}` : host;
   const args = ['-tt'];
   if (portText) args.push('-p', portText);
-  args.push(destination);
+  // '--' ends option parsing, so the destination can never be read as a flag.
+  args.push('--', destination);
   return { target: value, args };
 }
 
@@ -213,7 +219,9 @@ export class ScreenService {
         this.onEvent?.('attached', fallback, true);
         return { ...fallback };
       }
-      const name = id.slice('local:'.length);
+      // Session ids cross the IPC boundary from the renderer, so re-validate
+      // rather than trusting that createLocal produced this one.
+      const name = validateSessionName(id.slice('local:'.length));
       this.spawnCommand(id, 'screen', ['-x', name], onData, onExit);
       this.onEvent?.('attached', existing, true);
       return { ...existing, status: 'connected', persistence: 'screen' };
@@ -241,7 +249,7 @@ export class ScreenService {
     if (id.startsWith('local:')) {
       const fallback = this.fallbackLocalSessions.get(id);
       if (fallback) return fallback;
-      const name = id.slice('local:'.length);
+      const name = validateSessionName(id.slice('local:'.length));
       return {
         id,
         name,
