@@ -18,6 +18,16 @@ describe('screen session contract', () => {
     expect(sessions.map(({ id, name }) => ({ id, name }))).toEqual([{ id: 'local:project-1', name: 'project-1' }, { id: 'local:other', name: 'other' }]);
   });
 
+  it('gives shell executables a .exe suffix on Windows', () => {
+    // node-pty on Windows does not apply PATHEXT: `bash` fails with
+    // "File not found:" while `bash.exe` spawns. Every backend must agree.
+    const expected = process.platform === 'win32';
+    for (const backend of ['bash', 'zsh', 'powershell', 'wsl'] as const) {
+      const { executable } = shellBackendArgs(backend);
+      expect(executable.endsWith('.exe')).toBe(expected);
+    }
+  });
+
   it('parses WSL distributions and rejects unsafe argv values', () => {
     expect(parseWslDistributions('NAME\nUbuntu\n* Debian\n')).toEqual(['Ubuntu', 'Debian']);
     expect(shellBackendArgs('wsl', 'Ubuntu').args).toEqual(['-d', 'Ubuntu']);

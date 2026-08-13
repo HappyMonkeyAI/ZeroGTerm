@@ -76,14 +76,24 @@ export function parseWslDistributions(output: string): string[] {
     .map((line) => line.split(/\s{2,}/)[0]).filter((name) => /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(name));
 }
 
+/**
+ * node-pty on Windows does not apply PATHEXT: spawning `bash` fails with
+ * "File not found:" even when bash.exe is on PATH, while `bash.exe` works.
+ * The wsl and powershell branches below already account for this; bash and zsh
+ * did not, which made every local terminal fail to attach on Windows.
+ */
+function winExe(command: string): string {
+  return process.platform === 'win32' ? `${command}.exe` : command;
+}
+
 export function shellBackendArgs(backend: SessionBackend, distribution?: string): ShellBackend {
   if (backend === 'wsl') {
     if (distribution && !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(distribution.trim())) throw new Error('Invalid WSL distribution name.');
     return { backend, executable: process.platform === 'win32' ? 'wsl.exe' : 'wsl', args: distribution ? ['-d', distribution.trim()] : [], label: distribution ? `WSL · ${distribution.trim()}` : 'WSL', wslDistribution: distribution?.trim() };
   }
   if (backend === 'powershell') return { backend, executable: process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', args: [], label: 'PowerShell' };
-  if (backend === 'zsh') return { backend, executable: 'zsh', args: [], label: 'zsh' };
-  return { backend: 'bash', executable: 'bash', args: [], label: 'bash' };
+  if (backend === 'zsh') return { backend, executable: winExe('zsh'), args: [], label: 'zsh' };
+  return { backend: 'bash', executable: winExe('bash'), args: [], label: 'bash' };
 }
 
 /** Does this shell actually run here? Starts the real binary, so it is slow. */
