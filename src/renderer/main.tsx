@@ -5,9 +5,30 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, TerminalApi } from '../shared/types';
-type LocalBackend = 'bash' | 'zsh' | 'powershell' | 'wsl';
-import { MAX_UTTERANCE_SECONDS, VoiceRecorder, isMostlySilence } from './voice';
+import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
+import { attachTerminalClipboard } from './terminal-clipboard';
+import { useBackdropDismiss } from './backdrop-dismiss';
+import {
+  backendLabel,
+  fontStack,
+  loadSettings,
+  resetSection,
+  resolveDefaultBackend,
+  saveSettings,
+  updateSection,
+  type AppearanceSettings,
+  type Layout,
+  type LocalBackend,
+  type Settings,
+  type SettingsSection,
+  type SettingsStorage,
+  type TerminalSettings,
+  type Theme
+} from './settings';
+import { SettingsPanel, type SpeechTestState } from './settings-panel';
+import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
+import { SpeechClient, type SpeechWorker } from './speech';
 
 /** Settle once output has been quiet this long — the primary readiness signal. */
 const PROMPT_QUIET_MS = 150;
@@ -18,9 +39,7 @@ const PROMPT_BUFFER_CHARS = 512;
 
 type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 
-type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
 type ModalKind = 'workspace' | 'local' | 'ssh' | null;
-type Theme = 'dark' | 'light';
 type SidebarTab = 'terminals' | 'screens' | 'connections';
 
 type Workspace = {
@@ -30,6 +49,20 @@ type Workspace = {
 };
 
 const api = () => window.zerog;
+
+/**
+ * localStorage, or nothing when the renderer refuses to hand it over.
+ *
+ * Touching window.localStorage can itself throw when storage is disabled, so
+ * settings has to be able to run without any store at all.
+ */
+function browserStorage(): SettingsStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 function Icon({ name, className = '' }: { name: string; className?: string }) {
   const common = {
@@ -184,15 +217,13 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
 function SessionRow({ session, active = false, ghosted = false, onClick }: { session: SessionInfo; active?: boolean; ghosted?: boolean; onClick: () => void }) {
   const backend = session.kind === 'ssh'
     ? `SSH · ${session.host}`
-    : session.backend === 'powershell'
-      ? `PowerShell · ${session.cwd}`
-      : session.backend === 'wsl'
-        ? `WSL${session.wslDistribution ? ` · ${session.wslDistribution}` : ''} · ${session.cwd}`
-        : session.backend === 'zsh'
-          ? `zsh · ${session.cwd}`
-          : session.persistence === 'screen'
-            ? `screen · ${session.cwd}`
-            : `local · process only · ${session.cwd}`;
+    : session.backend === 'wsl'
+      ? `WSL${session.wslDistribution ? ` · ${session.wslDistribution}` : ''} · ${session.cwd}`
+      : session.backend && session.backend !== 'screen'
+        ? `${backendLabel(session.backend)} · ${session.cwd}`
+        : session.persistence === 'screen'
+          ? `screen · ${session.cwd}`
+          : `local · process only · ${session.cwd}`;
   return (
     <button type="button" className={`session-row ${active ? 'active' : ''} ${ghosted ? 'session-ghosted' : ''}`} onClick={onClick}>
       <span className={`status-dot ${session.status}`} />
@@ -205,33 +236,51 @@ function SessionRow({ session, active = false, ghosted = false, onClick }: { ses
 function sessionBackendTag(session: SessionInfo): string {
   if (session.kind === 'ssh') return 'SSH';
   if (session.backend === 'screen') return 'screen';
-  if (session.backend === 'powershell') return 'PowerShell';
-  if (session.backend === 'zsh') return 'zsh';
   if (session.backend === 'wsl') return session.wslDistribution ? `WSL · ${session.wslDistribution}` : 'WSL';
-  return 'bash';
+  // No backend means a session discovered from screen or history, which does not
+  // record which shell is inside it — naming a shell here would be a guess.
+  return session.backend ? backendLabel(session.backend) : 'local';
 }
 
-function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: string; focused?: boolean; onStatus: (message: string) => void; theme: Theme }) {
+function TerminalView({
+  sessionId,
+  focused,
+  onStatus,
+  appearance,
+  terminalSettings
+}: {
+  sessionId?: string;
+  focused?: boolean;
+  onStatus: (message: string) => void;
+  appearance: AppearanceSettings;
+  terminalSettings: TerminalSettings;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const statusRef = useRef(onStatus);
   statusRef.current = onStatus;
-  const themeRef = useRef(theme);
-  themeRef.current = theme;
+  // Settings are read through refs by the setup effect and the clipboard
+  // wiring: those run once per pane, but the user can change a setting at any
+  // time, and a pane must not keep behaving the way it was created.
+  const appearanceRef = useRef(appearance);
+  appearanceRef.current = appearance;
+  const terminalSettingsRef = useRef(terminalSettings);
+  terminalSettingsRef.current = terminalSettings;
+  const refitRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!ref.current) return;
     const host = ref.current;
     const terminal = new Terminal({
-      cursorBlink: true,
-      // System monospace first so first fit matches real glyphs (custom fonts may load late).
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-      fontSize: 13,
-      lineHeight: 1.2,
-      letterSpacing: 0,
-      scrollback: 10000,
+      cursorBlink: terminalSettingsRef.current.cursorBlink,
+      cursorStyle: terminalSettingsRef.current.cursorStyle,
+      fontFamily: fontStack(appearanceRef.current.font),
+      fontSize: appearanceRef.current.fontSize,
+      lineHeight: appearanceRef.current.lineHeight,
+      letterSpacing: appearanceRef.current.letterSpacing,
+      scrollback: terminalSettingsRef.current.scrollback,
       allowProposedApi: true,
-      theme: terminalTheme(themeRef.current),
+      theme: terminalTheme(appearanceRef.current.theme),
       convertEol: true,
     });
     const fit = new FitAddon();
@@ -265,6 +314,8 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
         fitFrame = requestAnimationFrame(resize);
       });
     };
+    // Exposed so the settings effect can refit after a font change resizes cells.
+    refitRef.current = scheduleFit;
 
     if (!currentApi) {
       scheduleFit();
@@ -292,52 +343,18 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
       if (sessionId) currentApi.write(sessionId, data);
     });
 
-    // Linux terminal conventions: Ctrl+Shift+C / Ctrl+Shift+V.
-    // Keep Ctrl+C as interrupt by only handling the Shift variants.
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (event.type !== 'keydown') return true;
-      const key = event.key.toLowerCase();
-      const mod = event.ctrlKey || event.metaKey;
-      if (!mod || !event.shiftKey) return true;
-
-      if (key === 'c') {
-        const selection = terminal.getSelection();
-        if (selection) {
-          void currentApi.copyText(selection).catch((error) => {
-            statusRef.current(error instanceof Error ? error.message : String(error));
-          });
-        }
-        return false;
-      }
-
-      if (key === 'v') {
-        void currentApi.readText()
-          .then((text) => {
-            if (!text) return;
-            // Prefer xterm paste so bracketed-paste mode is honored when available.
-            if (typeof terminal.paste === 'function') {
-              terminal.paste(text);
-            } else {
-              if (sessionId) currentApi.write(sessionId, text);
-            }
-          })
-          .catch((error) => {
-            statusRef.current(error instanceof Error ? error.message : String(error));
-          });
-        return false;
-      }
-
-      return true;
+    // Ctrl+Shift+C / Ctrl+Shift+V, copy-on-select, and OSC 52 so programs
+    // running in the pane can reach the system clipboard themselves.
+    const detachClipboard = attachTerminalClipboard({
+      terminal,
+      clipboard: currentApi,
+      onError: (message) => statusRef.current(message),
+      writeToPty: (text) => {
+        if (sessionId) currentApi.write(sessionId, text);
+      },
+      pasteEventTarget: host,
+      isCopyOnSelectEnabled: () => terminalSettingsRef.current.copyOnSelect
     });
-
-    if (typeof terminal.onSelectionChange === 'function') {
-      terminal.onSelectionChange(() => {
-        const selection = terminal.getSelection();
-        if (selection) {
-          void currentApi.copyText(selection).catch(() => undefined);
-        }
-      });
-    }
 
     const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(host);
@@ -366,23 +383,36 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
     return () => {
       disposed = true;
       cancelAnimationFrame(fitFrame);
+      detachClipboard();
       input.dispose();
       removeData();
       removeStatus();
       observer.disconnect();
       window.removeEventListener('resize', scheduleFit);
+      refitRef.current = null;
       terminalRef.current = null;
       terminal.dispose();
     };
   }, [sessionId]);
 
-  // Theme is a mutable xterm option. Rebuilding the Terminal to restyle it
-  // would dispose the renderer and drop the pane's scrollback — the same
-  // content loss the layout code deliberately avoids.
+  // Appearance and terminal behaviour are mutable xterm options. Rebuilding the
+  // Terminal to apply them would dispose the renderer and drop the pane's
+  // scrollback — the same content loss the layout code deliberately avoids.
   useEffect(() => {
     const terminal = terminalRef.current;
-    if (terminal) terminal.options.theme = terminalTheme(theme);
-  }, [theme]);
+    if (!terminal) return;
+    terminal.options.theme = terminalTheme(appearance.theme);
+    terminal.options.fontFamily = fontStack(appearance.font);
+    terminal.options.fontSize = appearance.fontSize;
+    terminal.options.lineHeight = appearance.lineHeight;
+    terminal.options.letterSpacing = appearance.letterSpacing;
+    terminal.options.scrollback = terminalSettings.scrollback;
+    terminal.options.cursorStyle = terminalSettings.cursorStyle;
+    terminal.options.cursorBlink = terminalSettings.cursorBlink;
+    // Font changes resize the cell, so the pane holds a different number of
+    // rows and columns than the pty was last told about.
+    refitRef.current?.();
+  }, [appearance, terminalSettings]);
 
   useEffect(() => {
     if (focused) terminalRef.current?.focus();
@@ -419,13 +449,10 @@ function makeWorkspace(name: string, sessionIds: string[] = []): Workspace {
 }
 
 function App() {
-  const [theme, setTheme] = useState<Theme>(() => {
-    try {
-      return window.localStorage.getItem('zerog-theme') === 'light' ? 'light' : 'dark';
-    } catch {
-      return 'dark';
-    }
-  });
+  // Read once, synchronously, so the first paint already uses the stored theme
+  // and font instead of flashing the defaults.
+  const [settings, setSettings] = useState<Settings>(() => loadSettings(browserStorage()));
+  const theme: Theme = settings.appearance.theme;
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
     const initial = makeWorkspace('Workspace');
@@ -435,14 +462,14 @@ function App() {
   const [active, setActive] = useState<SessionInfo | null>(null);
   const [status, setStatus] = useState('Ready');
   const [busy, setBusy] = useState(false);
-  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [overview, setOverview] = useState(false);
-  const [layout, setLayout] = useState<Layout>('stack');
+  const [layout, setLayout] = useState<Layout>(settings.sessions.defaultLayout);
   const [focusedSessionId, setFocusedSessionId] = useState<string>();
   const [maximizedSessionId, setMaximizedSessionId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState('Workspace');
@@ -451,26 +478,54 @@ function App() {
   const [sshTarget, setSshTarget] = useState('');
   const [approval, setApproval] = useState<{ command: string; explanation: string } | null>(null);
   const [voice, setVoice] = useState<{ status: VoiceStatus; sessionId: string | null }>({ status: 'idle', sessionId: null });
+  const [voiceReview, setVoiceReview] = useState<{ sessionId: string; text: string } | null>(null);
   const recorderRef = useRef<VoiceRecorder | null>(null);
-  const voiceWorkerRef = useRef<Worker | null>(null);
+  const speechRef = useRef<SpeechClient | null>(null);
   const voiceTargetRef = useRef<string | null>(null);
   const voiceLimitRef = useRef<number | undefined>(undefined);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [speechTest, setSpeechTest] = useState<SpeechTestState>({ status: 'idle' });
+  const speechTestRecorderRef = useRef<VoiceRecorder | null>(null);
+  const speechTestLimitRef = useRef<number | undefined>(undefined);
   const [localBackends, setLocalBackends] = useState<ShellBackend[]>([]);
-  const [selectedBackend, setSelectedBackend] = useState<LocalBackend>('bash');
-  const [wslDistribution, setWslDistribution] = useState<string>('');
+  const [selectedBackend, setSelectedBackend] = useState<LocalBackend>(settings.sessions.defaultBackend);
+  const [wslDistribution, setWslDistribution] = useState<string>(settings.sessions.defaultWslDistribution);
   const [wslDistributions, setWslDistributions] = useState<string[]>([]);
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [knownConnections, setKnownConnections] = useState<KnownConnection[]>([]);
   const [remoteScreenEntries, setRemoteScreenEntries] = useState<Array<{ session: SessionInfo; connection: KnownConnection }>>([]);
   const [remoteScreensLoading, setRemoteScreensLoading] = useState(false);
 
+  // Backdrop dismissal, gated on where the press started so that selecting
+  // text inside a dialog cannot close it. See backdrop-dismiss.ts.
+  const dismissModal = useBackdropDismiss(() => setModal(null));
+  const dismissApproval = useBackdropDismiss(() => setApproval(null));
+  const dismissOverview = useBackdropDismiss(() => setOverview(false));
+  const dismissHistory = useBackdropDismiss(() => setHistoryOpen(false));
+  const dismissSettings = useBackdropDismiss(() => setSettingsOpen(false));
+  const dismissVoiceReview = useBackdropDismiss(() => setVoiceReview(null));
+
+  // Every settings edit goes through updateSection, so a control cannot store a
+  // value the schema would reject, and every edit is persisted as it is made —
+  // there is no Save button to forget to press.
+  const changeSetting = useCallback(<K extends SettingsSection>(section: K, patch: Partial<Settings[K]>) => {
+    setSettings((current) => {
+      const next = updateSection(current, section, patch);
+      saveSettings(browserStorage(), next);
+      return next;
+    });
+  }, []);
+
+  const resetSettings = useCallback((section: SettingsSection) => {
+    setSettings((current) => {
+      const next = resetSection(current, section);
+      saveSettings(browserStorage(), next);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    try {
-      window.localStorage.setItem('zerog-theme', theme);
-    } catch {
-      // Theme still applies for this session when storage is unavailable.
-    }
   }, [theme]);
 
   const activeWorkspace = useMemo(
@@ -595,6 +650,16 @@ function App() {
           setStatus('Voice cancelled');
           return;
         }
+        if (settingsOpen) {
+          event.preventDefault();
+          setSettingsOpen(false);
+          return;
+        }
+        if (voiceReview) {
+          event.preventDefault();
+          setVoiceReview(null);
+          return;
+        }
         if (overview) {
           event.preventDefault();
           setOverview(false);
@@ -630,8 +695,7 @@ function App() {
       }
       if (key === 't') {
         event.preventDefault();
-        setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
-        setModal('local');
+        openSessionDialog('local');
       }
       if (key === 'l') {
         event.preventDefault();
@@ -643,10 +707,16 @@ function App() {
         event.preventDefault();
         setDrawerCollapsed((value) => !value);
       }
+      // Matched on code, not key: with Shift held, a comma reports as '<' on
+      // most layouts, so event.key would never equal ','.
+      if (event.code === 'Comma') {
+        event.preventDefault();
+        setSettingsOpen((value) => !value);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overview, approval, modal, historyOpen, voice.status, workspaces, activeWorkspace, workspaceSessions]);
+  }, [overview, approval, modal, historyOpen, settingsOpen, voiceReview, voice.status, workspaces, activeWorkspace, workspaceSessions]);
 
   const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
   // Keep every workspace terminal mounted while changing layouts. Hiding a
@@ -833,12 +903,23 @@ function App() {
     setModal('workspace');
   };
 
-  const openNewLocalTerminal = () => {
+  /**
+   * Open the new-session dialog on one of its tabs.
+   *
+   * Both tabs are prepared whichever one is asked for, because the other is now
+   * one click away: landing on SSH and switching to Local must not find a stale
+   * terminal name from the last time the dialog was open. Switching tabs itself
+   * touches no fields, so anything already typed on either side survives.
+   */
+  const openSessionDialog = (kind: SessionDialogKind, options?: { sshTarget?: string }) => {
     setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
-    setSelectedBackend('bash');
-    setWslDistribution('');
-    setModal('local');
+    setSelectedBackend(resolveDefaultBackend(settings.sessions.defaultBackend, localBackends));
+    setWslDistribution(settings.sessions.defaultWslDistribution);
+    if (options?.sshTarget !== undefined) setSshTarget(options.sshTarget);
+    setModal(kind);
   };
+
+  const openNewLocalTerminal = () => openSessionDialog('local');
 
   const renderScreensTab = () => {
     const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
@@ -938,35 +1019,25 @@ function App() {
     setMaximizedSessionId(next.id);
   };
 
-  const ensureVoiceWorker = () => {
-    if (!voiceWorkerRef.current) {
-      const worker = new Worker(new URL('./voice-worker.ts', import.meta.url), { type: 'module' });
-      worker.onmessage = (event) => {
-        const data = event.data as
-          | { type: 'loading'; progress: number | null }
-          | { type: 'result'; text: string }
-          | { type: 'error'; message: string };
-        if (data.type === 'result') {
-          const target = voiceTargetRef.current;
-          voiceTargetRef.current = null;
-          setVoice({ status: 'idle', sessionId: null });
-          if (data.text && target) {
-            api()?.write(target, data.text);
-            setStatus(`Voice: "${data.text}"`);
-          } else {
-            setStatus('Voice: nothing transcribed');
-          }
-        } else if (data.type === 'error') {
-          voiceTargetRef.current = null;
-          setVoice({ status: 'idle', sessionId: null });
-          setStatus(`Voice error: ${data.message}`);
-        } else if (data.type === 'loading' && typeof data.progress === 'number') {
-          setStatus(`Loading speech model… ${Math.round(data.progress)}%`);
-        }
-      };
-      voiceWorkerRef.current = worker;
+  // One speech client for the whole window: it owns the worker for the built-in
+  // engine and the request for the local-server engine, so the pane mic and the
+  // settings test always run whatever is configured right now.
+  const speechClient = () => {
+    speechRef.current ??= new SpeechClient({
+      // Worker's onmessage is typed around MessageEvent; the client only reads
+      // `.data`, so this narrowing cast is safe and stays at the boundary.
+      createWorker: () =>
+        new Worker(new URL('./voice-worker.ts', import.meta.url), { type: 'module' }) as unknown as SpeechWorker
+    });
+    return speechRef.current;
+  };
+
+  const reportSpeechProgress = (progress: { kind: 'loading'; progress: number | null } | { kind: 'notice'; message: string }) => {
+    if (progress.kind === 'notice') {
+      setStatus(progress.message);
+      return;
     }
-    return voiceWorkerRef.current;
+    if (progress.progress !== null) setStatus(`Loading speech model… ${Math.round(progress.progress)}%`);
   };
 
   const cancelVoice = () => {
@@ -986,13 +1057,34 @@ function App() {
     setVoice({ status: 'transcribing', sessionId: target });
     setStatus('Transcribing…');
     const audio = await recorder.stop();
-    if (!audio || isMostlySilence(audio)) {
+    if (!audio || isMostlySilence(audio, settings.speech.silenceThreshold)) {
       voiceTargetRef.current = null;
       setVoice({ status: 'idle', sessionId: null });
-      setStatus('Voice: no speech detected');
+      setStatus('Voice: no speech detected — lower the silence threshold in Settings if this is wrong');
       return;
     }
-    ensureVoiceWorker().postMessage({ type: 'transcribe', audio }, [audio.buffer]);
+    try {
+      const result = await speechClient().transcribe(audio, settings.speech, reportSpeechProgress);
+      voiceTargetRef.current = null;
+      setVoice({ status: 'idle', sessionId: null });
+      if (!result.text) {
+        setStatus('Voice: nothing transcribed');
+        return;
+      }
+      // Review mode holds the transcript in a dialog instead of typing it, for
+      // when a wrong word in a shell is worse than a second keystroke.
+      if (settings.ai.voiceInsert === 'review') {
+        setVoiceReview({ sessionId: target, text: result.text });
+        setStatus(`Voice: review "${result.text}"`);
+        return;
+      }
+      api()?.write(target, result.text);
+      setStatus(`Voice: "${result.text}"`);
+    } catch (error) {
+      voiceTargetRef.current = null;
+      setVoice({ status: 'idle', sessionId: null });
+      setStatus(`Voice error: ${error instanceof Error ? error.message : String(error)}`);
+    }
   };
 
   const toggleVoice = async (session: SessionInfo) => {
@@ -1001,6 +1093,11 @@ function App() {
       return;
     }
     if (voice.status !== 'idle') return;
+    // One microphone, one capture: the settings test and a pane cannot both hold it.
+    if (speechTest.status !== 'idle') {
+      setStatus('The speech test in Settings is using the microphone');
+      return;
+    }
     const recorder = new VoiceRecorder();
     try {
       await recorder.start();
@@ -1013,9 +1110,93 @@ function App() {
     setVoice({ status: 'listening', sessionId: session.id });
     setFocusedSessionId(session.id);
     window.clearTimeout(voiceLimitRef.current);
-    voiceLimitRef.current = window.setTimeout(() => void finishListening(), MAX_UTTERANCE_SECONDS * 1000);
+    voiceLimitRef.current = window.setTimeout(() => void finishListening(), settings.speech.maxUtteranceSeconds * 1000);
     setStatus(`Listening on ${session.name}… click the mic again or press Esc to finish`);
   };
+
+  const finishSpeechTest = async () => {
+    const recorder = speechTestRecorderRef.current;
+    if (!recorder) return;
+    window.clearTimeout(speechTestLimitRef.current);
+    speechTestRecorderRef.current = null;
+    setSpeechTest({ status: 'transcribing', message: 'Transcribing…', transcript: null, error: null });
+    const audio = await recorder.stop();
+    if (!audio) {
+      setSpeechTest({ status: 'idle', error: 'Nothing was recorded.' });
+      return;
+    }
+    // Measured before transcribe(), which transfers the buffer away.
+    const level = rootMeanSquare(audio);
+    const belowThreshold = isMostlySilence(audio, settings.speech.silenceThreshold);
+    try {
+      const result = await speechClient().transcribe(audio, settings.speech, (progress) => {
+        setSpeechTest((current) => ({
+          ...current,
+          message: progress.kind === 'notice'
+            ? progress.message
+            : progress.progress !== null
+              ? `Loading speech model… ${Math.round(progress.progress)}%`
+              : 'Loading speech model…'
+        }));
+      });
+      setSpeechTest({
+        status: 'idle',
+        transcript: result.text,
+        elapsedMs: result.elapsedMs,
+        level,
+        // The test transcribes even below the threshold on purpose: seeing the
+        // words next to the level is how the threshold gets tuned.
+        message: belowThreshold
+          ? 'Below the silence threshold — a real recording at this level would have been discarded.'
+          : result.engine === 'server'
+            ? 'Transcribed by the local server.'
+            : 'Transcribed by the built-in engine.',
+        error: null
+      });
+    } catch (error) {
+      setSpeechTest({
+        status: 'idle',
+        level,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+
+  const runSpeechTest = async () => {
+    if (speechTest.status === 'recording') {
+      await finishSpeechTest();
+      return;
+    }
+    if (speechTest.status === 'transcribing') return;
+    if (voice.status !== 'idle') {
+      setSpeechTest({ status: 'idle', error: 'A terminal pane is recording — stop that first.' });
+      return;
+    }
+    const recorder = new VoiceRecorder();
+    try {
+      await recorder.start();
+    } catch (error) {
+      setSpeechTest({
+        status: 'idle',
+        error: `Microphone unavailable: ${error instanceof Error ? error.message : String(error)}`
+      });
+      return;
+    }
+    speechTestRecorderRef.current = recorder;
+    setSpeechTest({ status: 'recording', message: 'Listening… say a command, then stop.', transcript: null, error: null });
+    window.clearTimeout(speechTestLimitRef.current);
+    speechTestLimitRef.current = window.setTimeout(() => void finishSpeechTest(), settings.speech.maxUtteranceSeconds * 1000);
+  };
+
+  // Release the microphone and the worker with the window, not on the next
+  // garbage collection: a live MediaStream keeps the recording indicator on.
+  useEffect(() => () => {
+    window.clearTimeout(voiceLimitRef.current);
+    window.clearTimeout(speechTestLimitRef.current);
+    recorderRef.current?.cancel();
+    speechTestRecorderRef.current?.cancel();
+    speechRef.current?.dispose();
+  }, []);
 
   const closePane = async (session: SessionInfo) => {
     if (voice.sessionId === session.id) cancelVoice();
@@ -1101,7 +1282,20 @@ function App() {
             className="bar-button"
             onClick={async () => {
               const currentApi = api();
-              if (currentApi) setApproval(await currentApi.requestAiCommand());
+              if (!currentApi) return;
+              const suggestion = await currentApi.requestAiCommand();
+              if (settings.ai.requireApproval) {
+                setApproval(suggestion);
+                return;
+              }
+              // Approval turned off means the suggestion runs — the setting says so.
+              const target = active?.id ?? focusedSessionId;
+              if (!target) {
+                setStatus('No terminal selected for the suggestion');
+                return;
+              }
+              currentApi.write(target, `${suggestion.command}\r`);
+              setStatus(`Ran suggestion: ${suggestion.command}`);
             }}
           >
             <Icon name="spark" />
@@ -1110,14 +1304,23 @@ function App() {
           <button
             type="button"
             className="bar-button theme-button"
-            onClick={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
+            onClick={() => changeSetting('appearance', { theme: theme === 'dark' ? 'light' : 'dark' })}
             title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
             aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
             aria-pressed={theme === 'light'}
           >
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
-          <button type="button" className="avatar" title="Settings">S</button>
+          <button
+            type="button"
+            className="avatar"
+            title="Settings (Ctrl+Shift+,)"
+            aria-label="Settings"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen(true)}
+          >
+            S
+          </button>
         </div>
       </header>
 
@@ -1138,10 +1341,17 @@ function App() {
             <Icon name="grid" />
           </button>
           <span className="rail-spacer" />
-          <button type="button" className="rail-button" onClick={() => setModal('ssh')} title="Connect SSH">
+          <button type="button" className="rail-button" onClick={() => openSessionDialog('ssh')} title="Connect SSH">
             <Icon name="ssh" />
           </button>
-          <button type="button" className="rail-button" title="Settings">
+          <button
+            type="button"
+            className={`rail-button ${settingsOpen ? 'active' : ''}`}
+            title="Settings (Ctrl+Shift+,)"
+            aria-label="Settings"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen((value) => !value)}
+          >
             <Icon name="settings" />
           </button>
         </nav>
@@ -1220,7 +1430,7 @@ function App() {
                   renderScreensTab()
                 ) : sidebarTab === 'connections' ? (
                 knownConnections.length ? knownConnections.map((connection) => (
-                  <button type="button" className="session-row" key={connection.alias} onClick={() => { setSshTarget(connection.hostName ?? connection.alias); setModal('ssh'); }}>
+                  <button type="button" className="session-row" key={connection.alias} onClick={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}>
                     <span className="status-dot" />
                     <span className="session-copy"><b>{connection.alias}</b><small>{connection.hostName ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}` : 'Saved SSH connection'}</small></span>
                     <span className="session-state">→</span>
@@ -1237,7 +1447,7 @@ function App() {
               <button type="button" className="drawer-action" onClick={openNewLocalTerminal}>
                 <Icon name="plus" /> Local terminal <kbd>⌘⇧T</kbd>
               </button>
-              <button type="button" className="drawer-action" onClick={() => setModal('ssh')}>
+              <button type="button" className="drawer-action" onClick={() => openSessionDialog('ssh')}>
                 <Icon name="ssh" /> Connect SSH
               </button>
               <div className="drawer-status">
@@ -1350,7 +1560,8 @@ function App() {
                     sessionId={paneSession.id}
                     focused={focusedSessionId === paneSession.id}
                     onStatus={setStatus}
-                    theme={theme}
+                    appearance={settings.appearance}
+                    terminalSettings={settings.terminal}
                   />
                 </article>
               );
@@ -1372,8 +1583,8 @@ function App() {
       </div>
 
       {overview && (
-        <div className="overview-layer" onClick={() => setOverview(false)}>
-          <section className="overview" onClick={(event) => event.stopPropagation()}>
+        <div className="overview-layer" role="presentation" {...dismissOverview}>
+          <section className="overview">
             <div className="overview-head">
               <div>
                 <span className="eyebrow">WORKSPACE OVERVIEW</span>
@@ -1412,7 +1623,7 @@ function App() {
             </div>
             <div className="overview-foot">
               <button type="button" onClick={() => { setOverview(false); openNewLocalTerminal(); }}>+ Local terminal</button>
-              <button type="button" onClick={() => { setOverview(false); setModal('ssh'); }}>Connect SSH</button>
+              <button type="button" onClick={() => { setOverview(false); openSessionDialog('ssh'); }}>Connect SSH</button>
               <button type="button" onClick={() => { setOverview(false); openNewWorkspace(); }}>+ Workspace</button>
               <span className="overview-hint">Press Esc to close</span>
             </div>
@@ -1422,17 +1633,11 @@ function App() {
 
       {/* The history backdrop is decorative: dismissal is also available on
           Escape and the close button, so it carries no keyboard handler of its
-          own. Closing only on a direct hit removes the need for the popover to
-          stop propagation, which was a click handler on a non-interactive
-          dialog element. */}
+          own. Closing only on a press that started on the backdrop removes the
+          need for the popover to stop propagation, which was a click handler on
+          a non-interactive dialog element. */}
       {historyOpen && (
-        <div
-          className="history-layer"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setHistoryOpen(false);
-          }}
-        >
+        <div className="history-layer" role="presentation" {...dismissHistory}>
           <div className="history-popover" role="dialog" aria-label="Session history">
           <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
@@ -1522,23 +1727,51 @@ function App() {
       )}
 
       {modal && (
-        <div className="modal-layer" onClick={() => setModal(null)}>
+        <div className="modal-layer" role="presentation" {...dismissModal}>
           <form
             className="modal-card"
-            onClick={(event) => event.stopPropagation()}
             onSubmit={modal === 'workspace' ? createWorkspace : modal === 'local' ? createLocal : createSsh}
           >
             <div className="modal-head">
               <div>
-                <span className="eyebrow">
-                  {modal === 'workspace' ? 'WORKSPACE' : modal === 'local' ? 'LOCAL TERMINAL' : 'REMOTE SESSION'}
-                </span>
-                <h2>
-                  {modal === 'workspace' ? 'New workspace' : modal === 'local' ? 'New terminal' : 'Connect SSH'}
-                </h2>
+                <span className="eyebrow">{dialogCopy(modal).eyebrow}</span>
+                <h2>{dialogCopy(modal).title}</h2>
               </div>
               <button type="button" className="close-button" onClick={() => setModal(null)}>Esc</button>
             </div>
+
+            {isSessionDialogKind(modal) && (
+              // A tablist is one tab stop: the arrows move between the tabs, so
+              // the fields stay one Tab press from the heading.
+              <div className="dialog-tabs" role="tablist" aria-label="Session type">
+                {SESSION_TABS.map((tab) => (
+                  <button
+                    type="button"
+                    key={tab.kind}
+                    id={`session-tab-${tab.kind}`}
+                    role="tab"
+                    aria-selected={modal === tab.kind}
+                    aria-controls="session-dialog-panel"
+                    tabIndex={modal === tab.kind ? 0 : -1}
+                    // Switching mid-create would submit one kind and show the other.
+                    disabled={busy}
+                    className={`dialog-tab ${modal === tab.kind ? 'active' : ''}`}
+                    onClick={() => setModal(tab.kind)}
+                    onKeyDown={(event) => {
+                      const next = nextSessionTab(tab.kind, event.key);
+                      if (!next) return;
+                      event.preventDefault();
+                      setModal(next);
+                      // Selection and focus move together in a tablist.
+                      document.getElementById(`session-tab-${next}`)?.focus();
+                    }}
+                  >
+                    <b>{tab.label}</b>
+                    <small>{tab.hint}</small>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {modal === 'workspace' && (
               <>
@@ -1556,73 +1789,115 @@ function App() {
               </>
             )}
 
-            {modal === 'local' && (
-              <>
-                <p>Start a local session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
-                <label>
-                  Terminal name
-                  <input
-                    autoFocus
-                    value={localName}
-                    onChange={(event) => setLocalName(event.target.value)}
-                    pattern="[A-Za-z0-9](?:[A-Za-z0-9_.]|-){0,48}"
-                    required
-                  />
-                </label>
-                <label>
-                  Shell backend
-                  <select value={selectedBackend} onChange={(event) => { const value = event.target.value as LocalBackend; setSelectedBackend(value); }}>
-                    {localBackends.length ? localBackends.map((item) => <option key={item.backend} value={item.backend}>{item.label}</option>) : <option value="bash">bash</option>}
-                  </select>
-                </label>
-                {selectedBackend === 'wsl' && (
-                  <label>
-                    WSL distribution
-                    <input value={wslDistribution} onChange={(event) => setWslDistribution(event.target.value)} placeholder="Ubuntu" />
-                  </label>
+            {isSessionDialogKind(modal) && (
+              <div id="session-dialog-panel" role="tabpanel" aria-labelledby={`session-tab-${modal}`}>
+                {modal === 'local' && (
+                  <>
+                    <p>Start a local session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
+                    <label>
+                      Terminal name
+                      <input
+                        autoFocus
+                        value={localName}
+                        onChange={(event) => setLocalName(event.target.value)}
+                        pattern="[A-Za-z0-9](?:[A-Za-z0-9_.]|-){0,48}"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Shell backend
+                      <select value={selectedBackend} onChange={(event) => { const value = event.target.value as LocalBackend; setSelectedBackend(value); }}>
+                        {localBackends.length ? localBackends.map((item) => <option key={item.backend} value={item.backend}>{item.label}</option>) : <option value="bash">bash</option>}
+                      </select>
+                    </label>
+                    {selectedBackend === 'wsl' && (
+                      <label>
+                        WSL distribution
+                        <input value={wslDistribution} onChange={(event) => setWslDistribution(event.target.value)} placeholder="Ubuntu" />
+                      </label>
+                    )}
+                  </>
                 )}
-              </>
-            )}
 
-            {modal === 'ssh' && (
-              <>
-                <p>Connect a remote host into “{activeWorkspace?.name ?? 'this workspace'}”.</p>
-                <label>
-                  SSH target
-                  <input
-                    autoFocus
-                    value={sshTarget}
-                    onChange={(event) => setSshTarget(event.target.value)}
-                    placeholder="user@server:22"
-                    required
-                  />
-                </label>
-                <label>
-                  Session label <span className="muted-text">optional</span>
-                  <input value={sshName} onChange={(event) => setSshName(event.target.value)} placeholder="server" />
-                </label>
-              </>
+                {modal === 'ssh' && (
+                  <>
+                    <p>Connect a remote host into “{activeWorkspace?.name ?? 'this workspace'}”.</p>
+                    <label>
+                      SSH target
+                      <input
+                        autoFocus
+                        value={sshTarget}
+                        onChange={(event) => setSshTarget(event.target.value)}
+                        placeholder="user@server:22"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Session label <span className="muted-text">optional</span>
+                      <input value={sshName} onChange={(event) => setSshName(event.target.value)} placeholder="server" />
+                    </label>
+                  </>
+                )}
+              </div>
             )}
 
             <div className="modal-actions">
               <button type="button" onClick={() => setModal(null)}>Cancel</button>
               <button className="primary-button" disabled={busy} type="submit">
-                {busy
-                  ? 'Working…'
-                  : modal === 'workspace'
-                    ? 'Create workspace'
-                    : modal === 'local'
-                      ? 'Open terminal'
-                      : 'Connect'}
+                {busy ? 'Working…' : dialogCopy(modal).submit}
               </button>
             </div>
           </form>
         </div>
       )}
 
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          onChange={changeSetting}
+          onReset={resetSettings}
+          onClose={() => setSettingsOpen(false)}
+          backdrop={dismissSettings}
+          backends={localBackends}
+          wslDistributions={wslDistributions}
+          speechTest={speechTest}
+          onSpeechTest={() => void runSpeechTest()}
+        />
+      )}
+
+      {voiceReview && (
+        <div className="modal-layer" role="presentation" {...dismissVoiceReview}>
+          <div className="modal-card approval-card">
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow">VOICE</span>
+                <h2>Insert transcript?</h2>
+              </div>
+              <button type="button" className="close-button" onClick={() => setVoiceReview(null)}>Esc</button>
+            </div>
+            <p>Review mode is on, so nothing has been typed yet. Inserting does not press Enter.</p>
+            <code>{voiceReview.text}</code>
+            <div className="modal-actions">
+              <button type="button" onClick={() => setVoiceReview(null)}>Discard</button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => {
+                  api()?.write(voiceReview.sessionId, voiceReview.text);
+                  setStatus(`Voice: "${voiceReview.text}"`);
+                  setVoiceReview(null);
+                }}
+              >
+                Insert
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {approval && (
-        <div className="modal-layer" onClick={() => setApproval(null)}>
-          <div className="modal-card approval-card" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-layer" role="presentation" {...dismissApproval}>
+          <div className="modal-card approval-card">
             <div className="modal-head">
               <div>
                 <span className="eyebrow warning-text">APPROVAL REQUIRED</span>

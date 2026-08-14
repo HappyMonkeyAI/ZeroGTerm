@@ -1,6 +1,28 @@
 export type SessionStatus = 'connected' | 'detached' | 'unavailable' | 'error';
 export type SessionKind = 'local' | 'ssh';
-export type SessionBackend = 'bash' | 'zsh' | 'powershell' | 'wsl' | 'ssh' | 'screen';
+/**
+ * Every shell a session can run, plus the two transports.
+ *
+ * Windows PowerShell (`powershell.exe`, 5.1, always present) and PowerShell 7
+ * (`pwsh.exe`, a separate install) are separate backends rather than one entry
+ * that prefers whichever is installed: on a machine with both, which one a
+ * session runs is a choice worth making explicitly, and stored sessions stay
+ * honest about which they used.
+ */
+export type SessionBackend =
+  | 'bash'
+  | 'zsh'
+  | 'fish'
+  | 'sh'
+  | 'powershell'
+  | 'pwsh'
+  | 'cmd'
+  | 'wsl'
+  | 'ssh'
+  | 'screen';
+
+/** The backends that name a shell to start, as opposed to a transport. */
+export type LocalShellBackend = Exclude<SessionBackend, 'ssh' | 'screen'>;
 export type SessionScope = 'local' | 'remote';
 export type SessionSource = 'active' | 'discovered' | 'known-connection' | 'history';
 
@@ -24,7 +46,7 @@ export interface SessionInfo {
 export interface CreateLocalRequest {
   name: string;
   cwd?: string;
-  backend?: Exclude<SessionBackend, 'ssh' | 'screen'>;
+  backend?: LocalShellBackend;
   wslDistribution?: string;
 }
 
@@ -48,7 +70,7 @@ export interface RemoteScreenRequest {
 }
 
 export interface ShellBackend {
-  backend: Exclude<SessionBackend, 'ssh' | 'screen'>;
+  backend: LocalShellBackend;
   executable: string;
   args: string[];
   label: string;

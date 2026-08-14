@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import type { CreateLocalRequest, SessionBackend, SessionInfo, ShellBackend } from '../shared/types.js';
+import type { CreateLocalRequest, SessionInfo } from '../shared/types.js';
+import { defaultShellBackend, isLocalShellBackend, resolveShellBackend } from './shell-catalog.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -74,59 +75,6 @@ export function validateSshTarget(input: string): { target: string; args: string
 export function parseWslDistributions(output: string): string[] {
   return output.split(/\r?\n/).slice(1).map((line) => line.replace(/^\*?\s*/, '').trim())
     .map((line) => line.split(/\s{2,}/)[0]).filter((name) => /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(name));
-}
-
-/**
- * node-pty on Windows does not apply PATHEXT: spawning `bash` fails with
- * "File not found:" even when bash.exe is on PATH, while `bash.exe` works.
- * The wsl and powershell branches below already account for this; bash and zsh
- * did not, which made every local terminal fail to attach on Windows.
- */
-function winExe(command: string): string {
-  return process.platform === 'win32' ? `${command}.exe` : command;
-}
-
-export function shellBackendArgs(backend: SessionBackend, distribution?: string): ShellBackend {
-  if (backend === 'wsl') {
-    if (distribution && !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/.test(distribution.trim())) throw new Error('Invalid WSL distribution name.');
-    return { backend, executable: process.platform === 'win32' ? 'wsl.exe' : 'wsl', args: distribution ? ['-d', distribution.trim()] : [], label: distribution ? `WSL · ${distribution.trim()}` : 'WSL', wslDistribution: distribution?.trim() };
-  }
-  if (backend === 'powershell') return { backend, executable: process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', args: [], label: 'PowerShell' };
-  if (backend === 'zsh') return { backend, executable: winExe('zsh'), args: [], label: 'zsh' };
-  return { backend: 'bash', executable: winExe('bash'), args: [], label: 'bash' };
-}
-
-/** Does this shell actually run here? Starts the real binary, so it is slow. */
-export async function probeShellBackend(candidate: ShellBackend): Promise<boolean> {
-  try {
-    await execFileAsync(
-      candidate.executable,
-      candidate.backend === 'wsl' ? ['--status'] : ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()']
-    );
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * bash is assumed present; the optional backends are included only when the
- * probe says they run.
- *
- * The probe is injectable so tests can exercise the filtering without starting
- * real processes. GitHub's ubuntu runners ship pwsh, so the live probe is not
- * a fast ENOENT there — it cold-starts PowerShell, which intermittently
- * exceeded vitest's 5s default and failed CI on unrelated pull requests.
- */
-export async function discoverShellBackends(
-  isAvailable: (candidate: ShellBackend) => Promise<boolean> = probeShellBackend
-): Promise<ShellBackend[]> {
-  const result: ShellBackend[] = [shellBackendArgs('bash')];
-  for (const backend of ['powershell', 'wsl'] as const) {
-    const candidate = shellBackendArgs(backend);
-    if (await isAvailable(candidate)) result.push(candidate);
-  }
-  return result;
 }
 
 export function parseScreenList(output: string): SessionInfo[] {
@@ -222,10 +170,15 @@ export class ScreenService {
   async createLocal(nameOrRequest: string | CreateLocalRequest, cwd = homedir()): Promise<SessionInfo> {
     const request = typeof nameOrRequest === 'string' ? { name: nameOrRequest, cwd } : nameOrRequest;
     const safeName = validateSessionName(request.name);
-    const backend = request.backend ?? 'bash';
-    const shell = shellBackendArgs(backend, request.wslDistribution);
+    // No backend named means "whatever this machine prefers": a native shell
+    // on Windows, the login shell or bash on Unix. resolveShellBackend throws by
+    // name when a named backend is not installed, so a missing shell is a clear
+    // message rather than a pty that dies on spawn.
+    const shell = request.backend
+      ? resolveShellBackend(request.backend, request.wslDistribution)
+      : defaultShellBackend();
+    const backend = shell.backend;
     const requestedCwd = request.cwd ?? homedir();
-    if (backend !== 'bash' && !(await executableAvailable(shell.executable))) throw new Error(`${shell.label} is not installed or unavailable.`);
     if (!(await this.available())) {
       const fallback: SessionInfo = { id: `local:${safeName}`, name: safeName, kind: 'local', host: 'local', cwd: requestedCwd, status: 'detached', lastSeen: new Date().toISOString(), persistence: 'process', backend, scope: 'local', source: 'active', wslDistribution: shell.wslDistribution };
       this.fallbackLocalSessions.set(fallback.id, fallback);
@@ -268,7 +221,9 @@ export class ScreenService {
       if (fallback) {
         fallback.status = 'connected';
         fallback.lastSeen = new Date().toISOString();
-        const shell = shellBackendArgs(fallback.backend ?? 'bash', fallback.wslDistribution);
+        const shell = isLocalShellBackend(fallback.backend)
+          ? resolveShellBackend(fallback.backend, fallback.wslDistribution)
+          : defaultShellBackend();
         this.spawnCommand(id, shell.executable, shell.args, onData, onExit, fallback.cwd);
         this.onEvent?.('attached', fallback, true);
         return { ...fallback };
@@ -393,4 +348,3 @@ export class ScreenService {
   }
 }
 
-async function executableAvailable(executable: string): Promise<boolean> { try { await execFileAsync(executable, ['--version']); return true; } catch { return false; } }

@@ -1,7 +1,9 @@
 import { app, BrowserWindow, clipboard, ipcMain, Menu, session } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ScreenService, discoverShellBackends, parseWslDistributions } from './session-service.js';
+import { writeClipboardText } from './clipboard.js';
+import { ScreenService, parseWslDistributions } from './session-service.js';
+import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 
@@ -139,7 +141,11 @@ ipcMain.on('terminal:resize', (_event, sessionId: unknown, cols: unknown, rows: 
 
 ipcMain.handle('clipboard:writeText', (_event, text: unknown) => {
   if (typeof text !== 'string') throw new Error('clipboard:writeText requires a string');
-  clipboard.writeText(text);
+  // Reject rather than resolve on a lost write: the renderer shows the message
+  // in the status bar, so the user is not told text was copied when it was not.
+  if (!writeClipboardText(clipboard, text)) {
+    throw new Error('Clipboard write failed — another application is holding the clipboard');
+  }
 });
 
 ipcMain.handle('clipboard:readText', () => clipboard.readText());

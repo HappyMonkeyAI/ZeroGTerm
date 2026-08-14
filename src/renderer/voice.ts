@@ -16,8 +16,15 @@ export function rootMeanSquare(samples: Float32Array): number {
   return Math.sqrt(sum / samples.length);
 }
 
-export function isMostlySilence(samples: Float32Array): boolean {
-  return rootMeanSquare(samples) < SILENCE_RMS_THRESHOLD;
+/**
+ * Is this recording dead air?
+ *
+ * The threshold is a setting because the right value depends on the
+ * microphone: a quiet headset gets its speech discarded at a level a noisy
+ * desk mic needs to reject room hum. SILENCE_RMS_THRESHOLD is the default.
+ */
+export function isMostlySilence(samples: Float32Array, threshold: number = SILENCE_RMS_THRESHOLD): boolean {
+  return rootMeanSquare(samples) < threshold;
 }
 
 export async function decodeToWhisperInput(blob: Blob): Promise<Float32Array> {

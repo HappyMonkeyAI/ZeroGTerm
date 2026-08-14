@@ -17,7 +17,8 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Workspaces for grouping sessions and quickly switching between projects or tasks.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
-- Local voice input using Whisper-tiny through Transformers.js; transcribed text is typed into the selected terminal without automatic execution.
+- Local voice input, either with Whisper ONNX inside the app through Transformers.js or through a transcription server on this machine; transcribed text is typed into the selected terminal without automatic execution.
+- A settings panel for appearance, terminal behaviour, session defaults, and speech recognition, including a built-in recognition test.
 - AI command suggestion and approval UI, keeping command execution explicit.
 - Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
 - Safe argument-array handling and validation around SSH and `screen` session operations.
@@ -41,7 +42,57 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+T` — new local terminal in the current workspace
 - `Ctrl+Shift+O` — session overview
 - `Ctrl+Shift+B` — toggle sessions sidebar
+- `Ctrl+Shift+,` — settings
 - `Esc` — close overview / dialogs, cancel voice recording
+
+Selecting text with the mouse also copies it, and programs running inside a
+terminal can copy to the system clipboard themselves through the OSC 52 escape
+sequence — this is how TUI tools such as CLI coding agents, tmux and Neovim put
+text on the clipboard, including over SSH. Reading the clipboard through OSC 52
+is refused, so a program on a remote host cannot see what you last copied.
+
+## Settings
+
+Settings open from the gear at the bottom of the left rail, the avatar in the
+title bar, or `Ctrl+Shift+,`. Changes apply immediately and are remembered
+between launches; each page can be reset on its own.
+
+- **Appearance** — theme, terminal font, size, line height and letter spacing,
+  with a live preview. Panes restyle in place and keep their scrollback.
+- **Terminal** — scrollback lines, cursor style and blink, and copy-on-select.
+- **Sessions** — default shell and WSL distribution for new terminals, the
+  layout to start in, and whether the sidebar starts collapsed.
+- **AI & voice** — whether AI suggestions need approval before running, and
+  whether a transcript is typed straight into the pane or shown for review
+  first. Neither option presses Enter for you.
+- **Speech recognition** — engine, model and tuning, described below.
+
+### Speech recognition
+
+Two engines are available.
+
+**Built-in** runs Whisper as ONNX inside the app through Transformers.js, with
+nothing else to install. Choose the model (tiny, base or small; English-only or
+multilingual), the weight precision, and whether to compute on CPU (WASM) or
+GPU (WebGPU) — WebGPU falls back to WASM when it is unavailable. The panel shows
+the download for the chosen combination, from about 41 MB for tiny at q8 to
+about 968 MB for small at full precision; models are cached after first use.
+Multilingual models add language and transcribe/translate options, which
+English-only checkpoints reject and so do not show.
+
+**Local server** posts the recorded audio as a WAV file to a transcription
+server on this machine, using the OpenAI `/v1/audio/transcriptions` shape that
+whisper.cpp's server, LM Studio, faster-whisper-server and similar tools speak.
+This is the way to use a model the built-in engine cannot load — a GGUF build
+such as `unslothai/Qwen3-ASR-0.6B-GGUF` needs a llama.cpp-family runtime, so
+something else has to host it. The URL must be on this machine; a non-loopback
+address is refused rather than sent.
+
+Both engines share the maximum utterance length and the silence threshold, and
+the **Try it** button on that page records a phrase and shows the transcript,
+the recording level and how long transcription took, without typing into a
+terminal. It transcribes even below the silence threshold and says so, which is
+how the threshold gets tuned for a particular microphone.
 
 ## Installation and usage
 
