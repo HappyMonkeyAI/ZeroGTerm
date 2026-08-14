@@ -8,6 +8,8 @@ import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, Terminal
 type LocalBackend = 'bash' | 'zsh' | 'powershell' | 'wsl';
 import { MAX_UTTERANCE_SECONDS, VoiceRecorder, isMostlySilence } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
+import { attachTerminalClipboard } from './terminal-clipboard';
+import { useBackdropDismiss } from './backdrop-dismiss';
 
 /** Settle once output has been quiet this long — the primary readiness signal. */
 const PROMPT_QUIET_MS = 150;
@@ -292,52 +294,17 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
       if (sessionId) currentApi.write(sessionId, data);
     });
 
-    // Linux terminal conventions: Ctrl+Shift+C / Ctrl+Shift+V.
-    // Keep Ctrl+C as interrupt by only handling the Shift variants.
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (event.type !== 'keydown') return true;
-      const key = event.key.toLowerCase();
-      const mod = event.ctrlKey || event.metaKey;
-      if (!mod || !event.shiftKey) return true;
-
-      if (key === 'c') {
-        const selection = terminal.getSelection();
-        if (selection) {
-          void currentApi.copyText(selection).catch((error) => {
-            statusRef.current(error instanceof Error ? error.message : String(error));
-          });
-        }
-        return false;
-      }
-
-      if (key === 'v') {
-        void currentApi.readText()
-          .then((text) => {
-            if (!text) return;
-            // Prefer xterm paste so bracketed-paste mode is honored when available.
-            if (typeof terminal.paste === 'function') {
-              terminal.paste(text);
-            } else {
-              if (sessionId) currentApi.write(sessionId, text);
-            }
-          })
-          .catch((error) => {
-            statusRef.current(error instanceof Error ? error.message : String(error));
-          });
-        return false;
-      }
-
-      return true;
+    // Ctrl+Shift+C / Ctrl+Shift+V, copy-on-select, and OSC 52 so programs
+    // running in the pane can reach the system clipboard themselves.
+    const detachClipboard = attachTerminalClipboard({
+      terminal,
+      clipboard: currentApi,
+      onError: (message) => statusRef.current(message),
+      writeToPty: (text) => {
+        if (sessionId) currentApi.write(sessionId, text);
+      },
+      pasteEventTarget: host
     });
-
-    if (typeof terminal.onSelectionChange === 'function') {
-      terminal.onSelectionChange(() => {
-        const selection = terminal.getSelection();
-        if (selection) {
-          void currentApi.copyText(selection).catch(() => undefined);
-        }
-      });
-    }
 
     const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(host);
@@ -366,6 +333,7 @@ function TerminalView({ sessionId, focused, onStatus, theme }: { sessionId?: str
     return () => {
       disposed = true;
       cancelAnimationFrame(fitFrame);
+      detachClipboard();
       input.dispose();
       removeData();
       removeStatus();
@@ -463,6 +431,13 @@ function App() {
   const [knownConnections, setKnownConnections] = useState<KnownConnection[]>([]);
   const [remoteScreenEntries, setRemoteScreenEntries] = useState<Array<{ session: SessionInfo; connection: KnownConnection }>>([]);
   const [remoteScreensLoading, setRemoteScreensLoading] = useState(false);
+
+  // Backdrop dismissal, gated on where the press started so that selecting
+  // text inside a dialog cannot close it. See backdrop-dismiss.ts.
+  const dismissModal = useBackdropDismiss(() => setModal(null));
+  const dismissApproval = useBackdropDismiss(() => setApproval(null));
+  const dismissOverview = useBackdropDismiss(() => setOverview(false));
+  const dismissHistory = useBackdropDismiss(() => setHistoryOpen(false));
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1372,8 +1347,8 @@ function App() {
       </div>
 
       {overview && (
-        <div className="overview-layer" onClick={() => setOverview(false)}>
-          <section className="overview" onClick={(event) => event.stopPropagation()}>
+        <div className="overview-layer" role="presentation" {...dismissOverview}>
+          <section className="overview">
             <div className="overview-head">
               <div>
                 <span className="eyebrow">WORKSPACE OVERVIEW</span>
@@ -1422,17 +1397,11 @@ function App() {
 
       {/* The history backdrop is decorative: dismissal is also available on
           Escape and the close button, so it carries no keyboard handler of its
-          own. Closing only on a direct hit removes the need for the popover to
-          stop propagation, which was a click handler on a non-interactive
-          dialog element. */}
+          own. Closing only on a press that started on the backdrop removes the
+          need for the popover to stop propagation, which was a click handler on
+          a non-interactive dialog element. */}
       {historyOpen && (
-        <div
-          className="history-layer"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) setHistoryOpen(false);
-          }}
-        >
+        <div className="history-layer" role="presentation" {...dismissHistory}>
           <div className="history-popover" role="dialog" aria-label="Session history">
           <div className="history-head"><b>History</b><button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close history">×</button></div>
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
@@ -1522,10 +1491,9 @@ function App() {
       )}
 
       {modal && (
-        <div className="modal-layer" onClick={() => setModal(null)}>
+        <div className="modal-layer" role="presentation" {...dismissModal}>
           <form
             className="modal-card"
-            onClick={(event) => event.stopPropagation()}
             onSubmit={modal === 'workspace' ? createWorkspace : modal === 'local' ? createLocal : createSsh}
           >
             <div className="modal-head">
@@ -1621,8 +1589,8 @@ function App() {
       )}
 
       {approval && (
-        <div className="modal-layer" onClick={() => setApproval(null)}>
-          <div className="modal-card approval-card" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-layer" role="presentation" {...dismissApproval}>
+          <div className="modal-card approval-card">
             <div className="modal-head">
               <div>
                 <span className="eyebrow warning-text">APPROVAL REQUIRED</span>
