@@ -10,9 +10,11 @@ import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
 import { useBackdropDismiss } from './backdrop-dismiss';
 import {
+  backendLabel,
   fontStack,
   loadSettings,
   resetSection,
+  resolveDefaultBackend,
   saveSettings,
   updateSection,
   type AppearanceSettings,
@@ -215,15 +217,13 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
 function SessionRow({ session, active = false, ghosted = false, onClick }: { session: SessionInfo; active?: boolean; ghosted?: boolean; onClick: () => void }) {
   const backend = session.kind === 'ssh'
     ? `SSH · ${session.host}`
-    : session.backend === 'powershell'
-      ? `PowerShell · ${session.cwd}`
-      : session.backend === 'wsl'
-        ? `WSL${session.wslDistribution ? ` · ${session.wslDistribution}` : ''} · ${session.cwd}`
-        : session.backend === 'zsh'
-          ? `zsh · ${session.cwd}`
-          : session.persistence === 'screen'
-            ? `screen · ${session.cwd}`
-            : `local · process only · ${session.cwd}`;
+    : session.backend === 'wsl'
+      ? `WSL${session.wslDistribution ? ` · ${session.wslDistribution}` : ''} · ${session.cwd}`
+      : session.backend && session.backend !== 'screen'
+        ? `${backendLabel(session.backend)} · ${session.cwd}`
+        : session.persistence === 'screen'
+          ? `screen · ${session.cwd}`
+          : `local · process only · ${session.cwd}`;
   return (
     <button type="button" className={`session-row ${active ? 'active' : ''} ${ghosted ? 'session-ghosted' : ''}`} onClick={onClick}>
       <span className={`status-dot ${session.status}`} />
@@ -236,10 +236,10 @@ function SessionRow({ session, active = false, ghosted = false, onClick }: { ses
 function sessionBackendTag(session: SessionInfo): string {
   if (session.kind === 'ssh') return 'SSH';
   if (session.backend === 'screen') return 'screen';
-  if (session.backend === 'powershell') return 'PowerShell';
-  if (session.backend === 'zsh') return 'zsh';
   if (session.backend === 'wsl') return session.wslDistribution ? `WSL · ${session.wslDistribution}` : 'WSL';
-  return 'bash';
+  // No backend means a session discovered from screen or history, which does not
+  // record which shell is inside it — naming a shell here would be a guess.
+  return session.backend ? backendLabel(session.backend) : 'local';
 }
 
 function TerminalView({
@@ -913,7 +913,7 @@ function App() {
    */
   const openSessionDialog = (kind: SessionDialogKind, options?: { sshTarget?: string }) => {
     setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
-    setSelectedBackend(settings.sessions.defaultBackend);
+    setSelectedBackend(resolveDefaultBackend(settings.sessions.defaultBackend, localBackends));
     setWslDistribution(settings.sessions.defaultWslDistribution);
     if (options?.sshTarget !== undefined) setSshTarget(options.sshTarget);
     setModal(kind);

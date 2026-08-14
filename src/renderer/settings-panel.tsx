@@ -10,6 +10,7 @@ import {
   FONT_CHOICES,
   SETTING_LIMITS,
   fontStack,
+  resolveDefaultBackend,
   speechFieldVisibility,
   type CursorStyle,
   type FontChoice,
@@ -382,7 +383,10 @@ export function SettingsPanel({
                 <SelectField<LocalBackend>
                   label="Default shell"
                   hint="Pre-selected when opening a new local terminal."
-                  value={settings.sessions.defaultBackend}
+                  // Shows what a new terminal would actually start as: a stored
+                  // default this machine does not have falls back to the
+                  // platform's preferred shell rather than displaying a lie.
+                  value={resolveDefaultBackend(settings.sessions.defaultBackend, backends)}
                   options={backendOptions}
                   onChange={(defaultBackend) => onChange('sessions', { defaultBackend })}
                 />

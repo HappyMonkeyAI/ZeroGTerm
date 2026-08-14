@@ -1,0 +1,231 @@
+// Which shells this machine can actually start, and what to spawn for each.
+//
+// Ported forward from the cross-platform discovery work in 690f01d on
+// fix/cross-platform-and-review-fixes, which never reached dev. What shipped
+// instead knew only `pwsh.exe`, so a Windows machine without PowerShell 7 — the
+// common case, since 7 is a separate install — was offered no PowerShell at
+// all, and the two shells Windows always has, Windows PowerShell and Command
+// Prompt, could not be chosen. bash was offered unconditionally on every
+// platform, including where it cannot start.
+//
+// Candidates are resolved against PATH rather than probed by spawning them.
+// Spawning was slow and wrong in two ways: it cold-started PowerShell on CI,
+// which intermittently blew vitest's timeout, and it made `--version` the test
+// of existence, which Command Prompt does not answer. Resolving also yields an
+// absolute path, which is what node-pty needs on Windows — it does not apply
+// PATHEXT, so a bare `bash` fails there with "File not found:".
+
+import { statSync } from 'node:fs';
+import type { LocalShellBackend, ShellBackend } from '../shared/types.js';
+
+/** Distro names reach `wsl.exe -d <name>`; a leading '-' would read as a flag. */
+const WSL_DISTRIBUTION = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
+
+const LOCAL_SHELL_BACKENDS: readonly LocalShellBackend[] = [
+  'bash', 'zsh', 'fish', 'sh', 'powershell', 'pwsh', 'cmd', 'wsl'
+];
+
+/**
+ * Does this value name a shell?
+ *
+ * A stored session's backend can also be a transport — 'screen' for a session
+ * inside screen, 'ssh' for a remote one — and it arrives from the history file
+ * on disk, so it is narrowed rather than asserted.
+ */
+export function isLocalShellBackend(value: unknown): value is LocalShellBackend {
+  return typeof value === 'string' && (LOCAL_SHELL_BACKENDS as readonly string[]).includes(value);
+}
+
+export type ShellCatalogOptions = {
+  platform?: NodeJS.Platform;
+  /** PATH to search. Defaults to the process environment. */
+  path?: string;
+  /** Windows executable extensions. Defaults to PATHEXT, then a sane list. */
+  pathExt?: string;
+  /** The user's login shell, so it can be offered first on Unix. */
+  loginShell?: string;
+  /** Injected so tests can describe a machine without touching the disk. */
+  isFile?: (candidate: string) => boolean;
+};
+
+type ShellCandidate = {
+  backend: LocalShellBackend;
+  label: string;
+  command: string;
+  args?: string[];
+};
+
+function defaultIsFile(candidate: string): boolean {
+  try {
+    return statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolved(options: ShellCatalogOptions) {
+  const platform = options.platform ?? process.platform;
+  return {
+    platform,
+    windows: platform === 'win32',
+    path: options.path ?? process.env.PATH ?? '',
+    pathExt: options.pathExt ?? process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM',
+    loginShell: options.loginShell ?? process.env.SHELL,
+    isFile: options.isFile ?? defaultIsFile
+  };
+}
+
+/**
+ * Path arithmetic for the *target* platform, not the host.
+ *
+ * node:path's `delimiter`, `sep` and `join` follow whichever platform this code
+ * is running on, which is right in production and wrong for reasoning about a
+ * platform passed in — splitting a Unix PATH on ';' yields one long entry that
+ * matches nothing. Doing it explicitly keeps the module honest either way.
+ */
+function pathParts(value: string, windows: boolean): string[] {
+  return value.split(windows ? ';' : ':').filter(Boolean);
+}
+
+function joinPath(directory: string, name: string, windows: boolean): string {
+  const separator = windows ? '\\' : '/';
+  const trimmed = directory.replace(/[\\/]+$/, '');
+  return `${trimmed}${separator}${name}`;
+}
+
+function fileName(value: string): string {
+  return value.split(/[\\/]/).pop() ?? value;
+}
+
+/**
+ * Resolve a bare command name against PATH without spawning anything.
+ *
+ * On Windows the extension is usually part of the command already, but PATHEXT
+ * is honoured so `pwsh` finds `pwsh.exe` — the empty extension is tried first so
+ * an exact name still wins.
+ *
+ * `accept` lets a caller reject a match and keep searching later PATH entries,
+ * which is what finding Git Bash behind System32's shim requires.
+ */
+export function findExecutable(
+  command: string,
+  options: ShellCatalogOptions = {},
+  accept: (file: string) => boolean = () => true
+): string | undefined {
+  const { windows, path, pathExt, isFile } = resolved(options);
+  const extensions = windows ? ['', ...pathExt.split(';').filter(Boolean)] : [''];
+  for (const directory of pathParts(path, windows)) {
+    for (const extension of extensions) {
+      const candidate = joinPath(directory, command + extension, windows);
+      if (isFile(candidate) && accept(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Is this the `bash.exe` shim Windows installs for WSL?
+ *
+ * System32's bash.exe is present on every Windows 10 and 11 machine whether or
+ * not a distribution is installed, and it launches WSL rather than Git Bash.
+ * Offering it would mean a "Git Bash" entry that starts something else, or
+ * nothing at all — and WSL already has its own backend. Rejecting it as a
+ * candidate rather than abandoning the search lets Git for Windows' own
+ * bash.exe, further along PATH, still be found.
+ */
+function isWslBashShim(file: string): boolean {
+  return /[\\/]windows[\\/]system32[\\/]/i.test(file);
+}
+
+/** The shells worth offering on this platform, in the order they are preferred. */
+function shellCandidates(windows: boolean): ShellCandidate[] {
+  if (windows) {
+    return [
+      { backend: 'powershell', label: 'Windows PowerShell', command: 'powershell.exe' },
+      { backend: 'pwsh', label: 'PowerShell 7', command: 'pwsh.exe' },
+      { backend: 'cmd', label: 'Command Prompt', command: 'cmd.exe' },
+      { backend: 'wsl', label: 'WSL', command: 'wsl.exe' },
+      // Git for Windows ships bash; useful, but not a login shell for the OS.
+      { backend: 'bash', label: 'Git Bash', command: 'bash.exe' }
+    ];
+  }
+  return [
+    { backend: 'bash', label: 'Bash', command: 'bash' },
+    { backend: 'zsh', label: 'Zsh', command: 'zsh' },
+    { backend: 'fish', label: 'Fish', command: 'fish' },
+    { backend: 'sh', label: 'sh', command: 'sh' }
+  ];
+}
+
+/**
+ * Move the user's login shell to the front, and say so in its label.
+ *
+ * $SHELL is what the user chose for themselves, so it belongs first — but only
+ * as an ordering: a login shell that is not one of the known backends is left
+ * alone rather than spawned under a name the rest of the app cannot describe.
+ */
+function preferLoginShell(shells: ShellBackend[], loginShell: string | undefined): ShellBackend[] {
+  if (!loginShell) return shells;
+  const name = fileName(loginShell);
+  const index = shells.findIndex((shell) => shell.backend === name);
+  if (index <= 0) return shells;
+  const preferred = { ...shells[index], label: `${shells[index].label} (login shell)` };
+  return [preferred, ...shells.filter((_, position) => position !== index)];
+}
+
+/**
+ * Every shell that exists on this machine, most preferred first.
+ *
+ * The first entry is the platform default: a native shell on Windows, the login
+ * shell or bash on Unix.
+ */
+export function discoverShellBackends(options: ShellCatalogOptions = {}): ShellBackend[] {
+  const context = resolved(options);
+  const found: ShellBackend[] = [];
+  for (const candidate of shellCandidates(context.windows)) {
+    const skipShim = context.windows && candidate.backend === 'bash';
+    const file = findExecutable(candidate.command, options, skipShim ? (match) => !isWslBashShim(match) : undefined);
+    if (!file) continue;
+    found.push({
+      backend: candidate.backend,
+      executable: file,
+      args: candidate.args ?? [],
+      label: candidate.label
+    });
+  }
+  return context.windows ? found : preferLoginShell(found, context.loginShell);
+}
+
+/** The backend a new session gets when the caller names none. */
+export function defaultShellBackend(options: ShellCatalogOptions = {}): ShellBackend {
+  const shells = discoverShellBackends(options);
+  if (!shells.length) throw new Error('No usable shell was found on PATH.');
+  return shells[0];
+}
+
+/**
+ * What to spawn for a requested backend.
+ *
+ * The backend name crosses the IPC boundary from the renderer, so it is looked
+ * up in the catalogue rather than treated as a command: the renderer can name a
+ * shell, never an executable. A backend that is not installed fails here, by
+ * name, instead of as a pty that dies on spawn.
+ */
+export function resolveShellBackend(
+  backend: LocalShellBackend,
+  distribution?: string,
+  options: ShellCatalogOptions = {}
+): ShellBackend {
+  const match = discoverShellBackends(options).find((shell) => shell.backend === backend);
+  if (!match) {
+    const label = shellCandidates(resolved(options).windows).find((candidate) => candidate.backend === backend)?.label ?? backend;
+    throw new Error(`${label} is not installed or unavailable.`);
+  }
+  if (backend !== 'wsl' || !distribution) return match;
+
+  const trimmed = distribution.trim();
+  if (!WSL_DISTRIBUTION.test(trimmed)) {
+    throw new Error('WSL distribution names may contain letters, numbers, spaces, _, ., and - only.');
+  }
+  return { ...match, args: ['-d', trimmed], label: `WSL · ${trimmed}`, wslDistribution: trimmed };
+}

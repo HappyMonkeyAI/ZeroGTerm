@@ -2,7 +2,8 @@ import { app, BrowserWindow, clipboard, ipcMain, Menu, session } from 'electron'
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
-import { ScreenService, discoverShellBackends, parseWslDistributions } from './session-service.js';
+import { ScreenService, parseWslDistributions } from './session-service.js';
+import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 
