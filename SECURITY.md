@@ -28,6 +28,28 @@ ZeroG Terminal is a local desktop application. Terminal output, SSH targets, gen
 - Expose only a narrow preload API.
 - Validate session names and SSH targets.
 - Use argument arrays instead of shell interpolation.
-- Require explicit approval before running AI-suggested commands.
+- Require explicit approval before running AI-suggested commands, unless the
+  operator turns that off in Settings.
+- Refuse OSC 52 clipboard *read* requests, so a program in a terminal — including
+  one on a remote host over SSH — cannot exfiltrate the clipboard. Clipboard
+  writes from a terminal are honoured.
+
+## Network egress from the renderer
+
+The renderer's Content-Security-Policy limits `connect-src` to:
+
+- Hugging Face hosts, for downloading speech models on first use. Model weights
+  are served from a regional CDN under `hf.co`, so those subdomains are allowed
+  as well as `huggingface.co` itself.
+- Loopback addresses (`127.0.0.1` and `localhost`), for the optional
+  local-server speech engine. IPv6 literals are absent because Chromium rejects
+  them as CSP host-sources; the endpoint validator refuses `[::1]` for the same
+  reason rather than letting a URL pass and then be blocked silently.
+
+The speech server endpoint is operator-configurable, which makes it a place
+where recorded audio could be sent somewhere unintended. The URL is therefore
+validated as loopback before any request is made, and a non-loopback address is
+refused rather than sent — the CSP is a second line rather than the only one.
+Anything that widens either control is a change worth reviewing carefully.
 
 These controls are not a guarantee of security. Please report bypasses or regressions privately.
