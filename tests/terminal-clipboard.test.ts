@@ -299,6 +299,24 @@ describe('attachSelectionCopy', () => {
     await vi.waitFor(() => expect(clipboard.state.writes).toEqual(['hello']));
   });
 
+  it('copies nothing while copy-on-select is switched off', () => {
+    const clipboard = fakeClipboard();
+    const { terminal, state } = fakeTerminal();
+    let enabled = false;
+    attachSelectionCopy({ terminal, clipboard, onError: () => undefined, isCopyOnSelectEnabled: () => enabled });
+
+    state.selection = 'hello';
+    state.selectionListeners[0]();
+    vi.advanceTimersByTime(100);
+    expect(clipboard.copyText).not.toHaveBeenCalled();
+
+    // The setting is read per selection, so turning it on needs no re-attach.
+    enabled = true;
+    state.selectionListeners[0]();
+    vi.advanceTimersByTime(100);
+    expect(clipboard.state.writes).toEqual(['hello']);
+  });
+
   it('drops a pending copy when the pane goes away', () => {
     const clipboard = fakeClipboard();
     const { terminal, state } = fakeTerminal();

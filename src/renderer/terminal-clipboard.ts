@@ -59,6 +59,12 @@ export type TerminalClipboardOptions = {
   writeToPty?: (text: string) => void;
   /** The pane element, so a duplicate native paste can be swallowed. */
   pasteEventTarget?: PasteEventTarget;
+  /**
+   * Read at selection time rather than at attach time: copy-on-select is a
+   * setting the user can change while panes are open, and a pane must not keep
+   * copying because of how it was configured when it was created.
+   */
+  isCopyOnSelectEnabled?: () => boolean;
 };
 
 /** Coalesce the selection changes a single drag produces into one write. */
@@ -272,6 +278,7 @@ export function attachSelectionCopy(options: TerminalClipboardOptions): () => vo
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = undefined;
+      if (options.isCopyOnSelectEnabled && !options.isCopyOnSelectEnabled()) return;
       const selection = terminal.getSelection();
       // An empty selection means the user cleared it, not that they want an
       // empty clipboard: leave whatever was copied before in place.
