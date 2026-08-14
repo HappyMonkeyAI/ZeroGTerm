@@ -25,6 +25,7 @@ import {
   type Theme
 } from './settings';
 import { SettingsPanel, type SpeechTestState } from './settings-panel';
+import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import { SpeechClient, type SpeechWorker } from './speech';
 
 /** Settle once output has been quiet this long — the primary readiness signal. */
@@ -694,8 +695,7 @@ function App() {
       }
       if (key === 't') {
         event.preventDefault();
-        setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
-        setModal('local');
+        openSessionDialog('local');
       }
       if (key === 'l') {
         event.preventDefault();
@@ -903,12 +903,23 @@ function App() {
     setModal('workspace');
   };
 
-  const openNewLocalTerminal = () => {
+  /**
+   * Open the new-session dialog on one of its tabs.
+   *
+   * Both tabs are prepared whichever one is asked for, because the other is now
+   * one click away: landing on SSH and switching to Local must not find a stale
+   * terminal name from the last time the dialog was open. Switching tabs itself
+   * touches no fields, so anything already typed on either side survives.
+   */
+  const openSessionDialog = (kind: SessionDialogKind, options?: { sshTarget?: string }) => {
     setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
     setSelectedBackend(settings.sessions.defaultBackend);
     setWslDistribution(settings.sessions.defaultWslDistribution);
-    setModal('local');
+    if (options?.sshTarget !== undefined) setSshTarget(options.sshTarget);
+    setModal(kind);
   };
+
+  const openNewLocalTerminal = () => openSessionDialog('local');
 
   const renderScreensTab = () => {
     const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
@@ -1330,7 +1341,7 @@ function App() {
             <Icon name="grid" />
           </button>
           <span className="rail-spacer" />
-          <button type="button" className="rail-button" onClick={() => setModal('ssh')} title="Connect SSH">
+          <button type="button" className="rail-button" onClick={() => openSessionDialog('ssh')} title="Connect SSH">
             <Icon name="ssh" />
           </button>
           <button
@@ -1419,7 +1430,7 @@ function App() {
                   renderScreensTab()
                 ) : sidebarTab === 'connections' ? (
                 knownConnections.length ? knownConnections.map((connection) => (
-                  <button type="button" className="session-row" key={connection.alias} onClick={() => { setSshTarget(connection.hostName ?? connection.alias); setModal('ssh'); }}>
+                  <button type="button" className="session-row" key={connection.alias} onClick={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}>
                     <span className="status-dot" />
                     <span className="session-copy"><b>{connection.alias}</b><small>{connection.hostName ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}` : 'Saved SSH connection'}</small></span>
                     <span className="session-state">→</span>
@@ -1436,7 +1447,7 @@ function App() {
               <button type="button" className="drawer-action" onClick={openNewLocalTerminal}>
                 <Icon name="plus" /> Local terminal <kbd>⌘⇧T</kbd>
               </button>
-              <button type="button" className="drawer-action" onClick={() => setModal('ssh')}>
+              <button type="button" className="drawer-action" onClick={() => openSessionDialog('ssh')}>
                 <Icon name="ssh" /> Connect SSH
               </button>
               <div className="drawer-status">
@@ -1612,7 +1623,7 @@ function App() {
             </div>
             <div className="overview-foot">
               <button type="button" onClick={() => { setOverview(false); openNewLocalTerminal(); }}>+ Local terminal</button>
-              <button type="button" onClick={() => { setOverview(false); setModal('ssh'); }}>Connect SSH</button>
+              <button type="button" onClick={() => { setOverview(false); openSessionDialog('ssh'); }}>Connect SSH</button>
               <button type="button" onClick={() => { setOverview(false); openNewWorkspace(); }}>+ Workspace</button>
               <span className="overview-hint">Press Esc to close</span>
             </div>
@@ -1723,15 +1734,44 @@ function App() {
           >
             <div className="modal-head">
               <div>
-                <span className="eyebrow">
-                  {modal === 'workspace' ? 'WORKSPACE' : modal === 'local' ? 'LOCAL TERMINAL' : 'REMOTE SESSION'}
-                </span>
-                <h2>
-                  {modal === 'workspace' ? 'New workspace' : modal === 'local' ? 'New terminal' : 'Connect SSH'}
-                </h2>
+                <span className="eyebrow">{dialogCopy(modal).eyebrow}</span>
+                <h2>{dialogCopy(modal).title}</h2>
               </div>
               <button type="button" className="close-button" onClick={() => setModal(null)}>Esc</button>
             </div>
+
+            {isSessionDialogKind(modal) && (
+              // A tablist is one tab stop: the arrows move between the tabs, so
+              // the fields stay one Tab press from the heading.
+              <div className="dialog-tabs" role="tablist" aria-label="Session type">
+                {SESSION_TABS.map((tab) => (
+                  <button
+                    type="button"
+                    key={tab.kind}
+                    id={`session-tab-${tab.kind}`}
+                    role="tab"
+                    aria-selected={modal === tab.kind}
+                    aria-controls="session-dialog-panel"
+                    tabIndex={modal === tab.kind ? 0 : -1}
+                    // Switching mid-create would submit one kind and show the other.
+                    disabled={busy}
+                    className={`dialog-tab ${modal === tab.kind ? 'active' : ''}`}
+                    onClick={() => setModal(tab.kind)}
+                    onKeyDown={(event) => {
+                      const next = nextSessionTab(tab.kind, event.key);
+                      if (!next) return;
+                      event.preventDefault();
+                      setModal(next);
+                      // Selection and focus move together in a tablist.
+                      document.getElementById(`session-tab-${next}`)?.focus();
+                    }}
+                  >
+                    <b>{tab.label}</b>
+                    <small>{tab.hint}</small>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {modal === 'workspace' && (
               <>
@@ -1749,64 +1789,62 @@ function App() {
               </>
             )}
 
-            {modal === 'local' && (
-              <>
-                <p>Start a local session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
-                <label>
-                  Terminal name
-                  <input
-                    autoFocus
-                    value={localName}
-                    onChange={(event) => setLocalName(event.target.value)}
-                    pattern="[A-Za-z0-9](?:[A-Za-z0-9_.]|-){0,48}"
-                    required
-                  />
-                </label>
-                <label>
-                  Shell backend
-                  <select value={selectedBackend} onChange={(event) => { const value = event.target.value as LocalBackend; setSelectedBackend(value); }}>
-                    {localBackends.length ? localBackends.map((item) => <option key={item.backend} value={item.backend}>{item.label}</option>) : <option value="bash">bash</option>}
-                  </select>
-                </label>
-                {selectedBackend === 'wsl' && (
-                  <label>
-                    WSL distribution
-                    <input value={wslDistribution} onChange={(event) => setWslDistribution(event.target.value)} placeholder="Ubuntu" />
-                  </label>
+            {isSessionDialogKind(modal) && (
+              <div id="session-dialog-panel" role="tabpanel" aria-labelledby={`session-tab-${modal}`}>
+                {modal === 'local' && (
+                  <>
+                    <p>Start a local session inside “{activeWorkspace?.name ?? 'this workspace'}”.</p>
+                    <label>
+                      Terminal name
+                      <input
+                        autoFocus
+                        value={localName}
+                        onChange={(event) => setLocalName(event.target.value)}
+                        pattern="[A-Za-z0-9](?:[A-Za-z0-9_.]|-){0,48}"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Shell backend
+                      <select value={selectedBackend} onChange={(event) => { const value = event.target.value as LocalBackend; setSelectedBackend(value); }}>
+                        {localBackends.length ? localBackends.map((item) => <option key={item.backend} value={item.backend}>{item.label}</option>) : <option value="bash">bash</option>}
+                      </select>
+                    </label>
+                    {selectedBackend === 'wsl' && (
+                      <label>
+                        WSL distribution
+                        <input value={wslDistribution} onChange={(event) => setWslDistribution(event.target.value)} placeholder="Ubuntu" />
+                      </label>
+                    )}
+                  </>
                 )}
-              </>
-            )}
 
-            {modal === 'ssh' && (
-              <>
-                <p>Connect a remote host into “{activeWorkspace?.name ?? 'this workspace'}”.</p>
-                <label>
-                  SSH target
-                  <input
-                    autoFocus
-                    value={sshTarget}
-                    onChange={(event) => setSshTarget(event.target.value)}
-                    placeholder="user@server:22"
-                    required
-                  />
-                </label>
-                <label>
-                  Session label <span className="muted-text">optional</span>
-                  <input value={sshName} onChange={(event) => setSshName(event.target.value)} placeholder="server" />
-                </label>
-              </>
+                {modal === 'ssh' && (
+                  <>
+                    <p>Connect a remote host into “{activeWorkspace?.name ?? 'this workspace'}”.</p>
+                    <label>
+                      SSH target
+                      <input
+                        autoFocus
+                        value={sshTarget}
+                        onChange={(event) => setSshTarget(event.target.value)}
+                        placeholder="user@server:22"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Session label <span className="muted-text">optional</span>
+                      <input value={sshName} onChange={(event) => setSshName(event.target.value)} placeholder="server" />
+                    </label>
+                  </>
+                )}
+              </div>
             )}
 
             <div className="modal-actions">
               <button type="button" onClick={() => setModal(null)}>Cancel</button>
               <button className="primary-button" disabled={busy} type="submit">
-                {busy
-                  ? 'Working…'
-                  : modal === 'workspace'
-                    ? 'Create workspace'
-                    : modal === 'local'
-                      ? 'Open terminal'
-                      : 'Connect'}
+                {busy ? 'Working…' : dialogCopy(modal).submit}
               </button>
             </div>
           </form>

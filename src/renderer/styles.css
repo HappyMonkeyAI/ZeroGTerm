@@ -950,6 +950,37 @@ input:focus-visible {
   outline: 0;
 }
 
+/* Local and SSH as two tabs of one new-session dialog. */
+.dialog-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 16px;
+}
+
+.dialog-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px solid #252f3c;
+  border-radius: 6px;
+  background: #0d1015;
+  color: #8b93a3;
+  text-align: left;
+}
+
+.dialog-tab b { color: #d8dee9; font-size: 12px; font-weight: 550; }
+.dialog-tab small { font: 10px JetBrains Mono, monospace; color: #4e5969; }
+.dialog-tab:hover:not(:disabled) { border-color: #7aa2f7; }
+.dialog-tab:disabled { opacity: .6; }
+
+.dialog-tab.active {
+  border-color: #7aa2f7;
+  background: #172033;
+  box-shadow: 0 0 0 1px #7aa2f733;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1502,6 +1533,20 @@ input:focus-visible {
     border-bottom: 1px solid #202630;
   }
   .settings-engines { grid-template-columns: 1fr; }
+}
+
+:root[data-theme='light'] .dialog-tab {
+  background: #f2f5fa;
+  border-color: #dbe2ec;
+  color: #5c687b;
+}
+
+:root[data-theme='light'] .dialog-tab b { color: #253044; }
+:root[data-theme='light'] .dialog-tab small { color: #68768a; }
+
+:root[data-theme='light'] .dialog-tab.active {
+  background: #dbe7f5;
+  border-color: #6d9bd6;
 }
 
 :root[data-theme='light'] .settings-card { background: #ffffff; border-color: #c7d2e1; }
