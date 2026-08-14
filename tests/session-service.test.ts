@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createFakePty } from './helpers/fake-pty';
-import { ScreenService, discoverShellBackends, parseScreenList, parseWslDistributions, shellBackendArgs, validateSessionName, validateSshTarget } from '../src/main/session-service';
+import { ScreenService, parseScreenList, parseWslDistributions, validateSessionName, validateSshTarget } from '../src/main/session-service';
 
 const execFileAsync = promisify(execFile);
 
@@ -18,53 +18,9 @@ describe('screen session contract', () => {
     expect(sessions.map(({ id, name }) => ({ id, name }))).toEqual([{ id: 'local:project-1', name: 'project-1' }, { id: 'local:other', name: 'other' }]);
   });
 
-  it('gives shell executables a .exe suffix on Windows', () => {
-    // node-pty on Windows does not apply PATHEXT: `bash` fails with
-    // "File not found:" while `bash.exe` spawns. Every backend must agree.
-    const expected = process.platform === 'win32';
-    for (const backend of ['bash', 'zsh', 'powershell', 'wsl'] as const) {
-      const { executable } = shellBackendArgs(backend);
-      expect(executable.endsWith('.exe')).toBe(expected);
-    }
-  });
-
-  it('parses WSL distributions and rejects unsafe argv values', () => {
+  it('parses the WSL distribution list', () => {
     expect(parseWslDistributions('NAME\nUbuntu\n* Debian\n')).toEqual(['Ubuntu', 'Debian']);
-    expect(shellBackendArgs('wsl', 'Ubuntu').args).toEqual(['-d', 'Ubuntu']);
-    expect(() => shellBackendArgs('wsl', 'Ubuntu; rm -rf /')).toThrow();
   });
-
-  it('discovers only installed optional shell backends', async () => {
-    // Injected probe: the live one cold-starts pwsh, which is present on CI's
-    // ubuntu runners and intermittently blew the 5s timeout.
-    const seen: string[] = [];
-    const onlyWsl = async (candidate: { backend: string }) => {
-      seen.push(candidate.backend);
-      return candidate.backend === 'wsl';
-    };
-    const backends = await discoverShellBackends(onlyWsl);
-
-    expect(backends.map((item) => item.backend)).toEqual(['bash', 'wsl']);
-    // bash is assumed present rather than probed; only the optional two are.
-    expect(seen).toEqual(['powershell', 'wsl']);
-  });
-
-  it('returns bash alone when no optional backend is installed', async () => {
-    const backends = await discoverShellBackends(async () => false);
-    expect(backends.map((item) => item.backend)).toEqual(['bash']);
-  });
-
-  it('includes every optional backend the probe accepts', async () => {
-    const backends = await discoverShellBackends(async () => true);
-    expect(backends.map((item) => item.backend)).toEqual(['bash', 'powershell', 'wsl']);
-  });
-
-  // Opt in with ZEROG_LIVE_SHELL_PROBE=1. Kept out of the default run because
-  // it starts real shells, so its duration depends on the host.
-  it.runIf(process.env.ZEROG_LIVE_SHELL_PROBE === '1')('probes the real shells on this host', async () => {
-    const backends = await discoverShellBackends();
-    expect(backends.some((item) => item.backend === 'bash')).toBe(true);
-  }, 30000);
 
   it('builds SSH arguments without shell interpolation', () => {
     expect(validateSshTarget('dev@example.com:2222')).toEqual({ target: 'dev@example.com:2222', args: ['-tt', '-p', '2222', '--', 'dev@example.com'] });

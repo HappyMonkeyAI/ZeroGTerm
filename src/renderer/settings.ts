@@ -21,7 +21,31 @@ import {
 
 export type Theme = 'dark' | 'light';
 export type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
-export type LocalBackend = 'bash' | 'zsh' | 'powershell' | 'wsl';
+/** Mirrors LocalShellBackend in shared/types; kept as a value list below too. */
+export type LocalBackend = 'bash' | 'zsh' | 'fish' | 'sh' | 'powershell' | 'pwsh' | 'cmd' | 'wsl';
+
+/**
+ * How each backend is named in the UI when only the stored backend is known.
+ *
+ * Discovered backends arrive from the main process with their own labels; a
+ * session that was created earlier carries only its backend, so the name has to
+ * be reconstructible here. Windows PowerShell and PowerShell 7 are distinct
+ * entries, and a session must not claim the one it did not run.
+ */
+export const BACKEND_LABELS: Record<LocalBackend, string> = {
+  bash: 'bash',
+  zsh: 'zsh',
+  fish: 'fish',
+  sh: 'sh',
+  powershell: 'Windows PowerShell',
+  pwsh: 'PowerShell 7',
+  cmd: 'Command Prompt',
+  wsl: 'WSL'
+};
+
+export function backendLabel(backend: string): string {
+  return BACKEND_LABELS[backend as LocalBackend] ?? backend;
+}
 export type CursorStyle = 'block' | 'underline' | 'bar';
 export type FontChoice = 'system' | 'jetbrains' | 'cascadia' | 'consolas' | 'fira' | 'menlo';
 export type SpeechEngine = 'builtin' | 'server';
@@ -190,7 +214,7 @@ function pickString(value: unknown, fallback: string, maxLength = 512): string {
 
 const THEMES: readonly Theme[] = ['dark', 'light'];
 const LAYOUTS: readonly Layout[] = ['stack', 'split-v', 'split-h', 'grid'];
-const BACKENDS: readonly LocalBackend[] = ['bash', 'zsh', 'powershell', 'wsl'];
+const BACKENDS: readonly LocalBackend[] = ['bash', 'zsh', 'fish', 'sh', 'powershell', 'pwsh', 'cmd', 'wsl'];
 const CURSOR_STYLES: readonly CursorStyle[] = ['block', 'underline', 'bar'];
 const FONTS: readonly FontChoice[] = ['system', 'jetbrains', 'cascadia', 'consolas', 'fira', 'menlo'];
 const ENGINES: readonly SpeechEngine[] = ['builtin', 'server'];
@@ -321,6 +345,23 @@ export function updateSection<K extends SettingsSection>(
   patch: Partial<Settings[K]>
 ): Settings {
   return parseSettings({ ...settings, [section]: { ...settings[section], ...patch } });
+}
+
+/**
+ * The backend a new terminal should start as.
+ *
+ * A stored default is only usable if this machine has that shell: settings
+ * copied from a Linux box ask for bash, and a Windows machine may have no bash
+ * at all. Falling back to the first discovered backend — the platform's
+ * preferred shell — keeps the dialog from opening on a shell that cannot start.
+ */
+export function resolveDefaultBackend(
+  stored: LocalBackend,
+  available: ReadonlyArray<{ backend: string }>
+): LocalBackend {
+  if (available.some((shell) => shell.backend === stored)) return stored;
+  const first = available[0]?.backend;
+  return first && (BACKENDS as readonly string[]).includes(first) ? (first as LocalBackend) : stored;
 }
 
 /**
