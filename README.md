@@ -43,6 +43,12 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+B` — toggle sessions sidebar
 - `Esc` — close overview / dialogs, cancel voice recording
 
+Selecting text with the mouse also copies it, and programs running inside a
+terminal can copy to the system clipboard themselves through the OSC 52 escape
+sequence — this is how TUI tools such as CLI coding agents, tmux and Neovim put
+text on the clipboard, including over SSH. Reading the clipboard through OSC 52
+is refused, so a program on a remote host cannot see what you last copied.
+
 ## Installation and usage
 
 The simplest way to try the published package is through `npx`:
