@@ -96,7 +96,8 @@ export interface TerminalApi {
   listKnownConnections(): Promise<KnownConnection[]>;
   discoverRemoteScreens(connection: KnownConnection): Promise<SessionInfo[]>;
   buildRemoteScreenAttach(connection: KnownConnection, screenName: string): Promise<{ file: string; args: string[] }>;
-  attachSession(id: string): Promise<SessionInfo>;
+  /** `size` starts the shell at the pane's own size, so its first frame fits. */
+  attachSession(id: string, size?: { cols: number; rows: number }): Promise<SessionInfo>;
   closeSession(id: string): Promise<void>;
   write(sessionId: string, data: string): void;
   resize(sessionId: string, cols: number, rows: number): void;

@@ -41,7 +41,32 @@ export type PtyHandle = {
 type SessionPty = {
   handle: PtyHandle;
   kind: 'local' | 'ssh';
+  /** What the pty was last told, so a repeat of the same size is not re-sent. */
+  cols: number;
+  rows: number;
 };
+
+/** The pane's measured size in character cells. */
+export type PtySize = { cols: number; rows: number };
+
+/**
+ * Size a pty starts at when the pane could not be measured — a placeholder,
+ * not a preference. Panes pass their real size through attach().
+ */
+const FALLBACK_SIZE: PtySize = { cols: 120, rows: 32 };
+
+/**
+ * A size a pty can actually be given. Sizes cross the IPC boundary from the
+ * renderer, and a zero or fractional one is rejected by ConPTY (and makes
+ * every full-screen program wrap in the wrong place on Unix).
+ */
+function usableSize(size: PtySize | undefined): PtySize | undefined {
+  if (!size) return undefined;
+  const { cols, rows } = size;
+  if (!Number.isInteger(cols) || !Number.isInteger(rows)) return undefined;
+  if (cols < 2 || rows < 2 || cols > 2000 || rows > 2000) return undefined;
+  return { cols, rows };
+}
 
 export function validateSessionName(name: string): string {
   const value = name.trim();
@@ -212,9 +237,22 @@ export class ScreenService {
     return session;
   }
 
-  attach(id: string, onData: (data: string) => void, onExit: (message: string) => void): SessionInfo {
+  /**
+   * Attach a pane to a session, starting its pty if it does not have one.
+   *
+   * `size` is the pane's own measurement. A pty spawned at some stock size and
+   * resized a moment later shows its first frame at the wrong width, and a
+   * full-screen program redrawing over that frame leaves pieces of it behind —
+   * so the shell is started at the size it will actually be displayed at.
+   */
+  attach(id: string, onData: (data: string) => void, onExit: (message: string) => void, size?: PtySize): SessionInfo {
     const existing = this.getSession(id);
-    if (this.ptys.has(id)) return { ...existing, status: 'connected' };
+    if (this.ptys.has(id)) {
+      // Re-attaching pane may be a different size than the one that started it.
+      const measured = usableSize(size);
+      if (measured) this.resize(id, measured.cols, measured.rows);
+      return { ...existing, status: 'connected' };
+    }
 
     if (id.startsWith('local:')) {
       const fallback = this.fallbackLocalSessions.get(id);
@@ -224,14 +262,14 @@ export class ScreenService {
         const shell = isLocalShellBackend(fallback.backend)
           ? resolveShellBackend(fallback.backend, fallback.wslDistribution)
           : defaultShellBackend();
-        this.spawnCommand(id, shell.executable, shell.args, onData, onExit, fallback.cwd);
+        this.spawnCommand(id, shell.executable, shell.args, onData, onExit, fallback.cwd, size);
         this.onEvent?.('attached', fallback, true);
         return { ...fallback };
       }
       // Session ids cross the IPC boundary from the renderer, so re-validate
       // rather than trusting that createLocal produced this one.
       const name = validateSessionName(id.slice('local:'.length));
-      this.spawnCommand(id, 'screen', ['-x', name], onData, onExit);
+      this.spawnCommand(id, 'screen', ['-x', name], onData, onExit, homedir(), size);
       this.onEvent?.('attached', existing, true);
       return { ...existing, status: 'connected', persistence: 'screen' };
     }
@@ -244,7 +282,7 @@ export class ScreenService {
     session.status = 'connected';
     session.lastSeen = new Date().toISOString();
     try {
-      this.spawnCommand(id, 'ssh', args, onData, onExit);
+      this.spawnCommand(id, 'ssh', args, onData, onExit, homedir(), size);
     } catch (error) {
       session.status = 'error';
       this.onEvent?.('reconnect-failed', session, false);
@@ -281,12 +319,14 @@ export class ScreenService {
     args: string[],
     onData: (data: string) => void,
     onExit: (message: string) => void,
-    cwd = homedir()
+    cwd = homedir(),
+    size?: PtySize
   ): void {
+    const { cols, rows } = usableSize(size) ?? FALLBACK_SIZE;
     const proc = this.spawnPty(file, args, {
       name: 'xterm-256color',
-      cols: 120,
-      rows: 32,
+      cols,
+      rows,
       cwd,
       env: process.env
     });
@@ -301,7 +341,7 @@ export class ScreenService {
         }
       }
     };
-    this.ptys.set(sessionId, { handle, kind: sessionId.startsWith('ssh:') ? 'ssh' : 'local' });
+    this.ptys.set(sessionId, { handle, kind: sessionId.startsWith('ssh:') ? 'ssh' : 'local', cols, rows });
     proc.onData(onData);
     proc.onExit(() => {
       this.ptys.delete(sessionId);
@@ -321,8 +361,23 @@ export class ScreenService {
     this.ptys.get(sessionId)?.handle.write(data);
   }
 
+  /**
+   * Tell a session's pty how big its pane is now.
+   *
+   * A resize is not free and not invisible: it makes ConPTY reflow and re-emit
+   * its screen, and every full-screen program redraw on SIGWINCH. Panes refit
+   * on layout, font and status changes, which mostly produce the size the pty
+   * already has, so a repeat of the current size is dropped rather than paid
+   * for in a torn redraw.
+   */
   resize(sessionId: string, cols: number, rows: number): void {
-    this.ptys.get(sessionId)?.handle.resize(cols, rows);
+    const pty = this.ptys.get(sessionId);
+    if (!pty) return;
+    const size = usableSize({ cols, rows });
+    if (!size || (size.cols === pty.cols && size.rows === pty.rows)) return;
+    pty.cols = size.cols;
+    pty.rows = size.rows;
+    pty.handle.resize(size.cols, size.rows);
   }
 
   detach(sessionId: string): void {

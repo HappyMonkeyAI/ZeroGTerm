@@ -242,6 +242,12 @@ function sessionBackendTag(session: SessionInfo): string {
   return session.backend ? backendLabel(session.backend) : 'local';
 }
 
+/**
+ * How long a pane's size must hold still before the shell is told about it.
+ * Long enough to swallow a window drag, short enough not to be felt as lag.
+ */
+const PTY_RESIZE_SETTLE_MS = 120;
+
 function TerminalView({
   sessionId,
   focused,
@@ -281,7 +287,10 @@ function TerminalView({
       scrollback: terminalSettingsRef.current.scrollback,
       allowProposedApi: true,
       theme: terminalTheme(appearanceRef.current.theme),
-      convertEol: true,
+      // No convertEol: the pane is fed by a pty, not a text file. A pty already
+      // emits CR LF for a new line, and a program that sends a bare LF means
+      // "down one row, same column" — turning that into a carriage return moves
+      // its output to column 0 and leaves fragments of the old frame behind.
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -291,19 +300,53 @@ function TerminalView({
     const currentApi = api();
     let disposed = false;
     let fitFrame = 0;
+    // What the pty has been told, and whether it exists yet to be told. A
+    // resize sent before the session is attached is dropped on the floor by the
+    // main process, which would leave the shell wrapping at the wrong width for
+    // the rest of its life.
+    let ptyCols = 0;
+    let ptyRows = 0;
+    let ptyReady = false;
+    let sizeTimer = 0;
 
-    const resize = () => {
-      if (disposed || !host.isConnected) return;
+    /** Match the xterm grid to the pane. True once it holds a usable size. */
+    const fitToPane = (): boolean => {
+      if (disposed || !host.isConnected) return false;
       // FitAddon needs a real box; skip until layout has settled.
-      if (host.clientWidth < 20 || host.clientHeight < 20) return;
+      if (host.clientWidth < 20 || host.clientHeight < 20) return false;
       try {
         fit.fit();
       } catch {
-        return;
+        return false;
       }
-      if (currentApi && terminal.cols > 0 && terminal.rows > 0) {
-        if (sessionId) currentApi.resize(sessionId, terminal.cols, terminal.rows);
-      }
+      return terminal.cols > 0 && terminal.rows > 0;
+    };
+
+    /**
+     * Forward the grid size to the shell once it has stopped changing.
+     *
+     * The grid follows the pane immediately, but the pty is told only when the
+     * size settles, and only when it actually differs. A resize is expensive
+     * and visible: the pty re-emits its screen and every full-screen program
+     * redraws on it. Dragging a window edge produces one per frame, and those
+     * redraws land on top of each other — which is where torn frames and
+     * stranded pieces of an older frame come from.
+     */
+    const syncPtySize = () => {
+      if (!ptyReady || !currentApi || !sessionId) return;
+      if (terminal.cols === ptyCols && terminal.rows === ptyRows) return;
+      window.clearTimeout(sizeTimer);
+      sizeTimer = window.setTimeout(() => {
+        if (disposed || !sessionId) return;
+        if (terminal.cols === ptyCols && terminal.rows === ptyRows) return;
+        ptyCols = terminal.cols;
+        ptyRows = terminal.rows;
+        currentApi.resize(sessionId, ptyCols, ptyRows);
+      }, PTY_RESIZE_SETTLE_MS);
+    };
+
+    const resize = () => {
+      if (fitToPane()) syncPtySize();
     };
 
     const scheduleFit = () => {
@@ -368,7 +411,16 @@ function TerminalView({
       terminal.writeln('\x1b[90mZeroG Terminal\x1b[0m');
       terminal.writeln('\x1b[90mSelect a session or create a local/SSH connection.\x1b[0m');
     } else {
-      void currentApi.attachSession(sessionId).then((attached) => {
+      // Measure now rather than waiting for the scheduled fit: the shell should
+      // start at the size it will be shown at, so its first frame is not drawn
+      // for a different terminal and then redrawn over.
+      const measured = fitToPane() ? { cols: terminal.cols, rows: terminal.rows } : undefined;
+      if (measured) {
+        ptyCols = measured.cols;
+        ptyRows = measured.rows;
+      }
+      void currentApi.attachSession(sessionId, measured).then((attached) => {
+        ptyReady = true;
         if (attached.persistence === 'process') {
           statusRef.current(`${attached.host} · ${attached.name} · process only (install screen for persistence)`);
         } else {
@@ -383,6 +435,7 @@ function TerminalView({
     return () => {
       disposed = true;
       cancelAnimationFrame(fitFrame);
+      window.clearTimeout(sizeTimer);
       detachClipboard();
       input.dispose();
       removeData();
