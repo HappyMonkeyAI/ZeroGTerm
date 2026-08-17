@@ -5,3 +5,4 @@ ZeroG Terminal version history
 0.2.0-alpha.1 - Pane close button, auto-focus for new panes, local Whisper voice input
 0.3.0-alpha.1 - Cross-platform session discovery and reliable remote screen attachment
 0.4.0-alpha.1 - tabbed new-session dialog, settings panel and make speech recognition configurable, and fix: repair terminal clipboard paths and dialog dismissal
+0.5.0-alpha.1 - Draggable pane and sidebar sizes, per-pane proceed button, correct PTY sizing so full-screen programs stop tearing, and keyboard focus returning to a pane after voice input

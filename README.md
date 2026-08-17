@@ -7,6 +7,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 ## Features
 
 - Multi-pane workspaces with stack, vertical split, horizontal split, and four-pane grid layouts.
+- Draggable dividers between panes and beside the sidebar, so a split does not have to be an even one. Sizes are remembered between launches.
 - Maximize a focused pane and cycle between sessions without losing the other panes.
 - Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable.
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
@@ -18,6 +19,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
 - Local voice input, either with Whisper ONNX inside the app through Transformers.js or through a transcription server on this machine; transcribed text is typed into the selected terminal without automatic execution.
+- A per-pane proceed button that sends a configurable phrase — `OK, proceed` by default — for waving an agent on without typing the same reply again.
 - A settings panel for appearance, terminal behaviour, session defaults, and speech recognition, including a built-in recognition test.
 - AI command suggestion and approval UI, keeping command execution explicit.
 - Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
@@ -29,7 +31,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.4.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt).
+ZeroG Terminal is currently a public alpha. The current release is `0.5.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt).
 
 The npm package contains the built Electron application and project documentation. It is intended for early adopters and testing rather than production use.
 
@@ -51,6 +53,17 @@ sequence — this is how TUI tools such as CLI coding agents, tmux and Neovim pu
 text on the clipboard, including over SSH. Reading the clipboard through OSC 52
 is refused, so a program on a remote host cannot see what you last copied.
 
+## Resizing panes and the sidebar
+
+Drag the line between two panes, or the sidebar's right edge, to change how the
+space is shared. Sizes are remembered between launches and clamped so that no
+pane can be dragged down to nothing.
+
+The dividers take keyboard focus as well: the arrow keys nudge one two percent at
+a time, and Enter or a double-click puts it back in the middle. One divider
+position is shared by every layout, so a split you set up in the vertical split
+is the same split you get in the four-pane grid.
+
 ## Settings
 
 Settings open from the gear at the bottom of the left rail, the avatar in the
@@ -64,8 +77,22 @@ between launches; each page can be reset on its own.
   layout to start in, and whether the sidebar starts collapsed.
 - **AI & voice** — whether AI suggestions need approval before running, and
   whether a transcript is typed straight into the pane or shown for review
-  first. Neither option presses Enter for you.
+  first. Neither option presses Enter for you. Also the phrase the pane's
+  proceed button sends, described below.
 - **Speech recognition** — engine, model and tuning, described below.
+
+### Proceed button
+
+Each pane's title bar carries a tick beside the microphone. Clicking it sends
+`OK, proceed` and presses Enter — for the common case of an AI coding agent
+pausing to ask whether it should carry on. The phrase is editable under
+**Settings ▸ AI & voice**, so an agent that responds better to different wording
+can have it.
+
+This is the one control that presses Enter for you; voice transcripts and AI
+suggestions deliberately do not. It sends to the pane it belongs to, so a pane
+sitting at a shell prompt rather than in an agent will simply try to run the
+phrase as a command.
 
 ### Speech recognition
 
@@ -119,28 +146,41 @@ npm run build
 npm start
 ```
 
-Runtime prerequisites on the host include Node.js and the native build tools required by `node-pty`. Install `screen` as well for persistent, discoverable sessions.
+Node.js is the only prerequisite every host needs. The scripts above run on Linux
+and Windows; npm runs them through `cmd.exe` on Windows, so no POSIX shell is
+required whichever shell you start them from.
 
-On Fedora/RHEL-like Linux systems:
+`node-pty` provides terminal I/O on every platform. It ships prebuilt binaries
+for Windows and macOS, so a C/C++ toolchain is a Linux requirement rather than a
+general one — there, `npm install` compiles it.
+
+### Linux
 
 ```bash
 sudo dnf install screen make gcc-c++ python3
 ```
 
-On Windows, use a supported Node.js installation and choose PowerShell or WSL when creating a local session. WSL distributions can be selected from the local-session dialog. Remote SSH sessions work independently of the local shell backend.
+`make`, `gcc-c++` and `python3` build `node-pty`. `screen` is optional but worth
+having: with it, local sessions are persistent and rediscovered after relaunch.
+Without it, ZeroG falls back to a direct PTY on the chosen shell and labels the
+session process-only; that shell is lost when the application exits.
 
-`node-pty` is required for terminal I/O. When `screen` is installed, local sessions are persistent and discoverable after relaunch. Without `screen`, ZeroG falls back to a direct shell PTY and labels the session as process-only; that shell is lost when the application exits. Install `screen` for full persistence:
+### Windows
 
-```bash
-sudo dnf install screen
-```
+No tooling beyond Node.js. The new-terminal dialog offers the shells it finds on
+PATH — Windows PowerShell, PowerShell 7, Command Prompt, WSL (with a distribution
+picker), and Git Bash where Git for Windows is installed.
+
+`screen` does not exist on Windows, so local sessions are always process-only and
+do not survive app exit. Remote SSH sessions are unaffected by the local shell
+backend, and a remote host with `screen` still gives persistent sessions there.
 
 ## Verification
 
 The current main branch has the following local verification coverage:
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (28 tests covering remote-screen parsing and prompt readiness, session history, SSH inventory and argument validation, session service behavior, and voice input helpers).
+- `npm test`: passes (167 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, and the speech and voice helpers; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
 - `npm audit --omit=dev`: production dependency auditing is part of the project quality checks.
 

@@ -74,12 +74,27 @@ export type SessionSettings = {
   defaultWslDistribution: string;
   defaultLayout: Layout;
   startSidebarCollapsed: boolean;
+  /** Sidebar width in pixels, as the user last dragged it. */
+  sidebarWidth: number;
+  /**
+   * Where the pane dividers sit, as the left/top share of the split. One pair
+   * serves every layout: the vertical split uses the column value, the
+   * horizontal split the row value, and the four-pane grid both.
+   */
+  splitColumnRatio: number;
+  splitRowRatio: number;
 };
 
 export type AiSettings = {
   /** Show the approval dialog before an AI suggestion reaches a terminal. */
   requireApproval: boolean;
   voiceInsert: VoiceInsert;
+  /**
+   * What the pane's proceed button sends. Editable because agents differ in what
+   * they respond to, and because a future version may offer a drafted reply here
+   * instead of a fixed phrase.
+   */
+  proceedPhrase: string;
 };
 
 export type SpeechSettings = {
@@ -129,11 +144,15 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultBackend: 'bash',
     defaultWslDistribution: '',
     defaultLayout: 'stack',
-    startSidebarCollapsed: false
+    startSidebarCollapsed: false,
+    sidebarWidth: 238,
+    splitColumnRatio: 0.5,
+    splitRowRatio: 0.5
   },
   ai: {
     requireApproval: true,
-    voiceInsert: 'type'
+    voiceInsert: 'type',
+    proceedPhrase: 'OK, proceed'
   },
   speech: {
     engine: 'builtin',
@@ -160,7 +179,14 @@ export const SETTING_LIMITS = {
   letterSpacing: { min: -2, max: 4 },
   scrollback: { min: 200, max: 200000 },
   maxUtteranceSeconds: { min: 5, max: 120 },
-  silenceThreshold: { min: 0.0005, max: 0.05 }
+  silenceThreshold: { min: 0.0005, max: 0.05 },
+  // Wide enough for a session name and a path, narrow enough to leave a usable
+  // terminal beside it. The drawer also carries a max-width in vw, so a small
+  // window shrinks it below whatever is stored here.
+  sidebarWidth: { min: 180, max: 520 },
+  // A pane thinner than about a seventh of the workspace holds no usable
+  // terminal, and dragging a divider off the edge is easy to do by accident.
+  splitRatio: { min: 0.15, max: 0.85 }
 } as const;
 
 /**
@@ -210,6 +236,35 @@ function pickNumber(value: unknown, limits: { min: number; max: number }, fallba
 function pickString(value: unknown, fallback: string, maxLength = 512): string {
   if (typeof value !== 'string') return fallback;
   return value.slice(0, maxLength);
+}
+
+/**
+ * A phrase the app types into a terminal on the user's behalf.
+ *
+ * Control characters are replaced rather than kept. The caller supplies the
+ * Enter, so a phrase carrying its own newline would send several lines — only
+ * the last of which the user could see in the field they typed it into. Spaces
+ * are left exactly as typed: this runs on every keystroke, and trimming here
+ * would eat the space between words as the user types it.
+ */
+function pickPhrase(value: unknown, fallback: string, maxLength = 200): string {
+  if (typeof value !== 'string') return fallback;
+  return Array.from(value.slice(0, maxLength), (character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || code === 0x7f ? ' ' : character;
+  }).join('');
+}
+
+/**
+ * The phrase to send, given what is stored.
+ *
+ * A field the user has emptied would make the button do nothing, which reads as
+ * a broken control rather than a deliberate setting — so an all-whitespace
+ * phrase falls back to the default here, at the point of use, leaving the field
+ * itself free to be empty while it is being retyped.
+ */
+export function resolveProceedPhrase(ai: AiSettings): string {
+  return ai.proceedPhrase.trim() || DEFAULT_SETTINGS.ai.proceedPhrase;
 }
 
 const THEMES: readonly Theme[] = ['dark', 'light'];
@@ -271,11 +326,15 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       defaultBackend: pickEnum(sessions.defaultBackend, BACKENDS, DEFAULT_SETTINGS.sessions.defaultBackend),
       defaultWslDistribution: pickString(sessions.defaultWslDistribution, DEFAULT_SETTINGS.sessions.defaultWslDistribution, 64),
       defaultLayout: pickEnum(sessions.defaultLayout, LAYOUTS, DEFAULT_SETTINGS.sessions.defaultLayout),
-      startSidebarCollapsed: pickBoolean(sessions.startSidebarCollapsed, DEFAULT_SETTINGS.sessions.startSidebarCollapsed)
+      startSidebarCollapsed: pickBoolean(sessions.startSidebarCollapsed, DEFAULT_SETTINGS.sessions.startSidebarCollapsed),
+      sidebarWidth: Math.round(pickNumber(sessions.sidebarWidth, SETTING_LIMITS.sidebarWidth, DEFAULT_SETTINGS.sessions.sidebarWidth)),
+      splitColumnRatio: pickNumber(sessions.splitColumnRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitColumnRatio),
+      splitRowRatio: pickNumber(sessions.splitRowRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitRowRatio)
     },
     ai: {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
-      voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert)
+      voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert),
+      proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase)
     },
     speech: {
       engine,

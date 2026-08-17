@@ -7,6 +7,7 @@ import {
   loadSettings,
   parseSettings,
   resetSection,
+  resolveProceedPhrase,
   saveSettings,
   updateSection,
   type SettingsStorage
@@ -100,6 +101,41 @@ describe('parseSettings', () => {
     expect(parseSettings({ speech: { model: 'onnx-community/whisper-small', language: 'kl' } }).speech.language).toBe('auto');
   });
 
+  it('keeps a proceed phrase exactly as typed, spaces included', () => {
+    // parseSettings runs on every keystroke, so trimming here would eat the
+    // space between words as the user types it.
+    expect(parseSettings({ ai: { proceedPhrase: 'yes, carry on ' } }).ai.proceedPhrase).toBe('yes, carry on ');
+    expect(parseSettings({ ai: { proceedPhrase: '' } }).ai.proceedPhrase).toBe('');
+  });
+
+  it('strips control characters from the proceed phrase, which supplies its own Enter', () => {
+    // A newline in the phrase would send several lines, only the last of which
+    // is visible in the field the user typed it into.
+    expect(parseSettings({ ai: { proceedPhrase: 'go\r\nrm -rf /' } }).ai.proceedPhrase).toBe('go  rm -rf /');
+    expect(parseSettings({ ai: { proceedPhrase: 'go\x1b[31m' } }).ai.proceedPhrase).toBe('go [31m');
+    expect(parseSettings({ ai: { proceedPhrase: 42 } }).ai.proceedPhrase).toBe(DEFAULT_SETTINGS.ai.proceedPhrase);
+  });
+
+  it('bounds the proceed phrase a hand-edited file could make enormous', () => {
+    expect(parseSettings({ ai: { proceedPhrase: 'x'.repeat(5000) } }).ai.proceedPhrase).toHaveLength(200);
+  });
+
+  it('keeps a dragged sidebar width and split within usable bounds', () => {
+    // A drag reports a raw pointer position, so the clamp is what stops a pane
+    // being dragged to nothing or the sidebar filling the window.
+    const dragged = parseSettings({ sessions: { sidebarWidth: 300, splitColumnRatio: 0.34, splitRowRatio: 0.7 } });
+    expect(dragged.sessions).toMatchObject({ sidebarWidth: 300, splitColumnRatio: 0.34, splitRowRatio: 0.7 });
+
+    const past = parseSettings({ sessions: { sidebarWidth: 4000, splitColumnRatio: -3, splitRowRatio: 12 } });
+    expect(past.sessions.sidebarWidth).toBe(520);
+    expect(past.sessions.splitColumnRatio).toBe(0.15);
+    expect(past.sessions.splitRowRatio).toBe(0.85);
+
+    // Sub-pixel sidebar widths would leave the divider a fraction off the edge
+    // it is drawn on.
+    expect(parseSettings({ sessions: { sidebarWidth: 240.6 } }).sessions.sidebarWidth).toBe(241);
+  });
+
   it('adopts the theme chosen before settings existed', () => {
     expect(parseSettings(undefined, 'light').appearance.theme).toBe('light');
     // An explicit stored theme wins over the legacy key.
@@ -162,6 +198,13 @@ describe('updateSection', () => {
     expect(updateSection(DEFAULT_SETTINGS, 'appearance', { fontSize: 400 }).appearance.fontSize).toBe(32);
   });
 
+  it('clamps a live drag, so a divider cannot be dragged past a usable pane', () => {
+    // The drag path patches through updateSection on every pointermove, which is
+    // the only thing standing between a raw pointer position and the layout.
+    expect(updateSection(DEFAULT_SETTINGS, 'sessions', { splitColumnRatio: 0.98 }).sessions.splitColumnRatio).toBe(0.85);
+    expect(updateSection(DEFAULT_SETTINGS, 'sessions', { sidebarWidth: 40 }).sessions.sidebarWidth).toBe(180);
+  });
+
   it('normalises a language that the newly chosen model cannot use', () => {
     const multilingual = updateSection(DEFAULT_SETTINGS, 'speech', { model: 'onnx-community/whisper-small', language: 'de' });
     expect(multilingual.speech.language).toBe('de');
@@ -180,6 +223,20 @@ describe('resetSection', () => {
     const reset = resetSection(changed, 'speech');
     expect(reset.speech).toEqual(DEFAULT_SETTINGS.speech);
     expect(reset.appearance.fontSize).toBe(20);
+  });
+});
+
+describe('resolveProceedPhrase', () => {
+  it('sends what the user typed, without the spaces around it', () => {
+    expect(resolveProceedPhrase(DEFAULT_SETTINGS.ai)).toBe('OK, proceed');
+    expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '  yes, carry on  ' })).toBe('yes, carry on');
+  });
+
+  it('falls back to the default rather than making the button do nothing', () => {
+    // The field is free to be empty while it is being retyped; the button is not
+    // free to silently send an empty line.
+    expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '' })).toBe('OK, proceed');
+    expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '   ' })).toBe('OK, proceed');
   });
 });
 
