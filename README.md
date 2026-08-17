@@ -7,6 +7,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 ## Features
 
 - Multi-pane workspaces with stack, vertical split, horizontal split, and four-pane grid layouts.
+- Draggable dividers between panes and beside the sidebar, so a split does not have to be an even one. Sizes are remembered between launches.
 - Maximize a focused pane and cycle between sessions without losing the other panes.
 - Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable.
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
@@ -51,6 +52,17 @@ terminal can copy to the system clipboard themselves through the OSC 52 escape
 sequence — this is how TUI tools such as CLI coding agents, tmux and Neovim put
 text on the clipboard, including over SSH. Reading the clipboard through OSC 52
 is refused, so a program on a remote host cannot see what you last copied.
+
+## Resizing panes and the sidebar
+
+Drag the line between two panes, or the sidebar's right edge, to change how the
+space is shared. Sizes are remembered between launches and clamped so that no
+pane can be dragged down to nothing.
+
+The dividers take keyboard focus as well: the arrow keys nudge one two percent at
+a time, and Enter or a double-click puts it back in the middle. One divider
+position is shared by every layout, so a split you set up in the vertical split
+is the same split you get in the four-pane grid.
 
 ## Settings
 
@@ -168,7 +180,7 @@ backend, and a remote host with `screen` still gives persistent sessions there.
 The current main branch has the following local verification coverage:
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (165 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, and the speech and voice helpers; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
+- `npm test`: passes (167 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, and the speech and voice helpers; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
 - `npm audit --omit=dev`: production dependency auditing is part of the project quality checks.
 

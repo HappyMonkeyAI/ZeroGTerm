@@ -211,7 +211,11 @@ input:focus-visible {
 .rail-spacer { flex: 1; }
 
 .session-drawer {
+  /* Overridden inline by the width the user dragged it to; this is the default
+     the schema also carries. The cap is in vw so that a stored width from a
+     larger window cannot swallow a small one. */
   width: 238px;
+  max-width: 40vw;
   display: flex;
   flex-direction: column;
   border-right: 1px solid #202630;
@@ -516,6 +520,75 @@ input:focus-visible {
   gap: 1px;
   background: #202630;
   padding: 0;
+  /* The containing block for the pane dividers, which are positioned over the
+     grid gap rather than taking part in the track layout. */
+  position: relative;
+}
+
+/*
+ * Resize handles: a wider grab area than the 1px line they sit on, because a
+ * 1px target is not one a pointer can reasonably hit. They stay invisible until
+ * hovered, focused or dragged, so the workspace does not gain three new lines.
+ */
+.sidebar-resizer,
+.pane-resizer {
+  background: transparent;
+  border: none;
+  padding: 0;
+  transition: background 120ms ease;
+}
+
+.sidebar-resizer:hover,
+.pane-resizer:hover,
+.sidebar-resizer.dragging,
+.pane-resizer.dragging {
+  background: rgba(122, 162, 247, 0.5);
+}
+
+/* Focus is shown as a solid line rather than an outline: an outline on a 5px
+   strip renders as a smudge, and this control's whole job is to mark a boundary. */
+.sidebar-resizer:focus-visible,
+.pane-resizer:focus-visible {
+  outline: none;
+  background: #7aa2f7;
+}
+
+.sidebar-resizer {
+  width: 5px;
+  flex: none;
+  margin-left: -3px;
+  margin-right: -2px;
+  cursor: col-resize;
+  /* Above the drawer's own border, so the grab area is not swallowed by it. */
+  position: relative;
+  z-index: 2;
+}
+
+.pane-resizer {
+  position: absolute;
+  z-index: 3;
+}
+
+.pane-resizer-column {
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+.pane-resizer-row {
+  left: 0;
+  right: 0;
+  height: 7px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+/* A maximized pane covers the whole grid, so its dividers would move panes that
+   are not on screen. */
+.pane-grid.maximized-pane-grid .pane-resizer {
+  display: none;
 }
 
 .pane-grid.split-v { grid-template-columns: 1fr 1fr; }
@@ -1037,7 +1110,9 @@ input:focus-visible {
 .warning-text { color: #e0af68; }
 
 @media (max-width: 1100px) {
-  .session-drawer { width: 210px; }
+  /* The stored width arrives as an inline style, so it is the cap that has to
+     give way on a narrow window, not the width. */
+  .session-drawer { max-width: 30vw; }
   .window-brand { width: 90px; }
   .brand-name { display: none; }
   .bar-button span { display: none; }

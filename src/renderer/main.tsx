@@ -10,6 +10,8 @@ import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
 import { useBackdropDismiss } from './backdrop-dismiss';
 import {
+  DEFAULT_SETTINGS,
+  SETTING_LIMITS,
   backendLabel,
   fontStack,
   loadSettings,
@@ -492,6 +494,92 @@ function TerminalView({
   );
 }
 
+/**
+ * A divider the user can drag to resize what sits either side of it.
+ *
+ * Pointer capture rather than window listeners: the pointer leaves this strip on
+ * the first frame of any real drag, and capture keeps the events arriving here
+ * without a listener that could outlive the gesture. Dragging reports a
+ * position; the caller turns that into a width or a ratio, since only it knows
+ * what its own container measures.
+ *
+ * Keyboard-operable as well as draggable, per the project's rule that a mouse
+ * control has an equivalent: it takes focus, the arrow keys nudge it, and Enter
+ * or a double-click puts it back where it started.
+ */
+function ResizeHandle({
+  orientation,
+  className,
+  label,
+  valuePercent,
+  style,
+  onDrag,
+  onCommit,
+  onNudge,
+  onReset
+}: {
+  /** The handle's own direction: vertical divides left from right. */
+  orientation: 'vertical' | 'horizontal';
+  className: string;
+  label: string;
+  /** Reported to assistive tech as the share taken by the side before it. */
+  valuePercent: number;
+  style?: React.CSSProperties;
+  onDrag: (position: { clientX: number; clientY: number }) => void;
+  onCommit: () => void;
+  onNudge: (direction: -1 | 1) => void;
+  onReset: () => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const back = orientation === 'vertical' ? 'ArrowLeft' : 'ArrowUp';
+  const forward = orientation === 'vertical' ? 'ArrowRight' : 'ArrowDown';
+  return (
+    <div
+      role="separator"
+      aria-orientation={orientation}
+      aria-label={label}
+      aria-valuenow={Math.round(valuePercent)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      tabIndex={0}
+      className={`${className} ${dragging ? 'dragging' : ''}`.trim()}
+      style={style}
+      title={`${label} — drag, arrow keys, or double-click to reset`}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        // Without this the browser starts a text selection across both panes.
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setDragging(true);
+      }}
+      onPointerMove={(event) => {
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        onDrag(event);
+      }}
+      onPointerUp={(event) => {
+        if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        setDragging(false);
+        onCommit();
+      }}
+      onPointerCancel={() => setDragging(false)}
+      onDoubleClick={onReset}
+      onKeyDown={(event) => {
+        if (event.key === back) {
+          event.preventDefault();
+          onNudge(-1);
+        } else if (event.key === forward) {
+          event.preventDefault();
+          onNudge(1);
+        } else if (event.key === 'Enter' || event.key === 'Home') {
+          event.preventDefault();
+          onReset();
+        }
+      }}
+    />
+  );
+}
+
 function PanePlaceholder({ index, onCreate }: { index: number; onCreate: () => void }) {
   return (
     <article className="pane empty-pane">
@@ -602,6 +690,17 @@ function App() {
       saveSettings(browserStorage(), next);
       return next;
     });
+  }, []);
+
+  /**
+   * The same edit, without writing it to storage.
+   *
+   * For a value being dragged: localStorage is synchronous, and saving the whole
+   * settings object on every pointermove puts a write in the middle of a resize.
+   * The gesture ends with changeSetting, which persists the size it settled on.
+   */
+  const changeSettingLive = useCallback(<K extends SettingsSection>(section: K, patch: Partial<Settings[K]>) => {
+    setSettings((current) => updateSection(current, section, patch));
   }, []);
 
   const resetSettings = useCallback((section: SettingsSection) => {
@@ -1107,6 +1206,53 @@ function App() {
         : layout === 'grid'
           ? 'pane-grid grid'
           : 'pane-grid';
+
+  // Which dividers this layout has. A maximized pane covers the grid, so its
+  // dividers would move panes nobody can see.
+  const splitsColumns = !maximizedPaneId && (layout === 'split-v' || layout === 'grid');
+  const splitsRows = !maximizedPaneId && (layout === 'split-h' || layout === 'grid');
+  const columnRatio = settings.sessions.splitColumnRatio;
+  const rowRatio = settings.sessions.splitRowRatio;
+  const paneGridRef = useRef<HTMLDivElement>(null);
+  // Dragged sizes go through updateSection, which clamps them, so the templates
+  // below can only ever describe a split with room for a terminal on both sides.
+  const paneGridStyle: React.CSSProperties | undefined = maximizedPaneId
+    ? undefined
+    : {
+        ...(splitsColumns ? { gridTemplateColumns: `${columnRatio}fr ${1 - columnRatio}fr` } : {}),
+        ...(splitsRows ? { gridTemplateRows: `${rowRatio}fr ${1 - rowRatio}fr` } : {})
+      };
+
+  /** Turn a pointer position into the share of the grid taken by the first pane. */
+  const dragSplit = (axis: 'column' | 'row', position: { clientX: number; clientY: number }) => {
+    const box = paneGridRef.current?.getBoundingClientRect();
+    if (!box) return;
+    const ratio = axis === 'column'
+      ? (position.clientX - box.left) / box.width
+      : (position.clientY - box.top) / box.height;
+    if (!Number.isFinite(ratio)) return;
+    changeSettingLive('sessions', axis === 'column' ? { splitColumnRatio: ratio } : { splitRowRatio: ratio });
+  };
+
+  const nudgeSplit = (axis: 'column' | 'row', direction: -1 | 1) => {
+    const current = axis === 'column' ? columnRatio : rowRatio;
+    const next = current + direction * 0.02;
+    changeSetting('sessions', axis === 'column' ? { splitColumnRatio: next } : { splitRowRatio: next });
+  };
+
+  const resetSplit = (axis: 'column' | 'row') => {
+    changeSetting('sessions', axis === 'column'
+      ? { splitColumnRatio: DEFAULT_SETTINGS.sessions.splitColumnRatio }
+      : { splitRowRatio: DEFAULT_SETTINGS.sessions.splitRowRatio });
+  };
+
+  const sidebarRef = useRef<HTMLElement>(null);
+  const dragSidebar = (position: { clientX: number }) => {
+    const box = sidebarRef.current?.getBoundingClientRect();
+    if (!box) return;
+    changeSettingLive('sessions', { sidebarWidth: Math.round(position.clientX - box.left) });
+  };
+
   const toggleMaximize = (sessionId: string) => {
     setFocusedSessionId(sessionId);
     setMaximizedSessionId((current) => current === sessionId ? null : sessionId);
@@ -1495,7 +1641,7 @@ function App() {
         </nav>
 
         {!drawerCollapsed && (
-          <aside className="session-drawer">
+          <aside className="session-drawer" ref={sidebarRef} style={{ width: settings.sessions.sidebarWidth }}>
             <div className="drawer-head">
               <div>
                 <span className="eyebrow">WORKSPACE</span>
@@ -1596,6 +1742,19 @@ function App() {
           </aside>
         )}
 
+        {!drawerCollapsed && (
+          <ResizeHandle
+            orientation="vertical"
+            className="sidebar-resizer"
+            label="Sidebar width"
+            valuePercent={(settings.sessions.sidebarWidth / SETTING_LIMITS.sidebarWidth.max) * 100}
+            onDrag={dragSidebar}
+            onCommit={() => changeSetting('sessions', { sidebarWidth: settings.sessions.sidebarWidth })}
+            onNudge={(direction) => changeSetting('sessions', { sidebarWidth: settings.sessions.sidebarWidth + direction * 16 })}
+            onReset={() => changeSetting('sessions', { sidebarWidth: DEFAULT_SETTINGS.sessions.sidebarWidth })}
+          />
+        )}
+
         <section className="workspace">
           <div className="workspace-head">
             <div className="location">
@@ -1647,7 +1806,37 @@ function App() {
             </div>
           </div>
 
-          <div className={`${paneClass} ${maximizedPaneId ? 'maximized-pane-grid' : ''}`}>
+          <div className={`${paneClass} ${maximizedPaneId ? 'maximized-pane-grid' : ''}`} ref={paneGridRef} style={paneGridStyle}>
+            {/* Absolutely positioned, so they overlay the 1px grid gap instead of
+                becoming grid items — which would need a different track layout
+                for each of the three split layouts. Offset by half the gap so the
+                grab strip is centred on the line the user sees. */}
+            {splitsColumns && (
+              <ResizeHandle
+                orientation="vertical"
+                className="pane-resizer pane-resizer-column"
+                label="Pane column split"
+                valuePercent={columnRatio * 100}
+                style={{ left: `calc((100% - 1px) * ${columnRatio} + 0.5px)` }}
+                onDrag={(position) => dragSplit('column', position)}
+                onCommit={() => changeSetting('sessions', { splitColumnRatio: columnRatio })}
+                onNudge={(direction) => nudgeSplit('column', direction)}
+                onReset={() => resetSplit('column')}
+              />
+            )}
+            {splitsRows && (
+              <ResizeHandle
+                orientation="horizontal"
+                className="pane-resizer pane-resizer-row"
+                label="Pane row split"
+                valuePercent={rowRatio * 100}
+                style={{ top: `calc((100% - 1px) * ${rowRatio} + 0.5px)` }}
+                onDrag={(position) => dragSplit('row', position)}
+                onCommit={() => changeSetting('sessions', { splitRowRatio: rowRatio })}
+                onNudge={(direction) => nudgeSplit('row', direction)}
+                onReset={() => resetSplit('row')}
+              />
+            )}
             {Array.from({ length: renderedPaneCount }, (_, index) => {
               const paneSession = paneSessions[index];
               if (!paneSession) {

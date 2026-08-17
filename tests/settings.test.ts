@@ -120,6 +120,22 @@ describe('parseSettings', () => {
     expect(parseSettings({ ai: { proceedPhrase: 'x'.repeat(5000) } }).ai.proceedPhrase).toHaveLength(200);
   });
 
+  it('keeps a dragged sidebar width and split within usable bounds', () => {
+    // A drag reports a raw pointer position, so the clamp is what stops a pane
+    // being dragged to nothing or the sidebar filling the window.
+    const dragged = parseSettings({ sessions: { sidebarWidth: 300, splitColumnRatio: 0.34, splitRowRatio: 0.7 } });
+    expect(dragged.sessions).toMatchObject({ sidebarWidth: 300, splitColumnRatio: 0.34, splitRowRatio: 0.7 });
+
+    const past = parseSettings({ sessions: { sidebarWidth: 4000, splitColumnRatio: -3, splitRowRatio: 12 } });
+    expect(past.sessions.sidebarWidth).toBe(520);
+    expect(past.sessions.splitColumnRatio).toBe(0.15);
+    expect(past.sessions.splitRowRatio).toBe(0.85);
+
+    // Sub-pixel sidebar widths would leave the divider a fraction off the edge
+    // it is drawn on.
+    expect(parseSettings({ sessions: { sidebarWidth: 240.6 } }).sessions.sidebarWidth).toBe(241);
+  });
+
   it('adopts the theme chosen before settings existed', () => {
     expect(parseSettings(undefined, 'light').appearance.theme).toBe('light');
     // An explicit stored theme wins over the legacy key.
@@ -180,6 +196,13 @@ describe('updateSection', () => {
 
   it('validates the patch, so a control cannot store an out-of-range value', () => {
     expect(updateSection(DEFAULT_SETTINGS, 'appearance', { fontSize: 400 }).appearance.fontSize).toBe(32);
+  });
+
+  it('clamps a live drag, so a divider cannot be dragged past a usable pane', () => {
+    // The drag path patches through updateSection on every pointermove, which is
+    // the only thing standing between a raw pointer position and the layout.
+    expect(updateSection(DEFAULT_SETTINGS, 'sessions', { splitColumnRatio: 0.98 }).sessions.splitColumnRatio).toBe(0.85);
+    expect(updateSection(DEFAULT_SETTINGS, 'sessions', { sidebarWidth: 40 }).sessions.sidebarWidth).toBe(180);
   });
 
   it('normalises a language that the newly chosen model cannot use', () => {

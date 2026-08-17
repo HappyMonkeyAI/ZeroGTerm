@@ -74,6 +74,15 @@ export type SessionSettings = {
   defaultWslDistribution: string;
   defaultLayout: Layout;
   startSidebarCollapsed: boolean;
+  /** Sidebar width in pixels, as the user last dragged it. */
+  sidebarWidth: number;
+  /**
+   * Where the pane dividers sit, as the left/top share of the split. One pair
+   * serves every layout: the vertical split uses the column value, the
+   * horizontal split the row value, and the four-pane grid both.
+   */
+  splitColumnRatio: number;
+  splitRowRatio: number;
 };
 
 export type AiSettings = {
@@ -135,7 +144,10 @@ export const DEFAULT_SETTINGS: Settings = {
     defaultBackend: 'bash',
     defaultWslDistribution: '',
     defaultLayout: 'stack',
-    startSidebarCollapsed: false
+    startSidebarCollapsed: false,
+    sidebarWidth: 238,
+    splitColumnRatio: 0.5,
+    splitRowRatio: 0.5
   },
   ai: {
     requireApproval: true,
@@ -167,7 +179,14 @@ export const SETTING_LIMITS = {
   letterSpacing: { min: -2, max: 4 },
   scrollback: { min: 200, max: 200000 },
   maxUtteranceSeconds: { min: 5, max: 120 },
-  silenceThreshold: { min: 0.0005, max: 0.05 }
+  silenceThreshold: { min: 0.0005, max: 0.05 },
+  // Wide enough for a session name and a path, narrow enough to leave a usable
+  // terminal beside it. The drawer also carries a max-width in vw, so a small
+  // window shrinks it below whatever is stored here.
+  sidebarWidth: { min: 180, max: 520 },
+  // A pane thinner than about a seventh of the workspace holds no usable
+  // terminal, and dragging a divider off the edge is easy to do by accident.
+  splitRatio: { min: 0.15, max: 0.85 }
 } as const;
 
 /**
@@ -307,7 +326,10 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       defaultBackend: pickEnum(sessions.defaultBackend, BACKENDS, DEFAULT_SETTINGS.sessions.defaultBackend),
       defaultWslDistribution: pickString(sessions.defaultWslDistribution, DEFAULT_SETTINGS.sessions.defaultWslDistribution, 64),
       defaultLayout: pickEnum(sessions.defaultLayout, LAYOUTS, DEFAULT_SETTINGS.sessions.defaultLayout),
-      startSidebarCollapsed: pickBoolean(sessions.startSidebarCollapsed, DEFAULT_SETTINGS.sessions.startSidebarCollapsed)
+      startSidebarCollapsed: pickBoolean(sessions.startSidebarCollapsed, DEFAULT_SETTINGS.sessions.startSidebarCollapsed),
+      sidebarWidth: Math.round(pickNumber(sessions.sidebarWidth, SETTING_LIMITS.sidebarWidth, DEFAULT_SETTINGS.sessions.sidebarWidth)),
+      splitColumnRatio: pickNumber(sessions.splitColumnRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitColumnRatio),
+      splitRowRatio: pickNumber(sessions.splitRowRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitRowRatio)
     },
     ai: {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
