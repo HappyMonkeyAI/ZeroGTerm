@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, ipcMain, Menu, session } from 'electron'
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
-import { ScreenService, parseWslDistributions } from './session-service.js';
+import { ScreenService, parseWslDistributions, type PtySize } from './session-service.js';
 import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
@@ -11,6 +11,14 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
 const service = new ScreenService({ onEvent: (event, session, available) => { void history.record(event, session, available); } });
 let win: BrowserWindow | undefined;
+
+/** A pane's measured size, as it arrives from the renderer. */
+function parsePtySize(value: unknown): PtySize | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { cols, rows } = value as { cols?: unknown; rows?: unknown };
+  if (!Number.isInteger(cols) || !Number.isInteger(rows)) return undefined;
+  return { cols: cols as number, rows: rows as number };
+}
 
 // GPU is unstable under Toolbox/Wayland on this host; allow override.
 if (process.env.ZEROG_ENABLE_GPU !== '1') {
@@ -115,12 +123,13 @@ ipcMain.handle('screens:attachRemote', (_event, input: unknown, screenName: unkn
   return buildRemoteScreenAttachArgs(connection, screenName);
 });
 
-ipcMain.handle('sessions:attach', (_event, id: unknown) => {
+ipcMain.handle('sessions:attach', (_event, id: unknown, size: unknown) => {
   if (typeof id !== 'string' || !id) throw new Error('attachSession requires a session id');
   return service.attach(
     id,
     (data) => win?.webContents.send('terminal:data', id, data),
-    (message) => win?.webContents.send('terminal:status', id, message)
+    (message) => win?.webContents.send('terminal:status', id, message),
+    parsePtySize(size)
   );
 });
 
