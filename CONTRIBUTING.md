@@ -1,12 +1,12 @@
 # Contributing to ZeroG Terminal
 
-Thanks for your interest in ZeroG Terminal. The project is an early Linux-first Electron terminal workspace, so focused bug reports, reliability improvements, and small, well-tested changes are especially useful.
+Thanks for your interest in ZeroG Terminal. The project is an early Electron terminal workspace, developed Linux-first and also running on Windows, so focused bug reports, reliability improvements, and small, well-tested changes are especially useful.
 
 ## Before opening an issue
 
 - Search existing issues first.
 - Include the ZeroG Terminal version or commit when known.
-- Include the host distribution, desktop session (Wayland/X11), Node.js version, and whether `screen` is installed.
+- Include the operating system, the Node.js version, and whether `screen` is installed. On Linux, add the distribution and whether the desktop session is Wayland or X11; on Windows, the shell backend the session was using.
 - Do not include credentials, private SSH details, terminal output containing secrets, or personal filesystem paths.
 
 ## Development setup
@@ -15,8 +15,8 @@ Requirements:
 
 - Node.js 22 or newer
 - npm
-- A C/C++ toolchain for `node-pty`
-- `screen` for persistent local sessions (optional; ZeroG has a process-only fallback)
+- A C/C++ toolchain for `node-pty`, on Linux only — it ships prebuilt binaries for Windows and macOS
+- `screen` for persistent local sessions (Linux and macOS only; optional, ZeroG has a process-only fallback)
 
 ```bash
 npm install
@@ -26,13 +26,20 @@ npm run build
 npm start
 ```
 
+These run on Linux and Windows. npm runs package scripts through `cmd.exe` on
+Windows, so no POSIX shell is needed whichever shell you start them from.
+
 For full local-session behavior on Fedora:
 
 ```bash
 sudo dnf install screen make gcc-c++ python3
 ```
 
-Without `screen`, local terminals use a direct `bash` PTY and are explicitly non-persistent. They do not survive application exit or relaunch.
+Without `screen`, local terminals use a direct PTY on the selected shell and are
+explicitly non-persistent: they do not survive application exit or relaunch. That
+is always the case on Windows, where `screen` does not exist — a Windows change
+touching session persistence should be checked against that path rather than the
+`screen` one.
 
 ## Making changes
 
