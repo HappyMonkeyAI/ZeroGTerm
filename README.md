@@ -31,7 +31,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.4.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt).
+ZeroG Terminal is currently a public alpha. The current release is `0.5.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt).
 
 The npm package contains the built Electron application and project documentation. It is intended for early adopters and testing rather than production use.
 
