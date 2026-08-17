@@ -579,6 +579,7 @@ input:focus-visible {
 .pane-nav,
 .pane-maximize,
 .pane-close,
+.pane-proceed,
 .pane-mic {
   width: 19px;
   height: 19px;
@@ -603,6 +604,14 @@ input:focus-visible {
   color: #f7768e;
   background: rgba(247, 118, 142, 0.14);
   border-color: rgba(247, 118, 142, 0.4);
+}
+
+/* Green on hover: this is the one control that sends a line for you, so it reads
+   as an action rather than another neutral pane button. */
+.pane-proceed:hover {
+  color: #9ece6a;
+  background: rgba(158, 206, 106, 0.14);
+  border-color: rgba(158, 206, 106, 0.45);
 }
 
 .pane-mic:disabled {
@@ -632,6 +641,7 @@ input:focus-visible {
 .pane-nav .icon-svg,
 .pane-maximize .icon-svg,
 .pane-close .icon-svg,
+.pane-proceed .icon-svg,
 .pane-mic .icon-svg {
   width: 13px;
   height: 13px;
@@ -1222,6 +1232,12 @@ input:focus-visible {
 
 :root[data-theme='light'] .pane-close:hover {
   color: #c53030;
+}
+
+:root[data-theme='light'] .pane-proceed:hover {
+  color: #16803c;
+  background: rgba(22, 128, 60, 0.1);
+  border-color: rgba(22, 128, 60, 0.35);
 }
 
 :root[data-theme='light'] .pane-mic.listening {

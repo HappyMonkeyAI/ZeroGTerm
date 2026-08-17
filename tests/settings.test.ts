@@ -7,6 +7,7 @@ import {
   loadSettings,
   parseSettings,
   resetSection,
+  resolveProceedPhrase,
   saveSettings,
   updateSection,
   type SettingsStorage
@@ -100,6 +101,25 @@ describe('parseSettings', () => {
     expect(parseSettings({ speech: { model: 'onnx-community/whisper-small', language: 'kl' } }).speech.language).toBe('auto');
   });
 
+  it('keeps a proceed phrase exactly as typed, spaces included', () => {
+    // parseSettings runs on every keystroke, so trimming here would eat the
+    // space between words as the user types it.
+    expect(parseSettings({ ai: { proceedPhrase: 'yes, carry on ' } }).ai.proceedPhrase).toBe('yes, carry on ');
+    expect(parseSettings({ ai: { proceedPhrase: '' } }).ai.proceedPhrase).toBe('');
+  });
+
+  it('strips control characters from the proceed phrase, which supplies its own Enter', () => {
+    // A newline in the phrase would send several lines, only the last of which
+    // is visible in the field the user typed it into.
+    expect(parseSettings({ ai: { proceedPhrase: 'go\r\nrm -rf /' } }).ai.proceedPhrase).toBe('go  rm -rf /');
+    expect(parseSettings({ ai: { proceedPhrase: 'go\x1b[31m' } }).ai.proceedPhrase).toBe('go [31m');
+    expect(parseSettings({ ai: { proceedPhrase: 42 } }).ai.proceedPhrase).toBe(DEFAULT_SETTINGS.ai.proceedPhrase);
+  });
+
+  it('bounds the proceed phrase a hand-edited file could make enormous', () => {
+    expect(parseSettings({ ai: { proceedPhrase: 'x'.repeat(5000) } }).ai.proceedPhrase).toHaveLength(200);
+  });
+
   it('adopts the theme chosen before settings existed', () => {
     expect(parseSettings(undefined, 'light').appearance.theme).toBe('light');
     // An explicit stored theme wins over the legacy key.
@@ -180,6 +200,20 @@ describe('resetSection', () => {
     const reset = resetSection(changed, 'speech');
     expect(reset.speech).toEqual(DEFAULT_SETTINGS.speech);
     expect(reset.appearance.fontSize).toBe(20);
+  });
+});
+
+describe('resolveProceedPhrase', () => {
+  it('sends what the user typed, without the spaces around it', () => {
+    expect(resolveProceedPhrase(DEFAULT_SETTINGS.ai)).toBe('OK, proceed');
+    expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '  yes, carry on  ' })).toBe('yes, carry on');
+  });
+
+  it('falls back to the default rather than making the button do nothing', () => {
+    // The field is free to be empty while it is being retyped; the button is not
+    // free to silently send an empty line.
+    expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '' })).toBe('OK, proceed');
+    expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '   ' })).toBe('OK, proceed');
   });
 });
 

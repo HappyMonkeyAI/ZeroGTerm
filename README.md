@@ -18,6 +18,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
 - Local voice input, either with Whisper ONNX inside the app through Transformers.js or through a transcription server on this machine; transcribed text is typed into the selected terminal without automatic execution.
+- A per-pane proceed button that sends a configurable phrase — `OK, proceed` by default — for waving an agent on without typing the same reply again.
 - A settings panel for appearance, terminal behaviour, session defaults, and speech recognition, including a built-in recognition test.
 - AI command suggestion and approval UI, keeping command execution explicit.
 - Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
@@ -64,8 +65,22 @@ between launches; each page can be reset on its own.
   layout to start in, and whether the sidebar starts collapsed.
 - **AI & voice** — whether AI suggestions need approval before running, and
   whether a transcript is typed straight into the pane or shown for review
-  first. Neither option presses Enter for you.
+  first. Neither option presses Enter for you. Also the phrase the pane's
+  proceed button sends, described below.
 - **Speech recognition** — engine, model and tuning, described below.
+
+### Proceed button
+
+Each pane's title bar carries a tick beside the microphone. Clicking it sends
+`OK, proceed` and presses Enter — for the common case of an AI coding agent
+pausing to ask whether it should carry on. The phrase is editable under
+**Settings ▸ AI & voice**, so an agent that responds better to different wording
+can have it.
+
+This is the one control that presses Enter for you; voice transcripts and AI
+suggestions deliberately do not. It sends to the pane it belongs to, so a pane
+sitting at a shell prompt rather than in an agent will simply try to run the
+phrase as a command.
 
 ### Speech recognition
 
@@ -153,7 +168,7 @@ backend, and a remote host with `screen` still gives persistent sessions there.
 The current main branch has the following local verification coverage:
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (160 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, and the speech and voice helpers; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
+- `npm test`: passes (165 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, and the speech and voice helpers; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
 - `npm audit --omit=dev`: production dependency auditing is part of the project quality checks.
 
