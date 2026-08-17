@@ -253,13 +253,16 @@ function TerminalView({
   focused,
   onStatus,
   appearance,
-  terminalSettings
+  terminalSettings,
+  registerFocus
 }: {
   sessionId?: string;
   focused?: boolean;
   onStatus: (message: string) => void;
   appearance: AppearanceSettings;
   terminalSettings: TerminalSettings;
+  /** Lets the app put the keyboard back in this pane after a control took it. */
+  registerFocus?: (sessionId: string, focus: (() => void) | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -471,6 +474,12 @@ function TerminalView({
     if (focused) terminalRef.current?.focus();
   }, [focused]);
 
+  useEffect(() => {
+    if (!sessionId || !registerFocus) return;
+    registerFocus(sessionId, () => terminalRef.current?.focus());
+    return () => registerFocus(sessionId, null);
+  }, [sessionId, registerFocus]);
+
   return (
     <div className="terminal" ref={ref} onMouseDownCapture={(event) => event.preventDefault()} />
   );
@@ -549,6 +558,25 @@ function App() {
   const [remoteScreenEntries, setRemoteScreenEntries] = useState<Array<{ session: SessionInfo; connection: KnownConnection }>>([]);
   const [remoteScreensLoading, setRemoteScreensLoading] = useState(false);
 
+  // Each mounted pane leaves a way to put the keyboard back into its terminal.
+  // Clicking a pane control — the mic above all — moves focus onto a button,
+  // and marking the pane focused is not enough to take it back: a pane that was
+  // already the focused one sees no prop change, so nothing pulls focus in and
+  // the next keystrokes go to the button instead of the shell.
+  const terminalFocusRef = useRef(new Map<string, () => void>());
+  const registerTerminalFocus = useCallback((sessionId: string, focus: (() => void) | null) => {
+    if (focus) terminalFocusRef.current.set(sessionId, focus);
+    else terminalFocusRef.current.delete(sessionId);
+  }, []);
+  /** Put the keyboard back in a pane, so the user can carry on typing. */
+  const focusTerminal = useCallback((sessionId: string | null | undefined) => {
+    if (!sessionId) return;
+    setFocusedSessionId(sessionId);
+    // After the commit: the pane may still be rendering the state change that
+    // preceded this call, and a dialog closing removes the focused button.
+    requestAnimationFrame(() => terminalFocusRef.current.get(sessionId)?.());
+  }, []);
+
   // Backdrop dismissal, gated on where the press started so that selecting
   // text inside a dialog cannot close it. See backdrop-dismiss.ts.
   const dismissModal = useBackdropDismiss(() => setModal(null));
@@ -556,7 +584,7 @@ function App() {
   const dismissOverview = useBackdropDismiss(() => setOverview(false));
   const dismissHistory = useBackdropDismiss(() => setHistoryOpen(false));
   const dismissSettings = useBackdropDismiss(() => setSettingsOpen(false));
-  const dismissVoiceReview = useBackdropDismiss(() => setVoiceReview(null));
+  const dismissVoiceReview = useBackdropDismiss(() => closeVoiceReview());
 
   // Every settings edit goes through updateSection, so a control cannot store a
   // value the schema would reject, and every edit is persisted as it is made —
@@ -694,15 +722,26 @@ function App() {
     }
   }, [active, workspaceSessions]);
 
+  // Esc while listening, in the capture phase so it reaches here rather than
+  // the shell. The pane holds the keyboard during a recording — that is the
+  // point, so typing carries on working — and xterm would otherwise consume the
+  // key first and send it to the pty.
+  useEffect(() => {
+    if (voice.status !== 'listening') return;
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      cancelVoice();
+      setStatus('Voice cancelled');
+    };
+    window.addEventListener('keydown', onEscape, true);
+    return () => window.removeEventListener('keydown', onEscape, true);
+  }, [voice.status]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (voice.status === 'listening') {
-          event.preventDefault();
-          cancelVoice();
-          setStatus('Voice cancelled');
-          return;
-        }
         if (settingsOpen) {
           event.preventDefault();
           setSettingsOpen(false);
@@ -710,7 +749,7 @@ function App() {
         }
         if (voiceReview) {
           event.preventDefault();
-          setVoiceReview(null);
+          closeVoiceReview();
           return;
         }
         if (overview) {
@@ -1094,11 +1133,20 @@ function App() {
   };
 
   const cancelVoice = () => {
+    const target = voiceTargetRef.current;
     window.clearTimeout(voiceLimitRef.current);
     recorderRef.current?.cancel();
     recorderRef.current = null;
     voiceTargetRef.current = null;
     setVoice({ status: 'idle', sessionId: null });
+    focusTerminal(target);
+  };
+
+  /** Close the review dialog and hand the keyboard back to its pane. */
+  const closeVoiceReview = () => {
+    const target = voiceReview?.sessionId;
+    setVoiceReview(null);
+    focusTerminal(target);
   };
 
   const finishListening = async () => {
@@ -1114,6 +1162,7 @@ function App() {
       voiceTargetRef.current = null;
       setVoice({ status: 'idle', sessionId: null });
       setStatus('Voice: no speech detected — lower the silence threshold in Settings if this is wrong');
+      focusTerminal(target);
       return;
     }
     try {
@@ -1122,10 +1171,12 @@ function App() {
       setVoice({ status: 'idle', sessionId: null });
       if (!result.text) {
         setStatus('Voice: nothing transcribed');
+        focusTerminal(target);
         return;
       }
       // Review mode holds the transcript in a dialog instead of typing it, for
-      // when a wrong word in a shell is worse than a second keystroke.
+      // when a wrong word in a shell is worse than a second keystroke. The
+      // dialog wants the keyboard, so the pane gets it back when that closes.
       if (settings.ai.voiceInsert === 'review') {
         setVoiceReview({ sessionId: target, text: result.text });
         setStatus(`Voice: review "${result.text}"`);
@@ -1133,10 +1184,12 @@ function App() {
       }
       api()?.write(target, result.text);
       setStatus(`Voice: "${result.text}"`);
+      focusTerminal(target);
     } catch (error) {
       voiceTargetRef.current = null;
       setVoice({ status: 'idle', sessionId: null });
       setStatus(`Voice error: ${error instanceof Error ? error.message : String(error)}`);
+      focusTerminal(target);
     }
   };
 
@@ -1161,10 +1214,14 @@ function App() {
     recorderRef.current = recorder;
     voiceTargetRef.current = session.id;
     setVoice({ status: 'listening', sessionId: session.id });
-    setFocusedSessionId(session.id);
+    // The click left the keyboard on the mic button, where Space and Enter would
+    // toggle it again. Recording does not need the focus, so the pane keeps it.
+    focusTerminal(session.id);
     window.clearTimeout(voiceLimitRef.current);
     voiceLimitRef.current = window.setTimeout(() => void finishListening(), settings.speech.maxUtteranceSeconds * 1000);
-    setStatus(`Listening on ${session.name}… click the mic again or press Esc to finish`);
+    // Esc discards rather than finishes: worth saying, now that the keyboard is
+    // in the pane and Esc is a key the user may well reach for.
+    setStatus(`Listening on ${session.name}… click the mic again to transcribe, Esc to discard`);
   };
 
   const finishSpeechTest = async () => {
@@ -1615,6 +1672,7 @@ function App() {
                     onStatus={setStatus}
                     appearance={settings.appearance}
                     terminalSettings={settings.terminal}
+                    registerFocus={registerTerminalFocus}
                   />
                 </article>
               );
@@ -1926,19 +1984,19 @@ function App() {
                 <span className="eyebrow">VOICE</span>
                 <h2>Insert transcript?</h2>
               </div>
-              <button type="button" className="close-button" onClick={() => setVoiceReview(null)}>Esc</button>
+              <button type="button" className="close-button" onClick={() => closeVoiceReview()}>Esc</button>
             </div>
             <p>Review mode is on, so nothing has been typed yet. Inserting does not press Enter.</p>
             <code>{voiceReview.text}</code>
             <div className="modal-actions">
-              <button type="button" onClick={() => setVoiceReview(null)}>Discard</button>
+              <button type="button" onClick={() => closeVoiceReview()}>Discard</button>
               <button
                 type="button"
                 className="primary-button"
                 onClick={() => {
                   api()?.write(voiceReview.sessionId, voiceReview.text);
                   setStatus(`Voice: "${voiceReview.text}"`);
-                  setVoiceReview(null);
+                  closeVoiceReview();
                 }}
               >
                 Insert
