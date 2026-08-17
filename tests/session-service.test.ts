@@ -70,6 +70,59 @@ describe('screen session contract', () => {
     expect(pty.spawned.map((item) => item.killed)).toEqual([true, true]);
   });
 
+  it('starts the shell at the size of the pane that asked for it', async () => {
+    // A pty spawned at a stock size draws its first frame for a terminal of the
+    // wrong width, and a full-screen program redrawing over that frame leaves
+    // pieces of it on screen.
+    const pty = createFakePty();
+    const service = new ScreenService({ spawnPty: pty.spawn });
+    const session = await service.createSsh('sized.example.com', 'sized');
+
+    service.attach(session.id, () => undefined, () => undefined, { cols: 203, rows: 67 });
+
+    expect(pty.spawned[0].size).toEqual({ cols: 203, rows: 67 });
+    expect(pty.spawned[0].resizes).toEqual([]);
+  });
+
+  it('ignores a size the pane could not measure', async () => {
+    const pty = createFakePty();
+    const service = new ScreenService({ spawnPty: pty.spawn });
+    const session = await service.createSsh('unmeasured.example.com', 'unmeasured');
+
+    service.attach(session.id, () => undefined, () => undefined, { cols: 0, rows: 0 });
+
+    expect(pty.spawned[0].size).toEqual({ cols: 120, rows: 32 });
+  });
+
+  it('resizes an already attached session to the re-attaching pane', async () => {
+    const pty = createFakePty();
+    const service = new ScreenService({ spawnPty: pty.spawn });
+    const session = await service.createSsh('reattach.example.com', 'reattach');
+    service.attach(session.id, () => undefined, () => undefined, { cols: 100, rows: 40 });
+
+    service.attach(session.id, () => undefined, () => undefined, { cols: 160, rows: 50 });
+
+    expect(pty.spawned).toHaveLength(1);
+    expect(pty.spawned[0].resizes).toEqual([{ cols: 160, rows: 50 }]);
+  });
+
+  it('drops a resize to the size the pty already has', async () => {
+    // Panes refit on layout, font and status changes, and mostly arrive at the
+    // size the pty already has. Forwarding it anyway makes ConPTY re-emit its
+    // screen and every full-screen program redraw on SIGWINCH for nothing.
+    const pty = createFakePty();
+    const service = new ScreenService({ spawnPty: pty.spawn });
+    const session = await service.createSsh('refit.example.com', 'refit');
+    service.attach(session.id, () => undefined, () => undefined, { cols: 120, rows: 40 });
+
+    service.resize(session.id, 120, 40);
+    service.resize(session.id, 120, 41);
+    service.resize(session.id, 120, 41);
+    service.resize(session.id, 0, 41);
+
+    expect(pty.spawned[0].resizes).toEqual([{ cols: 120, rows: 41 }]);
+  });
+
   it('close removes transient SSH bookkeeping so the session no longer lists', async () => {
     const service = new ScreenService();
     const session = await service.createSsh('example.com', `close-ssh-${Date.now()}`);
