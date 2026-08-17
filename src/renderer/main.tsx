@@ -15,6 +15,7 @@ import {
   loadSettings,
   resetSection,
   resolveDefaultBackend,
+  resolveProceedPhrase,
   saveSettings,
   updateSection,
   type AppearanceSettings,
@@ -207,6 +208,12 @@ function Icon({ name, className = '' }: { name: string; className?: string }) {
           <rect x="9" y="2.5" width="6" height="12" rx="3" />
           <path d="M5 11.5a7 7 0 0 0 14 0" />
           <path d="M12 18.5V21" />
+        </svg>
+      );
+    case 'check':
+      return (
+        <svg {...common}>
+          <path d="M5 13l4.5 4.5L19 7" />
         </svg>
       );
     default:
@@ -810,6 +817,9 @@ function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [overview, approval, modal, historyOpen, settingsOpen, voiceReview, voice.status, workspaces, activeWorkspace, workspaceSessions]);
 
+  // Named here so the button's tooltip and its action cannot disagree about what
+  // an emptied setting falls back to.
+  const proceedPhrase = resolveProceedPhrase(settings.ai);
   const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
   // Keep every workspace terminal mounted while changing layouts. Hiding a
   // pane must not dispose its xterm renderer and lose its scrollback/content.
@@ -1222,6 +1232,24 @@ function App() {
     // Esc discards rather than finishes: worth saying, now that the keyboard is
     // in the pane and Esc is a key the user may well reach for.
     setStatus(`Listening on ${session.name}… click the mic again to transcribe, Esc to discard`);
+  };
+
+  /**
+   * Send the proceed phrase to a pane, Enter included.
+   *
+   * The one place in the app that presses Enter for the user. It is not a
+   * command being run on their behalf — it is a reply to an agent already
+   * waiting in that pane, which is the whole point of the button — but it does
+   * reach a shell prompt as a command if the pane is sitting at one, so the
+   * status line says exactly what was sent.
+   */
+  const sendProceed = (session: SessionInfo) => {
+    const currentApi = api();
+    if (!currentApi) return;
+    const phrase = resolveProceedPhrase(settings.ai);
+    currentApi.write(session.id, `${phrase}\r`);
+    setStatus(`Sent "${phrase}" to ${session.name}`);
+    focusTerminal(session.id);
   };
 
   const finishSpeechTest = async () => {
@@ -1648,6 +1676,15 @@ function App() {
                         </>
                       )}
                       {busy ? 'connecting…' : paneVoice ? `${paneVoice}…` : paneSession.kind === 'ssh' ? 'ssh' : 'bash'}
+                      <button
+                        type="button"
+                        className="pane-proceed"
+                        onClick={() => sendProceed(paneSession)}
+                        title={`Send "${proceedPhrase}" and press Enter`}
+                        aria-label={`Send "${proceedPhrase}" to ${paneSession.name}`}
+                      >
+                        <Icon name="check" />
+                      </button>
                       <button
                         type="button"
                         className={paneVoice ? `pane-mic ${paneVoice}` : 'pane-mic'}

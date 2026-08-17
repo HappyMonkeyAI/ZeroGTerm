@@ -7,6 +7,7 @@
 import React, { useState } from 'react';
 import type { ShellBackend } from '../shared/types';
 import {
+  DEFAULT_SETTINGS,
   FONT_CHOICES,
   SETTING_LIMITS,
   fontStack,
@@ -440,6 +441,16 @@ export function SettingsPanel({
                   ]}
                   onChange={(voiceInsert) => onChange('ai', { voiceInsert })}
                 />
+                <Field
+                  label="Proceed phrase"
+                  hint="What a pane's tick button sends. Unlike the options above, this one does press Enter — it is for telling an agent already waiting in the pane to carry on."
+                >
+                  <input
+                    value={settings.ai.proceedPhrase}
+                    placeholder={DEFAULT_SETTINGS.ai.proceedPhrase}
+                    onChange={(event) => onChange('ai', { proceedPhrase: event.target.value })}
+                  />
+                </Field>
               </>
             )}
 
