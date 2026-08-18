@@ -1,7 +1,9 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CreateLocalRequest, SessionInfo } from '../shared/types.js';
 import { defaultShellBackend, isLocalShellBackend, resolveShellBackend } from './shell-catalog.js';
@@ -16,6 +18,18 @@ const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,48}$/;
  * -chosen config file (hence ProxyCommand) without any shell involvement.
  */
 const SSH_TARGET = /^(?:([A-Za-z0-9][A-Za-z0-9._-]*)@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::(\d{1,5}))?$/;
+
+function resolveSshExecutable(): string {
+  if (process.platform !== 'win32') return 'ssh';
+
+  const windowsRoot = process.env.SystemRoot ?? 'C:\\Windows';
+  const candidates = [
+    join(windowsRoot, 'System32', 'OpenSSH', 'ssh.exe'),
+    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'usr', 'bin', 'ssh.exe'),
+    join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Git', 'usr', 'bin', 'ssh.exe')
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? 'ssh.exe';
+}
 
 /** The slice of node-pty's process this service actually uses. */
 export type PtyProcess = {
@@ -282,7 +296,7 @@ export class ScreenService {
     session.status = 'connected';
     session.lastSeen = new Date().toISOString();
     try {
-      this.spawnCommand(id, 'ssh', args, onData, onExit, homedir(), size);
+      this.spawnCommand(id, resolveSshExecutable(), args, onData, onExit, homedir(), size);
     } catch (error) {
       session.status = 'error';
       this.onEvent?.('reconnect-failed', session, false);
