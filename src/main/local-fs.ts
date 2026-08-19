@@ -7,7 +7,7 @@
 // explicit create/rename/delete on a path the user pointed at.
 
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, readdir, rename, rm, rmdir, stat } from 'node:fs/promises';
+import { access, lstat, mkdir, readdir, rename, rm, rmdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
 import type { DirectoryListing, FileEntry } from '../shared/types.js';
@@ -43,6 +43,14 @@ export function localHome(): string {
  * A stat per entry is what makes kind and size real, and it is allowed to fail:
  * a broken symlink or a file that has just been deleted should leave a row in
  * the listing rather than emptying the pane.
+ *
+ * Entries are stat'd with lstat, so a symlink is reported as a symlink whatever
+ * it points at. Reporting a link to a directory as a directory instead would be
+ * a lie with consequences: deleting it would use `rmdir`, which refuses a
+ * symlink, so the row could not be removed at all. It also matches what the
+ * remote side shows, since `ls -l` describes the link rather than its target.
+ * Entering one still works — see isNavigable — because opening it simply reads
+ * through, and a link to a file reports that it is not a directory.
  */
 export async function listLocalDirectory(path?: string): Promise<DirectoryListing> {
   const target = path ? resolveLocalPath(path) : homedir();
@@ -51,19 +59,16 @@ export async function listLocalDirectory(path?: string): Promise<DirectoryListin
   const entries = await Promise.all(
     dirents.map(async (dirent): Promise<FileEntry> => {
       const full = join(target, dirent.name);
-      const link = dirent.isSymbolicLink();
       try {
-        // Symlinks are stat'd through, so a link to a directory can be entered,
-        // while still being labelled as a link.
-        const info = link ? await stat(full) : await lstat(full);
+        const info = await lstat(full);
         return {
           name: dirent.name,
-          kind: info.isDirectory() ? 'directory' : link ? 'symlink' : 'file',
+          kind: info.isSymbolicLink() ? 'symlink' : info.isDirectory() ? 'directory' : 'file',
           size: info.size,
           modified: info.mtime.toISOString()
         };
       } catch {
-        return { name: dirent.name, kind: link ? 'symlink' : dirent.isDirectory() ? 'directory' : 'file', size: 0 };
+        return { name: dirent.name, kind: dirent.isSymbolicLink() ? 'symlink' : dirent.isDirectory() ? 'directory' : 'file', size: 0 };
       }
     })
   );
@@ -76,11 +81,21 @@ export async function createLocalDirectory(path: string): Promise<void> {
   await mkdir(resolveLocalPath(path));
 }
 
+/**
+ * Rename an entry, refusing to land on a name that is already taken.
+ *
+ * rename() would silently replace an existing file, and the panel's rename is a
+ * relabel rather than an overwrite. The check is not atomic: nothing in Node's
+ * API offers a no-clobber rename on both platforms, so a different process that
+ * creates that name in the moment between the check and the rename would still
+ * be overwritten. That is a guard against the user's own mistake — the name is
+ * already in the folder they are looking at — not a guarantee against another
+ * writer, and anything able to win that race could equally overwrite the file
+ * directly.
+ */
 export async function renameLocalEntry(from: string, to: string): Promise<void> {
   const source = resolveLocalPath(from);
   const destination = resolveLocalPath(to);
-  // rename() would silently replace an existing file; the panel's rename is a
-  // relabel, never an overwrite.
   const clash = await lstat(destination).then(() => true, () => false);
   if (clash) throw new Error('Something with that name already exists here.');
   await rename(source, destination);

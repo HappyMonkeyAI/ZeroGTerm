@@ -35,6 +35,19 @@ describe('sftp command safety', () => {
     }
   });
 
+  it('refuses control characters, tab and escape included', () => {
+    // Tab is what the client's own argument splitter breaks words on, and an
+    // escape character in a filename would be repeated into terminal output.
+    // A quoted tab survives the splitter today, but this module's whole stance
+    // is not to bet a delete on the client's undocumented parsing rules.
+    for (const path of ['/srv/two\twords', '/srv/esc\u001bape', '/srv/bell\u0007', '/srv/del\u007f', '/srv/nul\0']) {
+      expect(isSafeRemotePath(path)).toBe(false);
+      expect(() => quoteRemotePath(path)).toThrow(/control characters/);
+    }
+    // Ordinary text, including non-ASCII, is not a control character.
+    expect(isSafeRemotePath('/srv/naïve/über/日本語.txt')).toBe(true);
+  });
+
   it('turns Windows separators into ones the client will not eat', () => {
     expect(quoteLocalPath('C:\\Users\\dev\\app.zip')).toBe('"C:/Users/dev/app.zip"');
   });

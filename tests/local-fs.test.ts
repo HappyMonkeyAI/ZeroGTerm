@@ -1,20 +1,52 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry, resolveLocalPath } from '../src/main/local-fs';
 
 let root = '';
+/** Symlinks live in their own root, so they cannot disturb the plain listing. */
+let linkRoot = '';
+
+/**
+ * Can this machine make a symlink at all?
+ *
+ * Windows refuses without Developer Mode or elevation. Probed synchronously
+ * because `it.skipIf` is evaluated as the file is collected, before any
+ * `beforeAll` has had a chance to find out.
+ */
+function canSymlink(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), 'zerog-link-probe-'));
+  try {
+    symlinkSync(probe, join(probe, 'link'), 'dir');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+const linksAllowed = canSymlink();
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'zerog-fs-'));
   await mkdir(join(root, 'build'));
   await writeFile(join(root, 'notes.md'), 'hello');
   await writeFile(join(root, 'release notes.md'), 'spaces are ordinary');
+
+  if (!linksAllowed) return;
+  linkRoot = await mkdtemp(join(tmpdir(), 'zerog-links-'));
+  await mkdir(join(linkRoot, 'target-dir'));
+  await writeFile(join(linkRoot, 'target-file'), 'pointed at');
+  await symlink(join(linkRoot, 'target-dir'), join(linkRoot, 'link-to-dir'), 'dir');
+  await symlink(join(linkRoot, 'target-file'), join(linkRoot, 'link-to-file'), 'file');
 });
 
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
+  if (linkRoot) await rm(linkRoot, { recursive: true, force: true });
 });
 
 describe('local paths crossing the IPC boundary', () => {
@@ -50,6 +82,27 @@ describe('local listings', () => {
 
   it('reports an unreadable folder rather than an empty one', async () => {
     await expect(listLocalDirectory(join(root, 'does-not-exist'))).rejects.toThrow();
+  });
+
+  it.skipIf(!linksAllowed)('calls a symlink a symlink, whatever it points at', async () => {
+    const listing = await listLocalDirectory(linkRoot);
+    const byName = Object.fromEntries(listing.entries.map((entry) => [entry.name, entry]));
+    // Reporting a link to a directory as a directory would be a lie with a
+    // consequence: deleting it would use rmdir, which refuses a symlink, so the
+    // row could not be removed at all. It also matches the remote side, where
+    // `ls -l` describes the link rather than its target.
+    expect(byName['link-to-dir']).toMatchObject({ kind: 'symlink' });
+    expect(byName['link-to-file']).toMatchObject({ kind: 'symlink' });
+    expect(byName['target-dir']).toMatchObject({ kind: 'directory' });
+  });
+
+  it.skipIf(!linksAllowed)('deletes a link without following it to the target', async () => {
+    await removeLocalEntry(join(linkRoot, 'link-to-dir'), 'symlink');
+    const listing = await listLocalDirectory(linkRoot);
+    const names = listing.entries.map((entry) => entry.name);
+    expect(names).not.toContain('link-to-dir');
+    // What it pointed at is still there.
+    expect(names).toContain('target-dir');
   });
 });
 

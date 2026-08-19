@@ -27,10 +27,19 @@ const PROMPT = 'sftp> ';
  * every command — and being approximately right about which file to delete is
  * not good enough. Such names are refused with a message instead, which costs
  * the user very little: these characters are rare in real filenames and illegal
- * in Windows ones. Carriage return and newline are refused because a command is
- * one line, and NUL because it terminates the path for the C library underneath.
+ * in Windows ones.
+ *
+ * Every control character goes with them. NUL terminates the path for the C
+ * library underneath; carriage return and newline would end the command, since
+ * a command is one line; and tab is what the client's own argument splitter
+ * breaks words on. A quoted tab does survive that splitter today — but the whole
+ * point of this list is to avoid betting a delete on the client's undocumented
+ * parsing rules, and a filename containing an escape character or a bell is not
+ * a case worth taking that bet for.
  */
-const UNSAFE_PATH = /[\0\r\n"'\\*?[\]]/;
+const UNSAFE_PATH = /[\u0000-\u001f\u007f-\u009f"'\\*?[\]]/;
+/** The same control characters again, for telling the user which rule they hit. */
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 const MAX_PATH = 4096;
 
 export function isSafeRemotePath(path: string): boolean {
@@ -40,6 +49,7 @@ export function isSafeRemotePath(path: string): boolean {
 function describeUnsafe(path: string): string {
   if (!path) return 'the path is empty';
   if (path.length > MAX_PATH) return 'the path is too long';
+  if (CONTROL_CHARACTER.test(path)) return 'names containing control characters are not supported';
   return 'names containing quotes, backslashes, or the wildcard characters * ? [ ] are not supported yet';
 }
 
