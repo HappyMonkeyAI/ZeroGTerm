@@ -130,6 +130,25 @@ The session service owns `screen`, SSH, attach/detach, discovery, naming, and li
 
 AI actions are represented as typed requests and events. Generated commands are suggestions until explicitly approved. Output capture must be bounded, cancellable, and associated with a session/task ID.
 
+### File transfer boundary
+
+File transfer is a separate connection to the same host, not a use of the
+terminal's own. The session service owns terminals; the transfer service owns one
+long-lived system `sftp` client per host, with commands serialised onto it. The
+renderer sends paths and receives listings; file data never passes through it.
+
+Transfers reuse the system client for the same reason terminals use system `ssh`:
+`~/.ssh/config`, the agent, and `known_hosts` verification are then the user's
+existing configuration rather than a second implementation of it. The cost is
+that the client's answers are text written for a person, so parsing it is a
+boundary of its own — kept pure and tested against recorded real output.
+
+Where the remote side opens is read from the session's output, never asked for by
+typing into it. A shell's working directory is not observable from outside its
+pty, so the honest options are to read what the shell volunteers (OSC 7, or the
+path in its prompt) or to inject a command into the user's session. Only the
+first is acceptable.
+
 ### Voice boundary
 
 Voice control uses an adapter interface. Talon, local speech recognition, or another provider may implement it later. The core terminal remains usable without voice or eye tracking.

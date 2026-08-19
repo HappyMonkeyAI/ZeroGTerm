@@ -6,11 +6,17 @@ import { ScreenService, parseWslDistributions, type PtySize } from './session-se
 import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
+import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
+import { SftpService } from './sftp-service.js';
+import type { FileEntry } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
 const service = new ScreenService({ onEvent: (event, session, available) => { void history.record(event, session, available); } });
 let win: BrowserWindow | undefined;
+// Transfer connections outlive any single panel opening, so the panel can be
+// closed and reopened without re-authenticating to the host.
+const sftp = new SftpService({ onEvent: (event) => win?.webContents.send('sftp:event', event) });
 
 /** A pane's measured size, as it arrives from the renderer. */
 function parsePtySize(value: unknown): PtySize | undefined {
@@ -65,6 +71,7 @@ function createWindow() {
   win.on('closed', () => {
     win = undefined;
     service.detachAll();
+    sftp.closeAll();
   });
 }
 
@@ -158,6 +165,38 @@ ipcMain.handle('clipboard:writeText', (_event, text: unknown) => {
 });
 
 ipcMain.handle('clipboard:readText', () => clipboard.readText());
+
+/** A string that crossed the IPC boundary and is about to be used as one. */
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value) throw new Error(`${field} is required.`);
+  return value;
+}
+
+function requireEntryKind(value: unknown): FileEntry['kind'] {
+  if (value === 'file' || value === 'directory' || value === 'symlink') return value;
+  throw new Error('An entry kind of file, directory, or symlink is required.');
+}
+
+ipcMain.handle('fs:localHome', () => localHome());
+ipcMain.handle('fs:listLocal', (_event, path: unknown) => listLocalDirectory(typeof path === 'string' && path ? path : undefined));
+ipcMain.handle('fs:mkdirLocal', (_event, path: unknown) => createLocalDirectory(requireString(path, 'A folder path')));
+ipcMain.handle('fs:renameLocal', (_event, from: unknown, to: unknown) => renameLocalEntry(requireString(from, 'The current path'), requireString(to, 'The new path')));
+ipcMain.handle('fs:removeLocal', (_event, path: unknown, kind: unknown) => removeLocalEntry(requireString(path, 'A path'), requireEntryKind(kind)));
+
+ipcMain.handle('sftp:open', (_event, target: unknown, cwd: unknown) => sftp.open(requireString(target, 'An SSH target'), typeof cwd === 'string' && cwd ? cwd : undefined));
+ipcMain.handle('sftp:list', (_event, id: unknown, path: unknown) => sftp.list(requireString(id, 'A transfer connection'), typeof path === 'string' && path ? path : undefined));
+ipcMain.handle('sftp:mkdir', (_event, id: unknown, path: unknown) => sftp.mkdir(requireString(id, 'A transfer connection'), requireString(path, 'A folder path')));
+ipcMain.handle('sftp:rename', (_event, id: unknown, from: unknown, to: unknown) => sftp.rename(requireString(id, 'A transfer connection'), requireString(from, 'The current path'), requireString(to, 'The new path')));
+ipcMain.handle('sftp:remove', (_event, id: unknown, path: unknown, kind: unknown) => sftp.remove(requireString(id, 'A transfer connection'), requireString(path, 'A path'), requireEntryKind(kind)));
+ipcMain.handle('sftp:upload', (_event, id: unknown, localPath: unknown, remoteDir: unknown) => sftp.upload(requireString(id, 'A transfer connection'), requireString(localPath, 'A local file'), requireString(remoteDir, 'A remote folder')));
+ipcMain.handle('sftp:download', (_event, id: unknown, remotePath: unknown, localDir: unknown) => sftp.download(requireString(id, 'A transfer connection'), requireString(remotePath, 'A remote file'), requireString(localDir, 'A local folder')));
+// The answer is a secret in two of the three cases, so it is passed straight
+// through and never returned, logged, or kept.
+ipcMain.handle('sftp:answerPrompt', (_event, id: unknown, answer: unknown) => {
+  if (typeof answer !== 'string') throw new Error('An answer is required.');
+  sftp.answerPrompt(requireString(id, 'A transfer connection'), answer);
+});
+ipcMain.handle('sftp:close', (_event, id: unknown) => sftp.close(requireString(id, 'A transfer connection')));
 
 ipcMain.handle('ai:suggest', () => ({
   command: 'git status --short',

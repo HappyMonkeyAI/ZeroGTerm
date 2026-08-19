@@ -34,6 +34,30 @@ ZeroG Terminal is a local desktop application. Terminal output, SSH targets, gen
   one on a remote host over SSH — cannot exfiltrate the clipboard. Clipboard
   writes from a terminal are honoured.
 
+## File transfer
+
+The SFTP transfer panel widens the preload API to the local filesystem, which is
+the narrowest part of the application worth stating plainly:
+
+- The renderer can enumerate directories and can create, rename, or delete a path
+  the user pointed at. It cannot read file *contents*: transfers are performed by
+  the `sftp` client in the main process, and file data never passes through the
+  renderer.
+- Paths crossing the IPC boundary are re-derived in the main process rather than
+  trusted. A relative path or one containing NUL is refused, and the home
+  directory itself cannot be deleted.
+- Deletion uses `rmdir` for directories, so a non-empty directory fails rather
+  than being removed recursively.
+- Remote paths containing quotes, backslashes, or glob metacharacters are refused.
+  The `sftp` client unescapes its arguments and then expands globs in them, and no
+  encoding of those characters is correct for every command — so a name that
+  cannot be passed unambiguously is not passed at all.
+- Authentication is delegated entirely to the system `sftp` client, which means
+  `~/.ssh/config`, the agent, and `known_hosts` verification all apply. ZeroG
+  never answers a host-key prompt itself: the question, including the key
+  fingerprint, is put to the user. Passwords and passphrases are written to the
+  client and are not stored, logged, or returned to the renderer.
+
 ## Network egress from the renderer
 
 The renderer's Content-Security-Policy limits `connect-src` to:

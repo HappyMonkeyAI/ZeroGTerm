@@ -27,7 +27,26 @@ const api = {
     ipcRenderer.on('terminal:status', listener);
     return () => ipcRenderer.removeListener('terminal:status', listener);
   },
-  requestAiCommand: () => ipcRenderer.invoke('ai:suggest')
+  requestAiCommand: () => ipcRenderer.invoke('ai:suggest'),
+  listLocalDirectory: (path) => ipcRenderer.invoke('fs:listLocal', path),
+  localHome: () => ipcRenderer.invoke('fs:localHome'),
+  createLocalDirectory: (path) => ipcRenderer.invoke('fs:mkdirLocal', path),
+  renameLocalEntry: (from, to) => ipcRenderer.invoke('fs:renameLocal', from, to),
+  removeLocalEntry: (path, kind) => ipcRenderer.invoke('fs:removeLocal', path, kind),
+  sftpOpen: (target, cwd) => ipcRenderer.invoke('sftp:open', target, cwd),
+  sftpList: (sessionId, path) => ipcRenderer.invoke('sftp:list', sessionId, path),
+  sftpMkdir: (sessionId, path) => ipcRenderer.invoke('sftp:mkdir', sessionId, path),
+  sftpRename: (sessionId, from, to) => ipcRenderer.invoke('sftp:rename', sessionId, from, to),
+  sftpRemove: (sessionId, path, kind) => ipcRenderer.invoke('sftp:remove', sessionId, path, kind),
+  sftpUpload: (sessionId, localPath, remoteDir) => ipcRenderer.invoke('sftp:upload', sessionId, localPath, remoteDir),
+  sftpDownload: (sessionId, remotePath, localDir) => ipcRenderer.invoke('sftp:download', sessionId, remotePath, localDir),
+  sftpAnswerPrompt: (sessionId, answer) => ipcRenderer.invoke('sftp:answerPrompt', sessionId, answer),
+  sftpClose: (sessionId) => ipcRenderer.invoke('sftp:close', sessionId),
+  onSftpEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('sftp:event', listener);
+    return () => ipcRenderer.removeListener('sftp:event', listener);
+  }
 };
 
 contextBridge.exposeInMainWorld('zerog', api);
