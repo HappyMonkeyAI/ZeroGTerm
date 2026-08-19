@@ -3,6 +3,7 @@ import {
   defaultShellBackend,
   discoverShellBackends,
   findExecutable,
+  findOpenSshTool,
   resolveShellBackend
 } from '../src/main/shell-catalog';
 
@@ -27,6 +28,55 @@ const stockWindows = {
     'C:\\windows\\system32\\bash.exe'
   ])
 };
+
+describe('findOpenSshTool', () => {
+  it('prefers PATH, which is the only way to find an unusual install', () => {
+    const scooped = {
+      platform: 'win32' as const,
+      path: 'C:\\Users\\dev\\scoop\\shims;C:\\windows\\system32',
+      pathExt: '.EXE',
+      isFile: machine(['C:\\Users\\dev\\scoop\\shims\\ssh.EXE'])
+    };
+    expect(findOpenSshTool('ssh', scooped)).toBe('C:\\Users\\dev\\scoop\\shims\\ssh.EXE');
+  });
+
+  it('falls back to the Windows install locations when PATH is stale', () => {
+    // Enabling the OpenSSH client feature extends PATH for processes started
+    // afterwards. A desktop app already running would otherwise decide that a
+    // machine plainly holding ssh.exe does not have it.
+    const staleEnvironment = {
+      platform: 'win32' as const,
+      path: 'C:\\windows\\system32',
+      pathExt: '.EXE',
+      env: { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' },
+      isFile: machine([
+        'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
+        'C:\\Windows\\System32\\OpenSSH\\sftp.exe'
+      ])
+    };
+    expect(findOpenSshTool('ssh', staleEnvironment)).toBe('C:\\Windows\\System32\\OpenSSH\\ssh.exe');
+    // Both tools ship together and are found the same way.
+    expect(findOpenSshTool('sftp', staleEnvironment)).toBe('C:\\Windows\\System32\\OpenSSH\\sftp.exe');
+  });
+
+  it('finds the tools Git for Windows ships', () => {
+    const gitOnly = {
+      platform: 'win32' as const,
+      path: 'C:\\windows\\system32',
+      pathExt: '.EXE',
+      env: { SystemRoot: 'C:\\Windows', ProgramFiles: 'C:\\Program Files' },
+      isFile: machine(['C:\\Program Files\\Git\\usr\\bin\\sftp.exe'])
+    };
+    expect(findOpenSshTool('sftp', gitOnly)).toBe('C:\\Program Files\\Git\\usr\\bin\\sftp.exe');
+  });
+
+  it('reports nothing rather than a guess when the tool is absent', () => {
+    expect(findOpenSshTool('ssh', stockWindows)).toBeUndefined();
+    // On Unix there are no fallback locations: PATH is the answer there.
+    expect(findOpenSshTool('ssh', { platform: 'linux', path: UNIX_PATH, isFile: machine([]) })).toBeUndefined();
+    expect(findOpenSshTool('ssh', { platform: 'linux', path: UNIX_PATH, isFile: machine(['/usr/bin/ssh']) })).toBe('/usr/bin/ssh');
+  });
+});
 
 describe('findExecutable', () => {
   it('resolves a command to an absolute path on PATH', () => {

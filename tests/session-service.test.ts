@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createFakePty } from './helpers/fake-pty';
-import { ScreenService, parseScreenList, parseWslDistributions, validateSessionName, validateSshTarget } from '../src/main/session-service';
+import { ScreenService, parseScreenList, parseWslDistributions, sshExecutable, validateSessionName, validateSshTarget } from '../src/main/session-service';
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +16,20 @@ describe('screen session contract', () => {
   it('parses screen -ls output without shell interpolation', () => {
     const sessions = parseScreenList('There are screens on:\n\t1234.project-1\t(Detached)\n\t4567.other\t(Attached)\n2 Sockets in /run/screen/S-user.');
     expect(sessions.map(({ id, name }) => ({ id, name }))).toEqual([{ id: 'local:project-1', name: 'project-1' }, { id: 'local:other', name: 'other' }]);
+  });
+
+  it('resolves the ssh client to a path a pty can start', () => {
+    // node-pty hands the file to CreateProcess, which searches PATH but does not
+    // append `.exe` — so a bare `ssh` fails on a Windows machine that has it.
+    const windows = {
+      platform: 'win32' as const,
+      path: 'C:\\windows\\system32;C:\\windows\\system32\\OpenSSH',
+      pathExt: '.EXE',
+      isFile: (candidate: string) => candidate === 'C:\\windows\\system32\\OpenSSH\\ssh.EXE'
+    };
+    expect(sshExecutable(windows)).toBe('C:\\windows\\system32\\OpenSSH\\ssh.EXE');
+    expect(() => sshExecutable({ platform: 'linux', path: '/usr/bin', isFile: () => false }))
+      .toThrow(/OpenSSH client was not found/);
   });
 
   it('parses the WSL distribution list', () => {
