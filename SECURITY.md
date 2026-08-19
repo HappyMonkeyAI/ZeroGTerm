@@ -34,6 +34,29 @@ ZeroG Terminal is a local desktop application. Terminal output, SSH targets, gen
   one on a remote host over SSH — cannot exfiltrate the clipboard. Clipboard
   writes from a terminal are honoured.
 
+## Links in terminal output
+
+A link clicked in a pane is opened in the user's own browser, never in a window
+of this application. Electron's default answer to `window.open` is a new
+`BrowserWindow`, which is both the wrong browser and a page rendered inside the
+app; the main process refuses that and hands the URL to the desktop instead.
+
+Which URLs are handed over is an allowlist — `http`, `https`, and `mailto`:
+
+- A link arrives in terminal output, which is untrusted, and OSC 8 hyperlinks let
+  a remote host display one thing while linking to another.
+- The operating system will do much more with a URL than open a web page.
+  `file:` reaches the local disk, `smb:` reaches a network share and leaks
+  credentials to it, and installed applications register their own schemes, some
+  of which accept a path or a command. A single click must not be able to start
+  local software.
+- The scheme is decided by parsing the URL rather than by matching its text, and
+  the parsed form is what reaches the shell. A refused link reports itself in the
+  status bar rather than failing silently.
+
+Because the target of an OSC 8 link need not resemble its label, hovering a link
+shows the real destination in the status bar before it is clicked.
+
 ## File transfer
 
 The SFTP transfer panel widens the preload API to the local filesystem, which is

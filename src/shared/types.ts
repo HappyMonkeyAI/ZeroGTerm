@@ -174,6 +174,14 @@ export interface TerminalApi {
   sftpAnswerPrompt(sessionId: string, answer: string): Promise<void>;
   sftpClose(sessionId: string): Promise<void>;
   onSftpEvent(callback: (event: SftpEvent) => void): () => void;
+  /**
+   * Open a link in the user's own browser. Rejects when the URL is not one ZeroG
+   * will open — the scheme allowlist lives in the main process, because the URL
+   * arrives from terminal output and the renderer is not where that is decided.
+   */
+  openExternal(url: string): Promise<void>;
+  /** A link the main process refused, so a click that did nothing can say why. */
+  onLinkRefused(callback: (reason: string) => void): () => void;
 }
 
 declare global {

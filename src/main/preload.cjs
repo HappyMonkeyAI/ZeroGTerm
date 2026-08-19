@@ -46,6 +46,12 @@ const api = {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('sftp:event', listener);
     return () => ipcRenderer.removeListener('sftp:event', listener);
+  },
+  openExternal: (url) => ipcRenderer.invoke('links:openExternal', url),
+  onLinkRefused: (callback) => {
+    const listener = (_event, reason) => callback(reason);
+    ipcRenderer.on('links:refused', listener);
+    return () => ipcRenderer.removeListener('links:refused', listener);
   }
 };
 
