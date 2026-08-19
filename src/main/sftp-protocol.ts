@@ -254,6 +254,24 @@ export function detectPrompt(buffer: string): { kind: 'password' | 'passphrase' 
   return null;
 }
 
+/**
+ * The last thing the client actually said, for putting in an error.
+ *
+ * A timeout can only report that nothing arrived, which is the least useful
+ * sentence available: whether the host was never reached, asked something
+ * unrecognised, or answered and was misparsed are three different problems with
+ * the same symptom. The client's own last line separates them.
+ */
+export function lastClientMessage(buffer: string): string {
+  const lines = stripAnsi(buffer)
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && line !== PROMPT.trim());
+  return lines.at(-1) ?? '';
+}
+
 /** A failure that ends the connection rather than one command. */
 export function detectFatal(buffer: string): string | null {
   const text = stripAnsi(buffer);

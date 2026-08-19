@@ -244,7 +244,7 @@ ipcMain.handle('sftp:mkdir', (_event, id: unknown, path: unknown) => sftp.mkdir(
 ipcMain.handle('sftp:rename', (_event, id: unknown, from: unknown, to: unknown) => sftp.rename(requireString(id, 'A transfer connection'), requireString(from, 'The current path'), requireString(to, 'The new path')));
 ipcMain.handle('sftp:remove', (_event, id: unknown, path: unknown, kind: unknown) => sftp.remove(requireString(id, 'A transfer connection'), requireString(path, 'A path'), requireEntryKind(kind)));
 ipcMain.handle('sftp:upload', (_event, id: unknown, localPath: unknown, remoteDir: unknown) => sftp.upload(requireString(id, 'A transfer connection'), requireString(localPath, 'A local file'), requireString(remoteDir, 'A remote folder')));
-ipcMain.handle('sftp:download', (_event, id: unknown, remotePath: unknown, localDir: unknown) => sftp.download(requireString(id, 'A transfer connection'), requireString(remotePath, 'A remote file'), requireString(localDir, 'A local folder')));
+ipcMain.handle('sftp:download', (_event, id: unknown, remotePath: unknown, localDir: unknown, kind: unknown) => sftp.download(requireString(id, 'A transfer connection'), requireString(remotePath, 'A remote path'), requireString(localDir, 'A local folder'), requireEntryKind(kind)));
 // The answer is a secret in two of the three cases, so it is passed straight
 // through and never returned, logged, or kept.
 ipcMain.handle('sftp:answerPrompt', (_event, id: unknown, answer: unknown) => {
