@@ -212,7 +212,7 @@ backend, and a remote host with `screen` still gives persistent sessions there.
 The current main branch has the following local verification coverage:
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (237 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, the speech and voice helpers, and the SFTP transfer path — command quoting, listing and error parsing, authentication prompts, local filesystem operations, and working-directory detection; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
+- `npm test`: passes (242 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, the speech and voice helpers, and the SFTP transfer path — command quoting, listing and error parsing, authentication prompts, local filesystem operations, and working-directory detection; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
 - `npm audit --omit=dev`: production dependency auditing is part of the project quality checks.
 

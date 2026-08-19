@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import type { CreateLocalRequest, SessionInfo } from '../shared/types.js';
-import { defaultShellBackend, findExecutable, isLocalShellBackend, resolveShellBackend } from './shell-catalog.js';
+import { defaultShellBackend, findOpenSshTool, isLocalShellBackend, resolveShellBackend, type ShellCatalogOptions } from './shell-catalog.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -118,14 +118,14 @@ export function validateSshTarget(input: string): { target: string; args: string
  *
  * node-pty passes the file straight to CreateProcess on Windows, which does not
  * append `.exe` — so a pty asked for `ssh` fails with "File not found" on a
- * machine that has it on PATH. Resolving it here also turns a missing client
- * into a sentence rather than that message. (The sftp side does the same; see
- * sftpExecutable in sftp-protocol.ts.)
+ * machine that has it. Resolving it here also turns a missing client into a
+ * sentence rather than that message. Where OpenSSH is looked for lives in
+ * findOpenSshTool, shared with the transfer side's sftpExecutable.
  */
-export function sshExecutable(): string {
-  const file = findExecutable('ssh');
+export function sshExecutable(options: ShellCatalogOptions = {}): string {
+  const file = findOpenSshTool('ssh', options);
   if (!file) {
-    throw new Error('The OpenSSH client was not found on PATH. Install the OpenSSH client tools to connect over SSH.');
+    throw new Error('The OpenSSH client was not found. Install the OpenSSH client tools to connect over SSH.');
   }
   return file;
 }

@@ -11,7 +11,7 @@
 
 import { stripAnsi } from '../shared/ansi.js';
 import { parseSshTarget } from './session-service.js';
-import { findExecutable, type ShellCatalogOptions } from './shell-catalog.js';
+import { findOpenSshTool, type ShellCatalogOptions } from './shell-catalog.js';
 import type { FileEntry } from '../shared/types.js';
 
 /** What the client prints when it is ready for another command. */
@@ -84,14 +84,15 @@ export function quoteLocalPath(path: string): string {
  *
  * A bare command name is not enough: node-pty hands the file straight to
  * CreateProcess on Windows, which does not append `.exe`, so a pty asked for
- * `sftp` dies with "File not found" on a machine that plainly has it. Resolving
- * through the shell catalogue's PATH search also turns a missing client into a
- * sentence the user can act on, instead of that message.
+ * `sftp` dies with "File not found" on a machine that plainly has it. Where
+ * OpenSSH is looked for lives in findOpenSshTool, shared with the terminal
+ * side's sshExecutable — the two tools ship together, so they should be found
+ * the same way.
  */
 export function sftpExecutable(options: ShellCatalogOptions = {}): string {
-  const file = findExecutable('sftp', options);
+  const file = findOpenSshTool('sftp', options);
   if (!file) {
-    throw new Error('The OpenSSH sftp client was not found on PATH. Install the OpenSSH client tools to transfer files.');
+    throw new Error('The OpenSSH sftp client was not found. Install the OpenSSH client tools to transfer files.');
   }
   return file;
 }
