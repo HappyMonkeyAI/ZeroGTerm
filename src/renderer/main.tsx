@@ -147,6 +147,30 @@ function TerminalView({
       scrollback: terminalSettingsRef.current.scrollback,
       allowProposedApi: true,
       theme: terminalTheme(appearanceRef.current.theme),
+      // Send a clicked link to the desktop browser.
+      //
+      // Without this, xterm's own handler asks for confirmation and then calls
+      // window.open — which Electron answers with a window of this application,
+      // so a link opened in something that is not the user's browser. The main
+      // process refuses that anyway (see setWindowOpenHandler), but going
+      // through openExternal directly is what makes a click do the right thing
+      // rather than merely not do the wrong one.
+      linkHandler: {
+        activate: (_event, uri) => {
+          const currentApi = api();
+          if (!currentApi?.openExternal) return;
+          statusRef.current(`Opening ${uri}`);
+          void currentApi.openExternal(uri).catch((error: unknown) => {
+            statusRef.current(error instanceof Error ? error.message : String(error));
+          });
+        },
+        // OSC 8 lets a remote host label a link with text that has nothing to do
+        // with where it goes, so showing the real target on hover is the only
+        // point at which the user can tell. This is what VS Code's terminal and
+        // Windows Terminal both do.
+        hover: (_event, uri) => statusRef.current(`Link: ${uri}`),
+        leave: () => statusRef.current('Ready')
+      },
       // No convertEol: the pane is fed by a pty, not a text file. A pty already
       // emits CR LF for a new line, and a program that sends a bare LF means
       // "down one row, same column" — turning that into a carriage return moves
@@ -687,6 +711,13 @@ function App() {
    * is worth typing a `pwd` into the user's session for, so this listens for
    * what the shell says on its own — see cwd-tracker.ts.
    */
+  // A link the main process would not open — a `file:` or an application scheme
+  // from terminal output. The click has to say something, or it looks broken.
+  useEffect(() => {
+    const currentApi = api();
+    return currentApi?.onLinkRefused?.((reason) => setStatus(reason));
+  }, []);
+
   const cwdBuffers = useRef(new Map<string, string>());
   useEffect(() => {
     const currentApi = api();

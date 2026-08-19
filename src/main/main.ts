@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, session } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, session, shell } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
@@ -7,6 +7,7 @@ import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
+import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
 import type { FileEntry } from '../shared/types.js';
 
@@ -50,6 +51,30 @@ function createWindow() {
     }
   });
 
+  // A link in a pane belongs in the user's browser, not in a window of this app.
+  //
+  // Electron's default answer to window.open is a new BrowserWindow, and xterm
+  // activates an OSC 8 hyperlink by calling exactly that — so clicking a link in
+  // a terminal opened a bare Electron window with no address bar, no profile and
+  // no extensions, which is nobody's browser. Both handlers below refuse to
+  // navigate and hand the URL to the desktop instead.
+  //
+  // They are also the backstop for the renderer's own link handling: whatever
+  // asks for a window here, from any code path now or later, cannot get one.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    openExternalLink(url);
+    return { action: 'deny' };
+  });
+
+  // The same for a link that would replace the workspace with a web page, which
+  // would take every pane down with it.
+  const contents = win.webContents;
+  contents.on('will-navigate', (event, url) => {
+    if (isApplicationUrl(url, contents.getURL())) return;
+    event.preventDefault();
+    openExternalLink(url);
+  });
+
   win.webContents.on('did-fail-load', (_event, code, desc, url) => {
     console.error('[zerog] did-fail-load', { code, desc, url });
   });
@@ -78,6 +103,36 @@ function createWindow() {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
+
+/**
+ * Hand a link to the desktop, if it is one this should open.
+ *
+ * The decision is in external-links.ts and is an allowlist of schemes: the URL
+ * comes from terminal output, and the operating system will do a great deal more
+ * with `file:` or an application's own scheme than open a web page. A refusal is
+ * reported in the status bar rather than silently dropped, so a click that does
+ * nothing still says why.
+ */
+function openExternalLink(url: string): void {
+  const decision = decideExternalLink(url);
+  if (!decision.open) {
+    win?.webContents.send('links:refused', decision.reason);
+    console.warn('[zerog] refused to open link', { url, reason: decision.reason });
+    return;
+  }
+  void shell.openExternal(decision.url).catch((error) => {
+    win?.webContents.send('links:refused', 'That link could not be opened.');
+    console.error('[zerog] openExternal failed', error);
+  });
+}
+
+ipcMain.handle('links:openExternal', (_event, url: unknown) => {
+  const decision = decideExternalLink(url);
+  // Rejecting rather than resolving quietly: the renderer puts the reason in the
+  // status bar, so the user is never told nothing at all.
+  if (!decision.open) throw new Error(decision.reason);
+  return shell.openExternal(decision.url);
+});
 
 ipcMain.handle('sessions:list', () => service.list());
 ipcMain.handle('sessions:history', () => history.list());
