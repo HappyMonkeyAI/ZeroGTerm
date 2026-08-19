@@ -264,12 +264,12 @@ export function detectPrompt(buffer: string): { kind: 'password' | 'passphrase' 
  */
 export function lastClientMessage(buffer: string): string {
   const lines = stripAnsi(buffer)
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line && line !== PROMPT.trim());
-  return lines[lines.length - 1] ?? '';
+  return lines.at(-1) ?? '';
 }
 
 /** A failure that ends the connection rather than one command. */

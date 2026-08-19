@@ -38,6 +38,7 @@ try {
   process.exit(2);
 }
 
+const { stripAnsi } = await import(new URL('../dist/main/shared/ansi.js', import.meta.url).href);
 const { findOpenSshTool } = await import(new URL('../dist/main/main/shell-catalog.js', import.meta.url).href).catch(
   async () => {
     console.error('dist is missing or stale. Run npm run build first.');
@@ -137,7 +138,7 @@ term.onExit(({ exitCode }) => {
 function verdict() {
   console.log('');
   console.log('--- verdict ---');
-  const plain = seen.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '').replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  const plain = stripAnsi(seen);
   const tail = plain.slice(-400).trim();
   if (!plain) {
     console.log('The client produced no output at all. It started but said nothing —');
