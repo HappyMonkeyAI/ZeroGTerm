@@ -6,3 +6,4 @@ ZeroG Terminal version history
 0.3.0-alpha.1 - Cross-platform session discovery and reliable remote screen attachment
 0.4.0-alpha.1 - tabbed new-session dialog, settings panel and make speech recognition configurable, and fix: repair terminal clipboard paths and dialog dismissal
 0.5.0-alpha.1 - Draggable pane and sidebar sizes, per-pane proceed button, correct PTY sizing so full-screen programs stop tearing, and keyboard focus returning to a pane after voice input
+0.6.0-alpha.1 - SFTP file transfer panel that opens on the active SSH session at the directory its shell is in, links opening in the system browser instead of an in-app window, and one Windows OpenSSH resolver shared by ssh and sftp
