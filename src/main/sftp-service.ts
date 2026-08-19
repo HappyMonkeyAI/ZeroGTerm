@@ -247,11 +247,12 @@ export class SftpService {
     await this.enqueue(connection, () => this.checked(connection, command, TRANSFER_IDLE_MS, true));
   }
 
-  async download(sessionId: string, remotePath: string, localDir: string): Promise<void> {
+  async download(sessionId: string, remotePath: string, localDir: string, kind: FileEntry['kind']): Promise<void> {
     const connection = this.get(sessionId);
     const name = baseName(remotePath);
     const destination = `${localDir.replace(/[\\/]+$/, '')}/${name}`;
-    const command = `get -p ${quoteRemotePath(remotePath)} ${quoteLocalPath(destination)}`;
+    const recursive = kind === 'directory' ? '-r ' : '';
+    const command = `get ${recursive}-p ${quoteRemotePath(remotePath)} ${quoteLocalPath(destination)}`;
     await this.enqueue(connection, () => this.checked(connection, command, TRANSFER_IDLE_MS, true));
   }
 
@@ -334,7 +335,12 @@ export class SftpService {
           break;
         }
         const failure = findError(body);
-        if (failure) throw new Error(failure);
+        // On the native Windows OpenSSH client, an LF is echoed into its
+        // interactive editor but does not submit the line. When the first CR
+        // is then sent, the editor may flush the buffered probe as `Invalid
+        // command.` before the following CR submits a clean one. That is a
+        // probe miss, not a remote SFTP failure; the next attempt is deliberate.
+        if (failure && !/^invalid command\.?$/i.test(failure)) throw new Error(failure);
         const path = parsePwd(body);
         if (path) {
           console.log('[zerog] sftp line terminator', { target: connection.target, terminator: JSON.stringify(terminator) });

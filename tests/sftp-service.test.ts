@@ -96,9 +96,18 @@ describe('SFTP connections', () => {
 
   it('downloads into the local folder that is on screen', async () => {
     const { service, pty, connection } = await connect();
-    const download = service.download(connection.id, '/srv/app/notes.md', 'C:\\Users\\dev\\project');
+    const download = service.download(connection.id, '/srv/app/notes.md', 'C:\\Users\\dev\\project', 'file');
     await settle();
     expect(pty.writes[pty.writes.length - 1]).toBe('get -p "/srv/app/notes.md" "C:/Users/dev/project/notes.md"\n');
+    reply(pty);
+    await expect(download).resolves.toBeUndefined();
+  });
+
+  it('downloads a remote folder recursively into the local folder', async () => {
+    const { service, pty, connection } = await connect();
+    const download = service.download(connection.id, '/srv/app/build', 'C:\\Users\\dev\\project', 'directory');
+    await settle();
+    expect(pty.writes[pty.writes.length - 1]).toBe('get -r -p "/srv/app/build" "C:/Users/dev/project/build"\n');
     reply(pty);
     await expect(download).resolves.toBeUndefined();
   });
@@ -213,6 +222,44 @@ describe('what ends a line', () => {
       expect(connection.cwd).toBe('/home/dev');
       // Everything afterwards uses what was found to work.
       expect(pty.writes.some((written) => written === 'pwd\r')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers when the alternate terminator first flushes a buffered command', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com');
+      const pty = spawned[0];
+      let handled = 0;
+      let carriageReturns = 0;
+      pty.emit(`Connected to example.com.${String.fromCharCode(13)}${String.fromCharCode(10)}${PROMPT}`);
+      await vi.advanceTimersByTimeAsync(0);
+      const pump = () => {
+        while (handled < pty.writes.length) {
+          const written = pty.writes[handled++];
+          pty.emit(written.split(String.fromCharCode(13)).join('').split(String.fromCharCode(10)).join(''));
+          if (!written.endsWith(String.fromCharCode(13))) continue;
+          carriageReturns += 1;
+          const response = carriageReturns === 1
+            ? `Invalid command.${String.fromCharCode(13)}${String.fromCharCode(10)}`
+            : `Remote working directory: /home/dev${String.fromCharCode(13)}${String.fromCharCode(10)}`;
+          pty.emit(`${response}${PROMPT}`);
+        }
+      };
+      // The first two LF attempts are echoed but not submitted. The first CR
+      // flushes that buffered input and is rejected; the second CR is clean.
+      for (let attempt = 0; attempt < 6 && carriageReturns < 2; attempt += 1) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        pump();
+        await vi.advanceTimersByTimeAsync(0);
+        pump();
+      }
+      const connection = await opening;
+      expect(connection.cwd).toBe('/home/dev');
+      expect(pty.writes.filter((written) => written === `pwd${String.fromCharCode(13)}`)).toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }

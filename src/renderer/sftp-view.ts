@@ -36,20 +36,18 @@ export function isNavigable(entry: FileEntry): boolean {
 }
 
 /**
- * The entries a transfer will actually move.
- *
- * Directories are dropped rather than silently descended: a recursive transfer
- * is a different feature with different failure modes, and quietly uploading
- * only the files at the top of a folder would be worse than not offering it.
+ * The entries a transfer will actually move. Upload callers leave directories
+ * disabled; remote downloads opt in because the SFTP service handles them with
+ * a recursive `get -r`.
  */
-export function transferable(entries: FileEntry[], selected: ReadonlySet<string>): FileEntry[] {
-  return entries.filter((entry) => selected.has(entry.name) && entry.kind !== 'directory');
+export function transferable(entries: FileEntry[], selected: ReadonlySet<string>, allowDirectories = false): FileEntry[] {
+  return entries.filter((entry) => selected.has(entry.name) && (allowDirectories || entry.kind !== 'directory'));
 }
 
 /** What the transfer button says, given what is selected. */
-export function transferLabel(verb: string, count: number): string {
+export function transferLabel(verb: string, count: number, noun = 'file'): string {
   if (count === 0) return verb;
-  return `${verb} ${count} ${count === 1 ? 'file' : 'files'}`;
+  return `${verb} ${count} ${count === 1 ? noun : `${noun}s`}`;
 }
 
 /**
@@ -58,7 +56,24 @@ export function transferLabel(verb: string, count: number): string {
  * Plain clicks select one thing, because that is what a click means everywhere
  * else; holding a modifier accumulates.
  */
-export function nextSelection(current: ReadonlySet<string>, name: string, additive: boolean): Set<string> {
+export function nextSelection(
+  current: ReadonlySet<string>,
+  name: string,
+  additive: boolean,
+  rangeStart?: string,
+  orderedNames?: readonly string[]
+): Set<string> {
+  if (rangeStart && orderedNames) {
+    const start = orderedNames.indexOf(rangeStart);
+    const end = orderedNames.indexOf(name);
+    if (start >= 0 && end >= 0) {
+      const next = additive ? new Set(current) : new Set<string>();
+      const low = Math.min(start, end);
+      const high = Math.max(start, end);
+      for (const item of orderedNames.slice(low, high + 1)) next.add(item);
+      return next;
+    }
+  }
   if (!additive) return new Set([name]);
   const next = new Set(current);
   if (next.has(name)) next.delete(name);

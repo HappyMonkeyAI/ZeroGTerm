@@ -46,6 +46,12 @@ describe('what a transfer will actually move', () => {
     expect(chosen.map((item) => item.name)).toEqual(['notes.md']);
   });
 
+  it('keeps selected directories when the remote side is being downloaded', () => {
+    const entries = [entry('build', 'directory'), entry('notes.md')];
+    const chosen = transferable(entries, new Set(['build', 'notes.md']), true);
+    expect(chosen.map((item) => item.name)).toEqual(['build', 'notes.md']);
+  });
+
   it('counts what the button will do', () => {
     expect(transferLabel('Upload', 0)).toBe('Upload');
     expect(transferLabel('Upload', 1)).toBe('Upload 1 file');
@@ -64,5 +70,10 @@ describe('selecting rows', () => {
     expect([...nextSelection(new Set(['a', 'b']), 'c', false)]).toEqual(['c']);
     expect([...nextSelection(new Set(['a']), 'b', true)]).toEqual(['a', 'b']);
     expect([...nextSelection(new Set(['a', 'b']), 'b', true)]).toEqual(['a']);
+  });
+
+  it('selects the inclusive range between the anchor and shift-clicked row', () => {
+    expect([...nextSelection(new Set(['b']), 'e', false, 'b', ['a', 'b', 'c', 'd', 'e'])]).toEqual(['b', 'c', 'd', 'e']);
+    expect([...nextSelection(new Set(['x']), 'd', true, 'b', ['a', 'b', 'c', 'd', 'e'])]).toEqual(['x', 'b', 'c', 'd']);
   });
 });
