@@ -172,6 +172,68 @@ describe('SFTP connections', () => {
   });
 });
 
+describe('what ends a line', () => {
+  /**
+   * A client whose interactive editor accepts only on carriage return, which is
+   * what a real connection does — and it echoes, which is how that shows.
+   * Reported from a live Ubuntu host: the panel sent a newline, saw its own
+   * command echoed back, and waited for an answer that could never come.
+   */
+  function carriageReturnOnly(pty: FakePty) {
+    let handled = 0;
+    return () => {
+      while (handled < pty.writes.length) {
+        const written = pty.writes[handled];
+        handled += 1;
+        // The editor echoes whatever was typed, submitted or not.
+        pty.emit(written.replace(/[\r\n]/g, ''));
+        if (!written.endsWith('\r')) continue;
+        const command = written.trim();
+        pty.emit(`\r\n${command === 'pwd' ? 'Remote working directory: /home/dev\r\n' : ''}${PROMPT}`);
+      }
+    };
+  }
+
+  it('finds the terminator the client accepts, rather than assuming one', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com');
+      const pty = spawned[0];
+      const pump = carriageReturnOnly(pty);
+      pty.emit(`Connected to example.com.\r\n${PROMPT}`);
+      await vi.advanceTimersByTimeAsync(0);
+      // The newline attempt is echoed and then ignored, so the probe waits it out
+      // and tries the other terminator.
+      pump();
+      await vi.advanceTimersByTimeAsync(6_000);
+      pump();
+      await vi.advanceTimersByTimeAsync(0);
+      const connection = await opening;
+      expect(connection.cwd).toBe('/home/dev');
+      // Everything afterwards uses what was found to work.
+      expect(pty.writes.some((written) => written === 'pwd\r')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives up with a message naming the problem when neither works', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com').catch((error: Error) => error);
+      spawned[0].emit(`Connected to example.com.\r\n${PROMPT}`);
+      // Every command is echoed and none is ever answered.
+      await vi.advanceTimersByTimeAsync(30_000);
+      const failure = await opening;
+      expect(failure.message).toMatch(/accepted neither line ending/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('when nothing comes back', () => {
   // The rejection is caught as it is created rather than asserted on afterwards:
   // advancing the timers is what rejects, so a handler attached after that has

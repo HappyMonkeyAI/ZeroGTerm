@@ -73,14 +73,57 @@ const term = pty.spawn(client, spawnArgs, {
 
 let seen = '';
 let prompted = false;
+let answered = false;
+/** Which line endings have been tried, in the order the service tries them. */
+const terminators = [
+  { label: 'LF', value: '\n' },
+  { label: 'CR', value: '\r' }
+];
+let tried = -1;
+
+/**
+ * Ask `pwd` with the next line ending.
+ *
+ * Which one submits a command depends on whether the client's interactive line
+ * editor is running: without it a newline ends a line, with it the editor accepts
+ * on carriage return. An unsubmitted command is echoed and then ignored, which
+ * looks exactly like the host having gone quiet — so the service probes, and so
+ * does this.
+ */
+function askWithNextTerminator() {
+  tried += 1;
+  if (tried >= terminators.length) return;
+  const { label, value } = terminators[tried];
+  console.log(`${stamp()} ---> asking for the working directory, ending the line with ${label}`);
+  term.write(`pwd${value}`);
+  setTimeout(() => {
+    if (answered) return;
+    console.log(`${stamp()} ---> no answer to ${label}; that ending does not submit for this client`);
+    askWithNextTerminator();
+  }, 5000);
+}
 
 term.onData((data) => {
   seen += data;
   console.log(`${stamp()} RECV ${JSON.stringify(data)}`);
+  if (/Remote working directory:/.test(seen)) {
+    if (!answered) {
+      answered = true;
+      const { label } = terminators[Math.min(tried, terminators.length - 1)];
+      console.log(`${stamp()} ---> answered. This client submits on ${label}.`);
+      // There is nothing left to learn once it has answered.
+      setTimeout(() => {
+        try { term.kill(); } catch { /* gone */ }
+        verdict();
+        process.exit(0);
+      }, 400);
+    }
+    return;
+  }
   if (!prompted && seen.includes('sftp>')) {
     prompted = true;
-    console.log(`${stamp()} ---> prompt seen. Asking for the working directory, as the panel does.`);
-    term.write('pwd\n');
+    console.log(`${stamp()} ---> prompt seen.`);
+    askWithNextTerminator();
   }
 });
 
@@ -99,7 +142,7 @@ function verdict() {
   if (!plain) {
     console.log('The client produced no output at all. It started but said nothing —');
     console.log('so the panel would wait, then report that the host stopped responding.');
-  } else if (prompted && /Remote working directory:/.test(plain)) {
+  } else if (answered) {
     console.log('Healthy: the prompt appeared and pwd was answered. The panel should work');
     console.log('against this host.');
   } else if (prompted) {

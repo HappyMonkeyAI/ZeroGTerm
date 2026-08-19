@@ -61,6 +61,33 @@ const OPEN_IDLE_MS = 120_000;
  */
 const FIRST_BYTE_MS = 35_000;
 
+/**
+ * How long a terminator probe waits before trying the other one.
+ *
+ * Long enough for a real host across a network to answer `pwd`, short enough
+ * that trying both is not felt as a hang.
+ */
+const PROBE_MS = 5_000;
+
+/**
+ * The two ways to end a line, in the order they are tried.
+ *
+ * Which one submits a command depends on whether the client has its interactive
+ * line editor running, and that is not knowable in advance:
+ *
+ *  - With no editor the client reads lines itself and a newline ends one, while a
+ *    carriage return does nothing. Verified against the native Windows client
+ *    driven with `-D`.
+ *  - With the editor running — which is the case on a real connection, and shows
+ *    itself by echoing what was typed — the editor accepts the line on carriage
+ *    return, the key an Enter press actually sends. A newline is inserted rather
+ *    than accepted, which looks exactly like the client having gone silent.
+ *
+ * So the connection asks. Hardcoding either one breaks the other, and guessing
+ * from the platform gets it wrong for the same client used two ways.
+ */
+const TERMINATORS = ['\n', '\r'];
+
 /** A ceiling on live connections, so a stuck panel cannot spawn clients forever. */
 const MAX_SESSIONS = 6;
 
@@ -83,6 +110,8 @@ type Connection = {
   waiter: Waiter | null;
   /** Commands run one at a time: there is a single pty and a single prompt. */
   queue: Promise<unknown>;
+  /** What ends a line for this client, settled by probing on open. */
+  terminator: string;
   closed: boolean;
 };
 
@@ -133,7 +162,17 @@ export class SftpService {
       cwd: homedir(),
       env: process.env
     });
-    const connection: Connection = { id, target, cwd: '.', pty, buffer: '', waiter: null, queue: Promise.resolve(), closed: false };
+    const connection: Connection = {
+      id,
+      target,
+      cwd: '.',
+      pty,
+      buffer: '',
+      waiter: null,
+      queue: Promise.resolve(),
+      terminator: TERMINATORS[0],
+      closed: false
+    };
     this.connections.set(id, connection);
     pty.onData((data) => this.receive(connection, data));
     pty.onExit(() => this.handleExit(connection));
@@ -142,8 +181,9 @@ export class SftpService {
       await this.waitForPrompt(connection, '', OPEN_IDLE_MS, { firstByteMs: FIRST_BYTE_MS });
       // Ask the server where "here" is before trusting any relative path: the
       // panel shows this path, and the login directory is not always the home
-      // directory the local side would guess.
-      const home = await this.pwd(connection);
+      // directory the local side would guess. This same question doubles as the
+      // probe for what ends a line, since it is the first one asked.
+      const home = await this.probeTerminator(connection);
       connection.cwd = home;
       if (cwd && cwd !== '~' && isSafeRemotePath(cwd)) {
         try {
@@ -227,7 +267,7 @@ export class SftpService {
     // Forget which question was asked: a rejected password is followed by the
     // very same prompt text, and the user has to be given the field again.
     lastQuestion.delete(sessionId);
-    connection.pty.write(`${answer}\n`);
+    connection.pty.write(`${answer}${connection.terminator}`);
   }
 
   close(sessionId: string): void {
@@ -237,7 +277,7 @@ export class SftpService {
       try {
         // Ask for a clean goodbye first: it flushes any half-written file on the
         // server rather than leaving a truncated upload behind.
-        connection.pty.write('bye\n');
+        connection.pty.write(`bye${connection.terminator}`);
       } catch {
         /* the pty may already be gone */
       }
@@ -274,6 +314,40 @@ export class SftpService {
     return result;
   }
 
+  /**
+   * Settle on a line terminator by asking `pwd` until one of them answers.
+   *
+   * The reply is kept rather than thrown away: it is the login directory, which
+   * opening needs anyway. A terminator that does not submit produces silence, so
+   * each is given PROBE_MS before the next is tried.
+   */
+  private async probeTerminator(connection: Connection): Promise<string> {
+    for (const terminator of TERMINATORS) {
+      connection.terminator = terminator;
+      // Twice per terminator: a rejected attempt can leave the client holding a
+      // character that ends the next line early, answering it with nothing.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        let body: string;
+        try {
+          body = await this.command(connection, 'pwd', PROBE_MS);
+        } catch {
+          break;
+        }
+        const failure = findError(body);
+        if (failure) throw new Error(failure);
+        const path = parsePwd(body);
+        if (path) {
+          console.log('[zerog] sftp line terminator', { target: connection.target, terminator: JSON.stringify(terminator) });
+          return path;
+        }
+      }
+    }
+    throw new Error(
+      'The sftp client accepted neither line ending, so no command could be sent to it. '
+        + 'Run `node scripts/sftp-doctor.mjs <host>` to see the exchange.'
+    );
+  }
+
   private async pwd(connection: Connection): Promise<string> {
     const body = await this.command(connection, 'pwd', IDLE_MS);
     const failure = findError(body);
@@ -299,7 +373,7 @@ export class SftpService {
     if (connection.closed) return Promise.reject(new Error('This transfer connection is closed.'));
     connection.buffer = '';
     const pending = this.waitForPrompt(connection, command, idleMs, { reportProgress });
-    connection.pty.write(`${command}\n`);
+    connection.pty.write(`${command}${connection.terminator}`);
     return pending;
   }
 
