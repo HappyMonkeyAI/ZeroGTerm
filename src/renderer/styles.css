@@ -485,6 +485,14 @@ input:focus-visible {
   gap: 2px;
 }
 
+/* The head is spaced apart, so its control groups share one box rather than
+   being spread across the bar. */
+.head-controls {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
 .control-label {
   font-size: 9px;
   color: #4e5969;
@@ -502,10 +510,17 @@ input:focus-visible {
   color: #697386;
 }
 
-.layout-button:hover,
+.layout-button:hover:not(:disabled),
 .layout-button.active {
   background: #1a202a;
   color: #9ece6a;
+}
+
+/* The SFTP button is disabled while no SSH session is selected, so a disabled
+   control has to look like one — its tooltip says why. */
+.layout-button:disabled {
+  opacity: .4;
+  cursor: default;
 }
 
 .layout-button .icon-svg {
@@ -1234,7 +1249,7 @@ input:focus-visible {
 :root[data-theme='light'] .drawer-tool.active,
 :root[data-theme='light'] .session-row:hover,
 :root[data-theme='light'] .inline-restore,
-:root[data-theme='light'] .layout-button:hover,
+:root[data-theme='light'] .layout-button:hover:not(:disabled),
 :root[data-theme='light'] .layout-button.active {
   background: #e1e9f4;
   color: #253044;
@@ -1694,3 +1709,391 @@ input:focus-visible {
 :root[data-theme='light'] .settings-preview { color: #16803c; }
 :root[data-theme='light'] .settings-test-transcript { color: #2459a6; }
 :root[data-theme='light'] .settings-foot { border-top-color: #dbe2ec; }
+
+/* Transfer panel: two file panes over the workspace, local on the left and the
+   active session's host on the right. Sized as a share of the window rather
+   than in pixels — it is a work surface, not a dialog. */
+.sftp-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 22;
+  display: grid;
+  place-items: center;
+  background: #07090dcc;
+}
+
+.sftp-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, calc(100vw - 80px));
+  height: min(760px, calc(100vh - 90px));
+  background: #11161e;
+  border: 1px solid #303b4b;
+  border-radius: 8px;
+  box-shadow: 0 20px 80px #0009;
+  overflow: hidden;
+}
+
+.sftp-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 16px 20px 13px;
+  border-bottom: 1px solid #202630;
+}
+
+.sftp-head h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sftp-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  flex: 1;
+  min-height: 0;
+  background: #202630;
+}
+
+.sftp-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: #11161e;
+}
+
+.sftp-pane-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 8px;
+}
+
+.sftp-pane-head .eyebrow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-pane-tools {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.sftp-pane-tools button {
+  width: 26px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: transparent;
+  color: #697386;
+}
+
+.sftp-pane-tools button:hover:not(:disabled) {
+  background: #1a202a;
+  color: #9ece6a;
+}
+
+.sftp-pane-tools button:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.sftp-pane-tools .sftp-danger:hover:not(:disabled) { color: #f7768e; }
+
+.sftp-pane-tools .icon-svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sftp-path {
+  padding: 0 12px 8px;
+}
+
+.sftp-path input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  background: #0a0c10;
+  color: #d8dee9;
+  font: 11px JetBrains Mono, monospace;
+}
+
+.sftp-path input:focus {
+  border-color: #7aa2f7;
+  outline: 0;
+}
+
+.sftp-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid #202630;
+}
+
+.sftp-row {
+  display: grid;
+  grid-template-columns: 16px 1fr auto auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  color: #8b93a3;
+  text-align: left;
+  border-bottom: 1px solid #171d26;
+}
+
+.sftp-row:hover { background: #151a22; }
+
+.sftp-row.selected {
+  background: #1a202a;
+  color: #d8dee9;
+  box-shadow: inset 2px 0 #9ece6a;
+}
+
+.sftp-row.is-directory { color: #7aa2f7; }
+.sftp-row.is-directory.selected { color: #9ecbff; }
+
+.sftp-row .icon-svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sftp-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 12px JetBrains Mono, monospace;
+}
+
+.sftp-size,
+.sftp-modified {
+  font: 10px JetBrains Mono, monospace;
+  color: #4e5969;
+  white-space: nowrap;
+}
+
+.sftp-modified { min-width: 96px; text-align: right; }
+
+.sftp-empty {
+  display: grid;
+  gap: 4px;
+  padding: 26px 16px;
+  text-align: center;
+  color: #8b93a3;
+}
+
+.sftp-empty small { color: #4e5969; }
+.sftp-error b { color: #f7768e; }
+
+.sftp-pane-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid #202630;
+}
+
+.sftp-pane-foot .primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sftp-pane-foot .icon-svg {
+  width: 14px;
+  height: 14px;
+}
+
+.sftp-count {
+  font-size: 10px;
+  color: #4e5969;
+}
+
+/* The question forms and the delete confirmation sit between the panes and the
+   footer rather than in a second overlay: they are about the panel, and a modal
+   on top of a modal is one Escape too many. */
+.sftp-prompt,
+.sftp-inline-form {
+  padding: 14px 20px;
+  border-top: 1px solid #202630;
+  background: #151a22;
+}
+
+.sftp-prompt pre {
+  margin: 8px 0 0;
+  padding: 9px 10px;
+  max-height: 120px;
+  overflow: auto;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  background: #0a0c10;
+  color: #e0af68;
+  font: 11px JetBrains Mono, monospace;
+  white-space: pre-wrap;
+}
+
+.sftp-prompt label,
+.sftp-inline-form label {
+  display: block;
+  margin-top: 12px;
+  color: #8b93a3;
+  font-size: 11px;
+}
+
+.sftp-prompt input,
+.sftp-inline-form input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  background: #0a0c10;
+  color: #d8dee9;
+  font: 12px JetBrains Mono, monospace;
+}
+
+.sftp-inline-form p {
+  margin: 10px 0 0;
+  color: #8b93a3;
+  font-size: 12px;
+}
+
+.sftp-danger-button {
+  background: #f7768e;
+  color: #11161e;
+}
+
+.sftp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 20px;
+  border-top: 1px solid #202630;
+  font-size: 11px;
+  color: #8b93a3;
+}
+
+.sftp-hint {
+  color: #4e5969;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.sftp-notice {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-progress {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  background: #0a0c10;
+  overflow: hidden;
+}
+
+.sftp-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #1e3a2a;
+  transition: width .18s linear;
+}
+
+.sftp-progress span {
+  position: relative;
+  font: 10px JetBrains Mono, monospace;
+  color: #9ece6a;
+}
+
+:root[data-theme='light'] .sftp-layer { background: #1c2a3ab3; }
+
+:root[data-theme='light'] .sftp-panel,
+:root[data-theme='light'] .sftp-pane {
+  background: #ffffff;
+  border-color: #dbe2ec;
+}
+
+:root[data-theme='light'] .sftp-head,
+:root[data-theme='light'] .sftp-list,
+:root[data-theme='light'] .sftp-pane-foot,
+:root[data-theme='light'] .sftp-foot,
+:root[data-theme='light'] .sftp-prompt,
+:root[data-theme='light'] .sftp-inline-form {
+  border-color: #dbe2ec;
+}
+
+:root[data-theme='light'] .sftp-body { background: #dbe2ec; }
+
+:root[data-theme='light'] .sftp-prompt,
+:root[data-theme='light'] .sftp-inline-form {
+  background: #eef2f7;
+}
+
+:root[data-theme='light'] .sftp-row {
+  color: #536176;
+  border-bottom-color: #eef2f7;
+}
+
+:root[data-theme='light'] .sftp-row:hover { background: #f2f6fb; }
+
+:root[data-theme='light'] .sftp-row.selected {
+  background: #dbe7f5;
+  color: #253044;
+  box-shadow: inset 2px 0 #16803c;
+}
+
+:root[data-theme='light'] .sftp-row.is-directory { color: #2459a6; }
+
+:root[data-theme='light'] .sftp-path input,
+:root[data-theme='light'] .sftp-prompt input,
+:root[data-theme='light'] .sftp-inline-form input,
+:root[data-theme='light'] .sftp-prompt pre,
+:root[data-theme='light'] .sftp-progress {
+  background: #ffffff;
+  border-color: #c7d2e1;
+  color: #253044;
+}
+
+:root[data-theme='light'] .sftp-prompt pre { color: #a15c00; }
+
+:root[data-theme='light'] .sftp-size,
+:root[data-theme='light'] .sftp-modified,
+:root[data-theme='light'] .sftp-count,
+:root[data-theme='light'] .sftp-hint,
+:root[data-theme='light'] .sftp-empty small {
+  color: #68768a;
+}
+
+:root[data-theme='light'] .sftp-notice,
+:root[data-theme='light'] .sftp-empty,
+:root[data-theme='light'] .sftp-inline-form p,
+:root[data-theme='light'] .sftp-foot {
+  color: #536176;
+}
+
+:root[data-theme='light'] .sftp-pane-tools button { color: #68768a; }
+
+:root[data-theme='light'] .sftp-pane-tools button:hover:not(:disabled) {
+  background: #dbe7f5;
+  color: #16803c;
+}
+
+:root[data-theme='light'] .sftp-progress-fill { background: #d6efdd; }
+:root[data-theme='light'] .sftp-progress span { color: #16803c; }
+:root[data-theme='light'] .sftp-danger-button { color: #ffffff; background: #c53030; }

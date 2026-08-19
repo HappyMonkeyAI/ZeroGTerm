@@ -14,6 +14,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - SSH configuration discovery from known connections, including remote `screen` session discovery.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
 - Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
+- An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
 - Workspaces for grouping sessions and quickly switching between projects or tasks.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
@@ -63,6 +64,37 @@ The dividers take keyboard focus as well: the arrow keys nudge one two percent a
 a time, and Enter or a double-click puts it back in the middle. One divider
 position is shared by every layout, so a split you set up in the vertical split
 is the same split you get in the four-pane grid.
+
+## Transferring files over SFTP
+
+The ⇅ button above the panes opens a two-pane transfer panel: this computer on
+the left, the active SSH session's host on the right. It is only available while
+an SSH session is selected, and the button says why when it is not.
+
+The connection is made with the system `sftp` client, so it uses the same
+`~/.ssh/config`, agent, keys, and `known_hosts` as the terminal beside it. A
+password, a key passphrase, or an unknown host key is asked for inside the
+panel — ZeroG never answers a host-key question on your behalf, and the
+fingerprint is shown with the question. Nothing typed there is stored.
+
+The remote side opens at the directory the terminal's shell is currently in,
+where that can be known without disturbing the session. ZeroG reads it from
+OSC 7 — the sequence a shell emits to report its directory — and otherwise from
+the path in the prompt; it never types `pwd` into your session to find out. When
+neither is available the panel opens at the login directory.
+
+Select files with a click, or several with Ctrl-click, then Upload or Download.
+Double-click a folder to open it, or type a path into the folder box. New folder,
+rename, and delete act on one selected item; deleting asks first, and a folder
+must be empty, so a single click can never remove a tree. Folders themselves are
+not transferred: a recursive copy is a different job with different failure
+modes, and half-copying one silently would be worse than not offering it.
+
+Filenames containing quotes, backslashes, or the wildcard characters `* ? [ ]`
+are refused with a message rather than acted on. The `sftp` client re-reads its
+own arguments through a glob pass, and there is no encoding of those characters
+that is provably correct for every command — being approximately right about
+which file to delete is not good enough.
 
 ## Settings
 
@@ -180,7 +212,7 @@ backend, and a remote host with `screen` still gives persistent sessions there.
 The current main branch has the following local verification coverage:
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (167 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, and the speech and voice helpers; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
+- `npm test`: passes (237 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, the speech and voice helpers, and the SFTP transfer path — command quoting, listing and error parsing, authentication prompts, local filesystem operations, and working-directory detection; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
 - `npm audit --omit=dev`: production dependency auditing is part of the project quality checks.
 
