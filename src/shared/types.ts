@@ -169,7 +169,7 @@ export interface TerminalApi {
   sftpRename(sessionId: string, from: string, to: string): Promise<void>;
   sftpRemove(sessionId: string, path: string, kind: FileEntry['kind']): Promise<void>;
   sftpUpload(sessionId: string, localPath: string, remoteDir: string): Promise<void>;
-  sftpDownload(sessionId: string, remotePath: string, localDir: string): Promise<void>;
+  sftpDownload(sessionId: string, remotePath: string, localDir: string, kind: FileEntry['kind']): Promise<void>;
   /** Answer a password/passphrase prompt, or accept a host key with `yes`. */
   sftpAnswerPrompt(sessionId: string, answer: string): Promise<void>;
   sftpClose(sessionId: string): Promise<void>;

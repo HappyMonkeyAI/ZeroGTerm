@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFakePty, type FakePty } from './helpers/fake-pty';
 import { SftpService } from '../src/main/sftp-service';
 import type { SftpEvent } from '../src/shared/types';
@@ -96,9 +96,18 @@ describe('SFTP connections', () => {
 
   it('downloads into the local folder that is on screen', async () => {
     const { service, pty, connection } = await connect();
-    const download = service.download(connection.id, '/srv/app/notes.md', 'C:\\Users\\dev\\project');
+    const download = service.download(connection.id, '/srv/app/notes.md', 'C:\\Users\\dev\\project', 'file');
     await settle();
     expect(pty.writes[pty.writes.length - 1]).toBe('get -p "/srv/app/notes.md" "C:/Users/dev/project/notes.md"\n');
+    reply(pty);
+    await expect(download).resolves.toBeUndefined();
+  });
+
+  it('downloads a remote folder recursively into the local folder', async () => {
+    const { service, pty, connection } = await connect();
+    const download = service.download(connection.id, '/srv/app/build', 'C:\\Users\\dev\\project', 'directory');
+    await settle();
+    expect(pty.writes[pty.writes.length - 1]).toBe('get -r -p "/srv/app/build" "C:/Users/dev/project/build"\n');
     reply(pty);
     await expect(download).resolves.toBeUndefined();
   });
@@ -169,6 +178,144 @@ describe('SFTP connections', () => {
     expect(pty.writes[pty.writes.length - 1]).toBe('mkdir "/srv/app/new"\n');
     reply(pty);
     await expect(second).resolves.toBeUndefined();
+  });
+});
+
+describe('what ends a line', () => {
+  /**
+   * A client whose interactive editor accepts only on carriage return, which is
+   * what a real connection does — and it echoes, which is how that shows.
+   * Reported from a live Ubuntu host: the panel sent a newline, saw its own
+   * command echoed back, and waited for an answer that could never come.
+   */
+  function carriageReturnOnly(pty: FakePty) {
+    let handled = 0;
+    return () => {
+      while (handled < pty.writes.length) {
+        const written = pty.writes[handled];
+        handled += 1;
+        // The editor echoes whatever was typed, submitted or not.
+        pty.emit(written.replace(/[\r\n]/g, ''));
+        if (!written.endsWith('\r')) continue;
+        const command = written.trim();
+        pty.emit(`\r\n${command === 'pwd' ? 'Remote working directory: /home/dev\r\n' : ''}${PROMPT}`);
+      }
+    };
+  }
+
+  it('finds the terminator the client accepts, rather than assuming one', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com');
+      const pty = spawned[0];
+      const pump = carriageReturnOnly(pty);
+      pty.emit(`Connected to example.com.\r\n${PROMPT}`);
+      await vi.advanceTimersByTimeAsync(0);
+      // The newline attempt is echoed and then ignored, so the probe waits it out
+      // and tries the other terminator.
+      pump();
+      await vi.advanceTimersByTimeAsync(6_000);
+      pump();
+      await vi.advanceTimersByTimeAsync(0);
+      const connection = await opening;
+      expect(connection.cwd).toBe('/home/dev');
+      // Everything afterwards uses what was found to work.
+      expect(pty.writes.some((written) => written === 'pwd\r')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recovers when the alternate terminator first flushes a buffered command', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com');
+      const pty = spawned[0];
+      let handled = 0;
+      let carriageReturns = 0;
+      pty.emit(`Connected to example.com.${String.fromCharCode(13)}${String.fromCharCode(10)}${PROMPT}`);
+      await vi.advanceTimersByTimeAsync(0);
+      const pump = () => {
+        while (handled < pty.writes.length) {
+          const written = pty.writes[handled++];
+          pty.emit(written.split(String.fromCharCode(13)).join('').split(String.fromCharCode(10)).join(''));
+          if (!written.endsWith(String.fromCharCode(13))) continue;
+          carriageReturns += 1;
+          const response = carriageReturns === 1
+            ? `Invalid command.${String.fromCharCode(13)}${String.fromCharCode(10)}`
+            : `Remote working directory: /home/dev${String.fromCharCode(13)}${String.fromCharCode(10)}`;
+          pty.emit(`${response}${PROMPT}`);
+        }
+      };
+      // The first two LF attempts are echoed but not submitted. The first CR
+      // flushes that buffered input and is rejected; the second CR is clean.
+      for (let attempt = 0; attempt < 6 && carriageReturns < 2; attempt += 1) {
+        await vi.advanceTimersByTimeAsync(5_000);
+        pump();
+        await vi.advanceTimersByTimeAsync(0);
+        pump();
+      }
+      const connection = await opening;
+      expect(connection.cwd).toBe('/home/dev');
+      expect(pty.writes.filter((written) => written === `pwd${String.fromCharCode(13)}`)).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives up with a message naming the problem when neither works', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com').catch((error: Error) => error);
+      spawned[0].emit(`Connected to example.com.\r\n${PROMPT}`);
+      // Every command is echoed and none is ever answered.
+      await vi.advanceTimersByTimeAsync(30_000);
+      const failure = await opening;
+      expect(failure.message).toMatch(/accepted neither line ending/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('when nothing comes back', () => {
+  // The rejection is caught as it is created rather than asserted on afterwards:
+  // advancing the timers is what rejects, so a handler attached after that has
+  // already missed it, and the run reports an unhandled rejection.
+  it('says the client produced no output, rather than blaming the host', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com').catch((error: Error) => error);
+      expect(spawned).toHaveLength(1);
+      // Nothing is ever emitted: the client started and said nothing at all.
+      await vi.advanceTimersByTimeAsync(40_000);
+      const failure = await opening;
+      expect(failure.message).toMatch(/produced no output/);
+      // And it points somewhere useful rather than leaving the user guessing.
+      expect(failure.message).toMatch(/sftp-doctor/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('quotes what the client last said, so an unrecognised question is visible', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com').catch((error: Error) => error);
+      // A two-factor prompt whose wording ZeroG does not recognise: the panel
+      // cannot ask for it, so the error has to carry it instead.
+      spawned[0].emit('Duo two-factor login for dev\r\n\r\nPasscode or option (1-3): ');
+      await vi.advanceTimersByTimeAsync(130_000);
+      const failure = await opening;
+      expect(failure.message).toMatch(/Passcode or option \(1-3\)/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

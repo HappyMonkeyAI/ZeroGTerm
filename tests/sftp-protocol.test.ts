@@ -6,6 +6,7 @@ import {
   endsWithPrompt,
   findError,
   isSafeRemotePath,
+  lastClientMessage,
   parseListing,
   parseLsLine,
   parseProgress,
@@ -169,6 +170,18 @@ describe('reading the client', () => {
     // key they have not been shown.
     expect(question?.text).toContain('SHA256:abc123');
     expect(detectPrompt(`${ESC}]0;sftp${BEL}sftp> `)).toBeNull();
+  });
+
+  it('reports the last thing the client said, for an error that would otherwise say nothing', () => {
+    // A timeout can only report that nothing arrived. Whether the host was never
+    // reached, asked something unrecognised, or answered and was misparsed are
+    // three different problems with that same symptom.
+    expect(lastClientMessage('Duo two-factor login for dev\r\n\r\nPasscode or option (1-3): '))
+      .toBe('Passcode or option (1-3):');
+    // The prompt is not a message; the line before it is.
+    expect(lastClientMessage('Connected to example.com.\r\nsftp> ')).toBe('Connected to example.com.');
+    expect(lastClientMessage(`${ESC}[?2004hsftp> `)).toBe('');
+    expect(lastClientMessage('')).toBe('');
   });
 
   it('separates a dead connection from a failed command', () => {

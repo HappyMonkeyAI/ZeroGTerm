@@ -48,6 +48,7 @@ export function SftpPanel({
   const [creating, setCreating] = useState<Creating | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
+  const selectionAnchor = useRef<{ local: string | null; remote: string | null }>({ local: null, remote: null });
 
   // The connection id is needed to answer a password prompt, which arrives
   // *while* the open call is still pending — so it is held in a ref that either
@@ -165,7 +166,7 @@ export function SftpPanel({
   const navigate = (side: Side, path: string) => (side === 'local' ? loadLocal(path) : loadRemote(path));
 
   const localSelected = useMemo(() => transferable(local?.entries ?? [], selection.local), [local, selection.local]);
-  const remoteSelected = useMemo(() => transferable(remote?.entries ?? [], selection.remote), [remote, selection.remote]);
+  const remoteSelected = useMemo(() => transferable(remote?.entries ?? [], selection.remote, true), [remote, selection.remote]);
   const transferring = progress !== null;
 
   const runTransfer = async (direction: 'upload' | 'download') => {
@@ -179,7 +180,7 @@ export function SftpPanel({
       for (const file of files) {
         setNotice(`${direction === 'upload' ? 'Uploading' : 'Downloading'} ${file.name}…`);
         if (direction === 'upload') await api.sftpUpload(id, joinLocal(local.path, file.name), remote.path);
-        else await api.sftpDownload(id, joinRemote(remote.path, file.name), local.path);
+        else await api.sftpDownload(id, joinRemote(remote.path, file.name), local.path, file.kind);
         moved += 1;
       }
       setNotice(`${direction === 'upload' ? 'Uploaded' : 'Downloaded'} ${moved} ${moved === 1 ? 'file' : 'files'}.`);
@@ -386,9 +387,13 @@ export function SftpPanel({
                 className={`sftp-row ${selected.has(entry.name) ? 'selected' : ''} ${entry.kind === 'directory' ? 'is-directory' : ''}`}
                 onClick={(event) => {
                   const additive = event.ctrlKey || event.metaKey;
+                  const anchor = selectionAnchor.current[side];
+                  const range = event.shiftKey && anchor ? anchor : undefined;
+                  const orderedNames = listing?.entries.map((item) => item.name);
                   setSelection((current) => (side === 'local'
-                    ? { ...current, local: nextSelection(current.local, entry.name, additive) }
-                    : { ...current, remote: nextSelection(current.remote, entry.name, additive) }));
+                    ? { ...current, local: nextSelection(current.local, entry.name, additive, range, orderedNames) }
+                    : { ...current, remote: nextSelection(current.remote, entry.name, additive, range, orderedNames) }));
+                  if (!event.shiftKey) selectionAnchor.current[side] = entry.name;
                 }}
                 onDoubleClick={() => openEntry(side, entry)}
                 onKeyDown={(event) => {
@@ -428,7 +433,7 @@ export function SftpPanel({
               onClick={() => void runTransfer('download')}
               title={remoteSelected.length ? 'Copy to this computer' : 'Select files to download'}
             >
-              <Icon name="arrow-down" /> {transferLabel('Download', remoteSelected.length)}
+              <Icon name="arrow-down" /> {transferLabel('Download', remoteSelected.length, 'item')}
             </button>
           )}
           <span className="sftp-count">{listing ? `${listing.entries.length} items` : ''}</span>
