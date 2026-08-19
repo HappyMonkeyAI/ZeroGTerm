@@ -1,6 +1,6 @@
 {
   "name": "zerogterm",
-  "version": "0.5.0-alpha.1",
+  "version": "0.6.0-alpha.1",
   "description": "A Linux-first persistent Electron terminal workspace",
   "license": "MIT",
   "author": "Stephen Phillips",
