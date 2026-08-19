@@ -23,6 +23,7 @@ import {
   isSafeRemotePath,
   parseListing,
   parseProgress,
+  lastClientMessage,
   parsePwd,
   quoteLocalPath,
   quoteRemotePath,
@@ -49,6 +50,16 @@ const IDLE_MS = 25_000;
 const TRANSFER_IDLE_MS = 60_000;
 /** Opening waits longer, because it may be waiting on a person to type. */
 const OPEN_IDLE_MS = 120_000;
+/**
+ * How long the client may say *nothing at all* before opening is given up on.
+ *
+ * Separate from the idle limit above, which exists to allow for a person
+ * typing a password. Silence before a single byte has arrived is a different
+ * situation: the client has not reached the host, or is stuck before it can
+ * ask anything, and two minutes of a spinner teaches the user nothing.
+ * ConnectTimeout is 20s, so this only fires when even that did not report.
+ */
+const FIRST_BYTE_MS = 35_000;
 
 /** A ceiling on live connections, so a stuck panel cannot spawn clients forever. */
 const MAX_SESSIONS = 6;
@@ -112,6 +123,9 @@ export class SftpService {
     }
     const { file, args } = buildSftpArgs(target);
     const id = `sftp:${randomUUID()}`;
+    // Logged because which client got picked is the first thing worth knowing
+    // when a connection does not work on someone else's machine.
+    console.log('[zerog] sftp open', { file, args });
     const pty = this.spawnPty(file, args, {
       name: 'xterm-256color',
       cols: PTY_COLS,
@@ -125,7 +139,7 @@ export class SftpService {
     pty.onExit(() => this.handleExit(connection));
 
     try {
-      await this.waitForPrompt(connection, '', OPEN_IDLE_MS);
+      await this.waitForPrompt(connection, '', OPEN_IDLE_MS, { firstByteMs: FIRST_BYTE_MS });
       // Ask the server where "here" is before trusting any relative path: the
       // panel shows this path, and the login directory is not always the home
       // directory the local side would guess.
@@ -284,12 +298,17 @@ export class SftpService {
   private command(connection: Connection, command: string, idleMs: number, reportProgress = false): Promise<string> {
     if (connection.closed) return Promise.reject(new Error('This transfer connection is closed.'));
     connection.buffer = '';
-    const pending = this.waitForPrompt(connection, command, idleMs, reportProgress);
+    const pending = this.waitForPrompt(connection, command, idleMs, { reportProgress });
     connection.pty.write(`${command}\n`);
     return pending;
   }
 
-  private waitForPrompt(connection: Connection, command: string, idleMs: number, reportProgress = false): Promise<string> {
+  private waitForPrompt(
+    connection: Connection,
+    command: string,
+    idleMs: number,
+    options: { reportProgress?: boolean; firstByteMs?: number } = {}
+  ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       if (connection.waiter) {
         reject(new Error('A transfer command is already running on this connection.'));
@@ -300,8 +319,10 @@ export class SftpService {
         reject,
         idleMs,
         command,
-        reportProgress,
-        timer: setTimeout(() => this.fail(connection, new Error('The remote host stopped responding.')), idleMs)
+        reportProgress: options.reportProgress ?? false,
+        // The first deadline may be shorter than the idle one; every later
+        // deadline is re-armed by receive() at idleMs.
+        timer: setTimeout(() => this.fail(connection, this.silenceError(connection)), options.firstByteMs ?? idleMs)
       };
       connection.waiter = waiter;
       // Output that arrived between the write and this handler being installed
@@ -325,7 +346,7 @@ export class SftpService {
     const waiter = connection.waiter;
     if (waiter) {
       clearTimeout(waiter.timer);
-      waiter.timer = setTimeout(() => this.fail(connection, new Error('The remote host stopped responding.')), waiter.idleMs);
+      waiter.timer = setTimeout(() => this.fail(connection, this.silenceError(connection)), waiter.idleMs);
       if (waiter.reportProgress) {
         const progress = parseProgress(data);
         if (progress) this.onEvent({ type: 'progress', sessionId: connection.id, ...progress });
@@ -371,6 +392,29 @@ export class SftpService {
     connection.waiter = null;
     lastQuestion.delete(connection.id);
     waiter.resolve(responseBody(connection.buffer, waiter.command));
+  }
+
+  /**
+   * Why nothing came back, in as much detail as the client gave.
+   *
+   * "The remote host stopped responding" was the whole message before, which
+   * cannot distinguish a host that was never reached from one asking something
+   * unrecognised from an answer that was misparsed. Quoting the client's own
+   * last line separates those three, and naming the doctor script gives the user
+   * somewhere to go when it does not.
+   */
+  private silenceError(connection: Connection): Error {
+    const said = lastClientMessage(connection.buffer);
+    if (!said) {
+      return new Error(
+        'The sftp client produced no output, so the host was never reached or is stuck before it can report why. '
+          + 'Run `node scripts/sftp-doctor.mjs <host>` to see the connection attempt.'
+      );
+    }
+    return new Error(
+      `The remote host stopped responding. The sftp client last said: "${said}". `
+        + 'If that is a question, ZeroG did not recognise it — `node scripts/sftp-doctor.mjs <host>` shows the whole exchange.'
+    );
   }
 
   private fail(connection: Connection, error: Error): void {

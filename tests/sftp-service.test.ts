@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFakePty, type FakePty } from './helpers/fake-pty';
 import { SftpService } from '../src/main/sftp-service';
 import type { SftpEvent } from '../src/shared/types';
@@ -169,6 +169,44 @@ describe('SFTP connections', () => {
     expect(pty.writes[pty.writes.length - 1]).toBe('mkdir "/srv/app/new"\n');
     reply(pty);
     await expect(second).resolves.toBeUndefined();
+  });
+});
+
+describe('when nothing comes back', () => {
+  // The rejection is caught as it is created rather than asserted on afterwards:
+  // advancing the timers is what rejects, so a handler attached after that has
+  // already missed it, and the run reports an unhandled rejection.
+  it('says the client produced no output, rather than blaming the host', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com').catch((error: Error) => error);
+      expect(spawned).toHaveLength(1);
+      // Nothing is ever emitted: the client started and said nothing at all.
+      await vi.advanceTimersByTimeAsync(40_000);
+      const failure = await opening;
+      expect(failure.message).toMatch(/produced no output/);
+      // And it points somewhere useful rather than leaving the user guessing.
+      expect(failure.message).toMatch(/sftp-doctor/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('quotes what the client last said, so an unrecognised question is visible', async () => {
+    vi.useFakeTimers();
+    try {
+      const { service, spawned } = harness();
+      const opening = service.open('dev@example.com').catch((error: Error) => error);
+      // A two-factor prompt whose wording ZeroG does not recognise: the panel
+      // cannot ask for it, so the error has to carry it instead.
+      spawned[0].emit('Duo two-factor login for dev\r\n\r\nPasscode or option (1-3): ');
+      await vi.advanceTimersByTimeAsync(130_000);
+      const failure = await opening;
+      expect(failure.message).toMatch(/Passcode or option \(1-3\)/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
