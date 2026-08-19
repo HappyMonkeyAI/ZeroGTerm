@@ -9,6 +9,10 @@ import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
 import { useBackdropDismiss } from './backdrop-dismiss';
+import { Icon } from './icons';
+import { CWD_BUFFER_CHARS, readCwd } from './cwd-tracker';
+import { SftpPanel } from './sftp-panel';
+import { sftpTargetForSession, transferAvailability } from './sftp-view';
 import {
   DEFAULT_SETTINGS,
   SETTING_LIMITS,
@@ -64,162 +68,6 @@ function browserStorage(): SettingsStorage | null {
     return window.localStorage;
   } catch {
     return null;
-  }
-}
-
-function Icon({ name, className = '' }: { name: string; className?: string }) {
-  const common = {
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 1.8,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const,
-    className: `icon-svg ${className}`.trim(),
-    'aria-hidden': true as const
-  };
-
-  switch (name) {
-    case 'plus':
-      return (
-        <svg {...common}>
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-      );
-    case 'panel-left':
-      return (
-        <svg {...common}>
-          <rect x="3" y="4" width="18" height="16" rx="2" />
-          <path d="M9 4v16" />
-        </svg>
-      );
-    case 'panel-left-open':
-      return (
-        <svg {...common}>
-          <rect x="3" y="4" width="18" height="16" rx="2" />
-          <path d="M9 4v16M6 9l2 3-2 3" />
-        </svg>
-      );
-    case 'grid':
-      return (
-        <svg {...common}>
-          <rect x="4" y="4" width="7" height="7" rx="1" />
-          <rect x="13" y="4" width="7" height="7" rx="1" />
-          <rect x="4" y="13" width="7" height="7" rx="1" />
-          <rect x="13" y="13" width="7" height="7" rx="1" />
-        </svg>
-      );
-    case 'sessions':
-      return (
-        <svg {...common}>
-          <path d="M4 7h16M4 12h16M4 17h10" />
-        </svg>
-      );
-    case 'ssh':
-      return (
-        <svg {...common}>
-          <path d="M7 17l5-5-5-5M12 17h7" />
-        </svg>
-      );
-    case 'history':
-      return (
-        <svg {...common}>
-          <path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5M4 4v4.5h4.5" />
-          <path d="M12 7v5l3 2" />
-        </svg>
-      );
-    case 'spark':
-      return (
-        <svg {...common}>
-          <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z" />
-        </svg>
-      );
-    case 'settings':
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.6.9 1 1.6 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
-        </svg>
-      );
-    case 'sun':
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-        </svg>
-      );
-    case 'moon':
-      return (
-        <svg {...common}>
-          <path d="M20.5 15.5A8.5 8.5 0 0 1 8.5 3.5 8.5 8.5 0 1 0 20.5 15.5z" />
-        </svg>
-      );
-    case 'stack':
-      return (
-        <svg {...common}>
-          <rect x="5" y="5" width="14" height="14" rx="1.5" />
-        </svg>
-      );
-    case 'maximize':
-      return (
-        <svg {...common}>
-          <path d="M8 4H4v4M16 4h4v4M4 16v4h4M20 16v4h-4" />
-        </svg>
-      );
-    case 'restore':
-      return (
-        <svg {...common}>
-          <path d="M8 8h12v12H8zM4 16V4h12" />
-        </svg>
-      );
-    case 'chevron-left':
-      return (
-        <svg {...common}>
-          <path d="M15 5l-7 7 7 7" />
-        </svg>
-      );
-    case 'chevron-right':
-      return (
-        <svg {...common}>
-          <path d="M9 5l7 7-7 7" />
-        </svg>
-      );
-    case 'split-v':
-      return (
-        <svg {...common}>
-          <rect x="4" y="5" width="7" height="14" rx="1" />
-          <rect x="13" y="5" width="7" height="14" rx="1" />
-        </svg>
-      );
-    case 'split-h':
-      return (
-        <svg {...common}>
-          <rect x="4" y="4" width="16" height="7" rx="1" />
-          <rect x="4" y="13" width="16" height="7" rx="1" />
-        </svg>
-      );
-    case 'x':
-      return (
-        <svg {...common}>
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      );
-    case 'mic':
-      return (
-        <svg {...common}>
-          <rect x="9" y="2.5" width="6" height="12" rx="3" />
-          <path d="M5 11.5a7 7 0 0 0 14 0" />
-          <path d="M12 18.5V21" />
-        </svg>
-      );
-    case 'check':
-      return (
-        <svg {...common}>
-          <path d="M5 13l4.5 4.5L19 7" />
-        </svg>
-      );
-    default:
-      return <span className="icon" aria-hidden="true">•</span>;
   }
 }
 
@@ -299,6 +147,30 @@ function TerminalView({
       scrollback: terminalSettingsRef.current.scrollback,
       allowProposedApi: true,
       theme: terminalTheme(appearanceRef.current.theme),
+      // Send a clicked link to the desktop browser.
+      //
+      // Without this, xterm's own handler asks for confirmation and then calls
+      // window.open — which Electron answers with a window of this application,
+      // so a link opened in something that is not the user's browser. The main
+      // process refuses that anyway (see setWindowOpenHandler), but going
+      // through openExternal directly is what makes a click do the right thing
+      // rather than merely not do the wrong one.
+      linkHandler: {
+        activate: (_event, uri) => {
+          const currentApi = api();
+          if (!currentApi?.openExternal) return;
+          statusRef.current(`Opening ${uri}`);
+          void currentApi.openExternal(uri).catch((error: unknown) => {
+            statusRef.current(error instanceof Error ? error.message : String(error));
+          });
+        },
+        // OSC 8 lets a remote host label a link with text that has nothing to do
+        // with where it goes, so showing the real target on hover is the only
+        // point at which the user can tell. This is what VS Code's terminal and
+        // Windows Terminal both do.
+        hover: (_event, uri) => statusRef.current(`Link: ${uri}`),
+        leave: () => statusRef.current('Ready')
+      },
       // No convertEol: the pane is fed by a pty, not a text file. A pty already
       // emits CR LF for a new line, and a program that sends a bare LF means
       // "down one row, same column" — turning that into a carriage return moves
@@ -641,6 +513,7 @@ function App() {
   const voiceTargetRef = useRef<string | null>(null);
   const voiceLimitRef = useRef<number | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
   const [speechTest, setSpeechTest] = useState<SpeechTestState>({ status: 'idle' });
   const speechTestRecorderRef = useRef<VoiceRecorder | null>(null);
   const speechTestLimitRef = useRef<number | undefined>(undefined);
@@ -680,6 +553,7 @@ function App() {
   const dismissHistory = useBackdropDismiss(() => setHistoryOpen(false));
   const dismissSettings = useBackdropDismiss(() => setSettingsOpen(false));
   const dismissVoiceReview = useBackdropDismiss(() => closeVoiceReview());
+  const dismissTransfer = useBackdropDismiss(() => setTransferOpen(false));
 
   // Every settings edit goes through updateSection, so a control cannot store a
   // value the schema would reject, and every edit is persisted as it is made —
@@ -828,6 +702,43 @@ function App() {
     }
   }, [active, workspaceSessions]);
 
+  /**
+   * Follow each session's working directory by reading its output.
+   *
+   * Two things want to know where a shell is: the breadcrumb above the panes,
+   * which would otherwise show the directory the session was *created* in
+   * forever, and the transfer panel, which opens the remote side there. Neither
+   * is worth typing a `pwd` into the user's session for, so this listens for
+   * what the shell says on its own — see cwd-tracker.ts.
+   */
+  // A link the main process would not open — a `file:` or an application scheme
+  // from terminal output. The click has to say something, or it looks broken.
+  useEffect(() => {
+    const currentApi = api();
+    return currentApi?.onLinkRefused?.((reason) => setStatus(reason));
+  }, []);
+
+  const cwdBuffers = useRef(new Map<string, string>());
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi) return;
+    return currentApi.onData((sessionId, data) => {
+      const buffer = ((cwdBuffers.current.get(sessionId) ?? '') + data).slice(-CWD_BUFFER_CHARS);
+      cwdBuffers.current.set(sessionId, buffer);
+      const reading = readCwd(buffer);
+      if (!reading) return;
+      // Returning the same array when nothing moved matters: this runs on every
+      // chunk of terminal output, and a new array each time would re-render the
+      // whole workspace while a build scrolls past.
+      setSessions((current) => {
+        const existing = current.find((item) => item.id === sessionId);
+        if (!existing || existing.cwd === reading.path) return current;
+        return current.map((item) => (item.id === sessionId ? { ...item, cwd: reading.path } : item));
+      });
+      setActive((current) => (current && current.id === sessionId && current.cwd !== reading.path ? { ...current, cwd: reading.path } : current));
+    });
+  }, []);
+
   // Esc while listening, in the capture phase so it reaches here rather than
   // the shell. The pane holds the keyboard during a recording — that is the
   // point, so typing carries on working — and xterm would otherwise consume the
@@ -848,6 +759,11 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        if (transferOpen) {
+          event.preventDefault();
+          setTransferOpen(false);
+          return;
+        }
         if (settingsOpen) {
           event.preventDefault();
           setSettingsOpen(false);
@@ -914,11 +830,15 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overview, approval, modal, historyOpen, settingsOpen, voiceReview, voice.status, workspaces, activeWorkspace, workspaceSessions]);
+  }, [overview, approval, modal, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspace, workspaceSessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
   const proceedPhrase = resolveProceedPhrase(settings.ai);
+  // The host the transfer panel would talk to, and why the button is or is not
+  // offered. Both come from the session the user is actually working in.
+  const transferTarget = sftpTargetForSession(active);
+  const transfer = transferAvailability(active);
   const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
   // Keep every workspace terminal mounted while changing layouts. Hiding a
   // pane must not dispose its xterm renderer and lose its scrollback/content.
@@ -936,6 +856,11 @@ function App() {
     paneSessions.find((session) => session.id === active?.id)?.id ?? paneSessions[0]?.id;
   const isPaneVisible = (session: SessionInfo, index: number) =>
     layout === 'stack' ? session.id === stackedSessionId : index < paneCount;
+
+  useEffect(() => {
+    // Selecting a local terminal takes the panel's host away from under it.
+    if (transferOpen && !transferTarget) setTransferOpen(false);
+  }, [transferOpen, transferTarget]);
 
   const attach = async (session: SessionInfo) => {
     setActive(session);
@@ -1775,34 +1700,54 @@ function App() {
               <span className="slash">/</span>
               <span className="muted-text">{active?.name ?? activeWorkspace?.name ?? 'no session'}</span>
             </div>
-            <div className="layout-controls">
-              <span className="control-label">LAYOUT</span>
-              <button
-                type="button"
-                className={layout === 'stack' || maximizedPaneId ? 'layout-button active' : 'layout-button'}
-                onClick={() => {
-                  if (maximizedPaneId) {
-                    setMaximizedSessionId(null);
-                  } else if (workspaceSessions.length > 1) {
-                    const target = focusedSessionId ?? active?.id ?? workspaceSessions[0]?.id;
-                    if (target) setMaximizedSessionId(target);
-                  } else {
-                    setLayout('stack');
-                  }
-                }}
-                title={maximizedPaneId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
-              >
-                <Icon name="stack" />
-              </button>
-              <button type="button" className={layout === 'split-v' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
-                <Icon name="split-v" />
-              </button>
-              <button type="button" className={layout === 'split-h' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
-                <Icon name="split-h" />
-              </button>
-              <button type="button" className={layout === 'grid' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
-                <Icon name="grid" />
-              </button>
+            {/* Both control groups live in one box: the head is spaced apart,
+                so a third child of its own would be pushed into the middle of
+                the bar instead of sitting beside the layout buttons. */}
+            <div className="head-controls">
+              <div className="layout-controls">
+                <span className="control-label">SFTP</span>
+                <button
+                  type="button"
+                  className={transferOpen ? 'layout-button active' : 'layout-button'}
+                  onClick={() => setTransferOpen((value) => !value)}
+                  // A preload without the transfer API means a stale build; the
+                  // button says nothing rather than failing on the first click.
+                  disabled={!transfer.available || !api()?.sftpOpen}
+                  title={transfer.reason}
+                  aria-label="Transfer files over SFTP"
+                >
+                  <Icon name="transfer" />
+                </button>
+              </div>
+              <div className="layout-controls">
+                <span className="control-label">LAYOUT</span>
+                <button
+                  type="button"
+                  className={layout === 'stack' || maximizedPaneId ? 'layout-button active' : 'layout-button'}
+                  onClick={() => {
+                    if (maximizedPaneId) {
+                      setMaximizedSessionId(null);
+                    } else if (workspaceSessions.length > 1) {
+                      const target = focusedSessionId ?? active?.id ?? workspaceSessions[0]?.id;
+                      if (target) setMaximizedSessionId(target);
+                    } else {
+                      setLayout('stack');
+                    }
+                  }}
+                  title={maximizedPaneId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
+                >
+                  <Icon name="stack" />
+                </button>
+                <button type="button" className={layout === 'split-v' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
+                  <Icon name="split-v" />
+                </button>
+                <button type="button" className={layout === 'split-h' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
+                  <Icon name="split-h" />
+                </button>
+                <button type="button" className={layout === 'grid' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
+                  <Icon name="grid" />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -2186,6 +2131,19 @@ function App() {
             </div>
           </form>
         </div>
+      )}
+
+      {transferOpen && active && transferTarget && api() && (
+        // Keyed on the session: pointing the panel at a different host is a new
+        // connection and a new pair of directories, not an update of this one.
+        <SftpPanel
+          key={active.id}
+          session={active}
+          target={transferTarget}
+          api={api() as TerminalApi}
+          onClose={() => setTransferOpen(false)}
+          backdrop={dismissTransfer}
+        />
       )}
 
       {settingsOpen && (

@@ -1,12 +1,10 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CreateLocalRequest, SessionInfo } from '../shared/types.js';
-import { defaultShellBackend, isLocalShellBackend, resolveShellBackend } from './shell-catalog.js';
+import { defaultShellBackend, findOpenSshTool, isLocalShellBackend, resolveShellBackend, type ShellCatalogOptions } from './shell-catalog.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -18,18 +16,6 @@ const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,48}$/;
  * -chosen config file (hence ProxyCommand) without any shell involvement.
  */
 const SSH_TARGET = /^(?:([A-Za-z0-9][A-Za-z0-9._-]*)@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::(\d{1,5}))?$/;
-
-function resolveSshExecutable(): string {
-  if (process.platform !== 'win32') return 'ssh';
-
-  const windowsRoot = process.env.SystemRoot ?? 'C:\\Windows';
-  const candidates = [
-    join(windowsRoot, 'System32', 'OpenSSH', 'ssh.exe'),
-    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'usr', 'bin', 'ssh.exe'),
-    join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Git', 'usr', 'bin', 'ssh.exe')
-  ];
-  return candidates.find((candidate) => existsSync(candidate)) ?? 'ssh.exe';
-}
 
 /** The slice of node-pty's process this service actually uses. */
 export type PtyProcess = {
@@ -90,7 +76,13 @@ export function validateSessionName(name: string): string {
   return value;
 }
 
-export function validateSshTarget(input: string): { target: string; args: string[] } {
+/**
+ * Split an SSH target into the pieces a client needs, rejecting anything that
+ * is not one. Shared with the SFTP side (see sftp-protocol.ts) so that both
+ * clients are handed destinations vetted by the same rule — a target ssh would
+ * read as an option must not become an sftp option either.
+ */
+export function parseSshTarget(input: string): { target: string; destination: string; user?: string; host: string; port?: string } {
   const value = input.trim();
   const match = value.match(SSH_TARGET);
   if (!match) {
@@ -103,12 +95,39 @@ export function validateSshTarget(input: string): { target: string; args: string
       throw new Error('SSH port must be between 1 and 65535.');
     }
   }
-  const destination = user ? `${user}@${host}` : host;
+  return {
+    target: value,
+    destination: user ? `${user}@${host}` : host,
+    ...(user ? { user } : {}),
+    host,
+    ...(portText ? { port: portText } : {})
+  };
+}
+
+export function validateSshTarget(input: string): { target: string; args: string[] } {
+  const { target, destination, port } = parseSshTarget(input);
   const args = ['-tt'];
-  if (portText) args.push('-p', portText);
+  if (port) args.push('-p', port);
   // '--' ends option parsing, so the destination can never be read as a flag.
   args.push('--', destination);
-  return { target: value, args };
+  return { target, args };
+}
+
+/**
+ * The ssh client, as a path a pty can actually start.
+ *
+ * node-pty passes the file straight to CreateProcess on Windows, which does not
+ * append `.exe` — so a pty asked for `ssh` fails with "File not found" on a
+ * machine that has it. Resolving it here also turns a missing client into a
+ * sentence rather than that message. Where OpenSSH is looked for lives in
+ * findOpenSshTool, shared with the transfer side's sftpExecutable.
+ */
+export function sshExecutable(options: ShellCatalogOptions = {}): string {
+  const file = findOpenSshTool('ssh', options);
+  if (!file) {
+    throw new Error('The OpenSSH client was not found. Install the OpenSSH client tools to connect over SSH.');
+  }
+  return file;
 }
 
 export function parseWslDistributions(output: string): string[] {
@@ -296,7 +315,7 @@ export class ScreenService {
     session.status = 'connected';
     session.lastSeen = new Date().toISOString();
     try {
-      this.spawnCommand(id, resolveSshExecutable(), args, onData, onExit, homedir(), size);
+      this.spawnCommand(id, sshExecutable(), args, onData, onExit, homedir(), size);
     } catch (error) {
       session.status = 'error';
       this.onEvent?.('reconnect-failed', session, false);

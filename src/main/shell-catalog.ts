@@ -44,6 +44,8 @@ export type ShellCatalogOptions = {
   pathExt?: string;
   /** The user's login shell, so it can be offered first on Unix. */
   loginShell?: string;
+  /** Where the Windows install locations are read from. Defaults to the process. */
+  env?: NodeJS.ProcessEnv;
   /** Injected so tests can describe a machine without touching the disk. */
   isFile?: (candidate: string) => boolean;
 };
@@ -71,6 +73,7 @@ function resolved(options: ShellCatalogOptions) {
     path: options.path ?? process.env.PATH ?? '',
     pathExt: options.pathExt ?? process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM',
     loginShell: options.loginShell ?? process.env.SHELL,
+    env: options.env ?? process.env,
     isFile: options.isFile ?? defaultIsFile
   };
 }
@@ -119,6 +122,49 @@ export function findExecutable(
       const candidate = joinPath(directory, command + extension, windows);
       if (isFile(candidate) && accept(candidate)) return candidate;
     }
+  }
+  return undefined;
+}
+
+/**
+ * Where Windows puts the OpenSSH tools when they are not on PATH.
+ *
+ * PATH is the right first answer, and the only one that finds a tool installed
+ * somewhere unusual. But a desktop application is long-running: enabling the
+ * OpenSSH client feature extends PATH for processes started *afterwards*, so an
+ * app already open has a stale environment and would conclude that a machine
+ * plainly holding ssh.exe does not have it. These are the locations worth
+ * checking before saying that.
+ */
+function windowsOpenSshDirectories(env: NodeJS.ProcessEnv): string[] {
+  const programFiles = env.ProgramFiles ?? 'C:\\Program Files';
+  return [
+    joinPath(env.SystemRoot ?? 'C:\\Windows', 'System32\\OpenSSH', true),
+    joinPath(programFiles, 'Git\\usr\\bin', true),
+    joinPath(env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Git\\usr\\bin', true)
+  ];
+}
+
+/**
+ * Locate an OpenSSH command line tool as a path a pty can start.
+ *
+ * Shared by the terminal side (`ssh`) and the transfer side (`sftp`) so there is
+ * one answer to "where is OpenSSH" rather than one per caller. An absolute path
+ * is what matters: node-pty hands the file straight to CreateProcess on Windows,
+ * which searches PATH but does not append `.exe`, so a bare `ssh` fails there on
+ * a machine that has it.
+ *
+ * Returns undefined when the tool cannot be found, leaving the wording of that
+ * failure to the caller, which knows what the user was trying to do.
+ */
+export function findOpenSshTool(command: 'ssh' | 'sftp', options: ShellCatalogOptions = {}): string | undefined {
+  const onPath = findExecutable(command, options);
+  if (onPath) return onPath;
+  const { windows, env, isFile } = resolved(options);
+  if (!windows) return undefined;
+  for (const directory of windowsOpenSshDirectories(env)) {
+    const candidate = joinPath(directory, `${command}.exe`, true);
+    if (isFile(candidate)) return candidate;
   }
   return undefined;
 }
