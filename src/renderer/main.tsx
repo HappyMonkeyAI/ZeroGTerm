@@ -1550,6 +1550,15 @@ function App() {
             <Icon name="grid" />
           </button>
           <span className="rail-spacer" />
+          <button
+            type="button"
+            className="rail-button"
+            onClick={openNewLocalTerminal}
+            title="New local terminal (Ctrl+Shift+T)"
+            aria-label="New local terminal"
+          >
+            <Icon name="terminal" />
+          </button>
           <button type="button" className="rail-button" onClick={() => openSessionDialog('ssh')} title="Connect SSH">
             <Icon name="ssh" />
           </button>
