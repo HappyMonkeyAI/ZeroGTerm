@@ -53,6 +53,13 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
           <path d="M4 7h16M4 12h16M4 17h10" />
         </svg>
       );
+    case 'terminal':
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M7 9l3 3-3 3M13 15h4" />
+        </svg>
+      );
     case 'ssh':
       return (
         <svg {...common}>

@@ -35,6 +35,16 @@ import {
 } from './settings';
 import { SettingsPanel, type SpeechTestState } from './settings-panel';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
+import {
+  SPLIT_BUTTONS,
+  singlePaneAction,
+  singlePaneTitle,
+  splitButtonAction,
+  splitButtonTitle,
+  type PaneAction,
+  type PaneView,
+  type SplitLayout
+} from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
 
 /** Settle once output has been quiet this long — the primary readiness signal. */
@@ -499,6 +509,13 @@ function App() {
   const [modal, setModal] = useState<ModalKind>(null);
   const [overview, setOverview] = useState(false);
   const [layout, setLayout] = useState<Layout>(settings.sessions.defaultLayout);
+  // The split the single-pane view folds out of. A ref, not state: the
+  // keyboard handler reads it from a closure that does not re-subscribe on
+  // every layout change, and a stale split there would send Ctrl+Shift+L back
+  // to the wrong one.
+  const lastSplitLayout = useRef<SplitLayout>(
+    settings.sessions.defaultLayout === 'stack' ? 'split-v' : settings.sessions.defaultLayout
+  );
   const [focusedSessionId, setFocusedSessionId] = useState<string>();
   const [maximizedSessionId, setMaximizedSessionId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState('Workspace');
@@ -815,7 +832,7 @@ function App() {
         event.preventDefault();
         // Match the layout buttons: a maximized pane would otherwise mask the change.
         setMaximizedSessionId(null);
-        setLayout((value) => (value === 'stack' ? 'split-v' : 'stack'));
+        setLayout((value) => (value === 'stack' ? lastSplitLayout.current : 'stack'));
       }
       if (key === 'b') {
         event.preventDefault();
@@ -861,6 +878,12 @@ function App() {
     // Selecting a local terminal takes the panel's host away from under it.
     if (transferOpen && !transferTarget) setTransferOpen(false);
   }, [transferOpen, transferTarget]);
+
+  useEffect(() => {
+    // Recorded from the layout rather than at each button, so a split reached
+    // by any route is the one the single-pane view folds back out to.
+    if (layout !== 'stack') lastSplitLayout.current = layout;
+  }, [layout]);
 
   const attach = async (session: SessionInfo) => {
     setActive(session);
@@ -1171,6 +1194,17 @@ function App() {
       : { splitRowRatio: DEFAULT_SETTINGS.sessions.splitRowRatio });
   };
 
+  // Everything the layout buttons weigh up, gathered once so the tooltip and
+  // the click cannot read a different grid.
+  const paneView: PaneView = {
+    layout,
+    maximized: Boolean(maximizedPaneId),
+    columnRatio,
+    rowRatio,
+    sessionCount: workspaceSessions.length,
+    lastSplit: lastSplitLayout.current
+  };
+
   const sidebarRef = useRef<HTMLElement>(null);
   const dragSidebar = (position: { clientX: number }) => {
     const box = sidebarRef.current?.getBoundingClientRect();
@@ -1182,6 +1216,27 @@ function App() {
     setFocusedSessionId(sessionId);
     setMaximizedSessionId((current) => current === sessionId ? null : sessionId);
   };
+
+  /** Carry out what the layout rules decided a click should do. */
+  const applyPaneAction = (action: PaneAction) => {
+    if (action.kind === 'restore') {
+      setMaximizedSessionId(null);
+      return;
+    }
+    if (action.kind === 'show') {
+      // A maximized pane would otherwise mask the layout it changed to.
+      setMaximizedSessionId(null);
+      setLayout(action.layout);
+      return;
+    }
+    if (action.kind === 'reset-splits') {
+      changeSetting('sessions', action.ratios);
+      return;
+    }
+    const focused = focusedSessionId ?? active?.id ?? workspaceSessions[0]?.id;
+    if (focused) setMaximizedSessionId(focused);
+  };
+
   const cycleMaximizedSession = (direction: -1 | 1) => {
     if (!maximizedPaneId || workspaceSessions.length < 2) return;
     const currentIndex = workspaceSessions.findIndex((session) => session.id === maximizedPaneId);
@@ -1520,16 +1575,6 @@ function App() {
           >
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
-          <button
-            type="button"
-            className="avatar"
-            title="Settings (Ctrl+Shift+,)"
-            aria-label="Settings"
-            aria-expanded={settingsOpen}
-            onClick={() => setSettingsOpen(true)}
-          >
-            S
-          </button>
         </div>
       </header>
 
@@ -1550,6 +1595,15 @@ function App() {
             <Icon name="grid" />
           </button>
           <span className="rail-spacer" />
+          <button
+            type="button"
+            className="rail-button"
+            onClick={openNewLocalTerminal}
+            title="New local terminal (Ctrl+Shift+T)"
+            aria-label="New local terminal"
+          >
+            <Icon name="terminal" />
+          </button>
           <button type="button" className="rail-button" onClick={() => openSessionDialog('ssh')} title="Connect SSH">
             <Icon name="ssh" />
           </button>
@@ -1724,29 +1778,22 @@ function App() {
                 <button
                   type="button"
                   className={layout === 'stack' || maximizedPaneId ? 'layout-button active' : 'layout-button'}
-                  onClick={() => {
-                    if (maximizedPaneId) {
-                      setMaximizedSessionId(null);
-                    } else if (workspaceSessions.length > 1) {
-                      const target = focusedSessionId ?? active?.id ?? workspaceSessions[0]?.id;
-                      if (target) setMaximizedSessionId(target);
-                    } else {
-                      setLayout('stack');
-                    }
-                  }}
-                  title={maximizedPaneId ? 'Restore panes' : workspaceSessions.length > 1 ? 'Maximize focused pane' : 'Single pane'}
+                  onClick={() => applyPaneAction(singlePaneAction(paneView))}
+                  title={singlePaneTitle(paneView)}
                 >
                   <Icon name="stack" />
                 </button>
-                <button type="button" className={layout === 'split-v' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-v'); }} title="Vertical split">
-                  <Icon name="split-v" />
-                </button>
-                <button type="button" className={layout === 'split-h' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('split-h'); }} title="Horizontal split">
-                  <Icon name="split-h" />
-                </button>
-                <button type="button" className={layout === 'grid' && !maximizedPaneId ? 'layout-button active' : 'layout-button'} onClick={() => { setMaximizedSessionId(null); setLayout('grid'); }} title="Four-pane grid">
-                  <Icon name="grid" />
-                </button>
+                {SPLIT_BUTTONS.map(({ layout: target, icon }) => (
+                  <button
+                    key={target}
+                    type="button"
+                    className={layout === target && !maximizedPaneId ? 'layout-button active' : 'layout-button'}
+                    onClick={() => applyPaneAction(splitButtonAction(target, paneView))}
+                    title={splitButtonTitle(target, paneView)}
+                  >
+                    <Icon name={icon} />
+                  </button>
+                ))}
               </div>
             </div>
           </div>
