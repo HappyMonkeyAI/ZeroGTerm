@@ -8,3 +8,4 @@ ZeroG Terminal version history
 0.5.0-alpha.1 - Draggable pane and sidebar sizes, per-pane proceed button, correct PTY sizing so full-screen programs stop tearing, and keyboard focus returning to a pane after voice input
 0.6.0-alpha.1 - SFTP file transfer panel that opens on the active SSH session at the directory its shell is in, links opening in the system browser instead of an in-app window, and one Windows OpenSSH resolver shared by ssh and sftp
 0.7.0-alpha1 - Recursive remote-folder SFTP downloads with multi-selection, a navigation rail for common workspace actions, and layout controls that restore pane sizes before maximizing or folding views
+0.7.0-alpha2 - Follow-up 0.7 alpha release containing the current SFTP, navigation rail, and pane layout updates
