@@ -8,6 +8,8 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 
 - Multi-pane workspaces with stack, vertical split, horizontal split, and four-pane grid layouts.
 - Draggable dividers between panes and beside the sidebar, so a split does not have to be an even one. Sizes are remembered between launches.
+- A compact navigation rail for sessions, overview, settings, SSH connections, and opening a new local terminal, while keeping the sessions sidebar collapsible.
+- Layout controls that restore a split, even up its pane sizes, and maximize or restore a pane in a predictable sequence.
 - Maximize a focused pane and cycle between sessions without losing the other panes.
 - Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable.
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
@@ -32,7 +34,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.6.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt).
+ZeroG Terminal is currently a public alpha. The current release is `0.7.0-alpha1`; the version history is tracked in [versions.txt](versions.txt).
 
 The npm package contains the built Electron application and project documentation. It is intended for early adopters and testing rather than production use.
 
@@ -90,12 +92,12 @@ OSC 7 — the sequence a shell emits to report its directory — and otherwise f
 the path in the prompt; it never types `pwd` into your session to find out. When
 neither is available the panel opens at the login directory.
 
-Select files with a click, or several with Ctrl-click, then Upload or Download.
+Select files with a click, or several with Ctrl-click or Shift-click, then Upload or Download.
 Double-click a folder to open it, or type a path into the folder box. New folder,
 rename, and delete act on one selected item; deleting asks first, and a folder
-must be empty, so a single click can never remove a tree. Folders themselves are
-not transferred: a recursive copy is a different job with different failure
-modes, and half-copying one silently would be worse than not offering it.
+must be empty, so a single click can never remove a tree. Remote folders can be
+downloaded recursively with the system `sftp` client; uploads remain file-only,
+so a local folder is never copied accidentally as a different job.
 
 Filenames containing quotes, backslashes, or the wildcard characters `* ? [ ]`
 are refused with a message rather than acted on. The `sftp` client re-reads its
