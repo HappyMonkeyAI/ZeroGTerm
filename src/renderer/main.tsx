@@ -1520,16 +1520,6 @@ function App() {
           >
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
-          <button
-            type="button"
-            className="avatar"
-            title="Settings (Ctrl+Shift+,)"
-            aria-label="Settings"
-            aria-expanded={settingsOpen}
-            onClick={() => setSettingsOpen(true)}
-          >
-            S
-          </button>
         </div>
       </header>
 
