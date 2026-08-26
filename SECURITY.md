@@ -85,18 +85,25 @@ the narrowest part of the application worth stating plainly:
 
 The renderer's Content-Security-Policy limits `connect-src` to:
 
-- Hugging Face hosts, for downloading speech models on first use. Model weights
-  are served from a regional CDN under `hf.co`, so those subdomains are allowed
-  as well as `huggingface.co` itself.
-- Loopback addresses (`127.0.0.1` and `localhost`), for the optional
-  local-server speech engine. IPv6 literals are absent because Chromium rejects
-  them as CSP host-sources; the endpoint validator refuses `[::1]` for the same
-  reason rather than letting a URL pass and then be blocked silently.
+- `'self'`, for the app's own assets.
+- Any `http:` or `https:` origin, for two things: downloading speech models from
+  Hugging Face on first use, and the server speech engine, whose endpoint is
+  operator-configurable and may legitimately be a machine on the LAN or a hosted
+  service. Nothing narrower can express "the host the operator chose".
 
-The speech server endpoint is operator-configurable, which makes it a place
-where recorded audio could be sent somewhere unintended. The URL is therefore
-validated as loopback before any request is made, and a non-loopback address is
-refused rather than sent — the CSP is a second line rather than the only one.
-Anything that widens either control is a change worth reviewing carefully.
+The speech server endpoint is therefore a place where recorded audio goes where
+the operator says, including off this machine. What is enforced is only the shape
+of the target: an `http://` or `https://` URL naming a host, so a `file://` path
+or a half-typed address becomes an error rather than a request. Where the audio
+goes is the operator's decision, and the settings panel states plainly whether
+the configured address is on this machine or not.
+
+Earlier releases refused a non-loopback endpoint outright. That was relaxed
+deliberately, on the grounds that a self-hosted server on the user's own network
+is a normal way to run a model too large for the machine at hand. The trade is
+that `connect-src` no longer constrains where the renderer can post, so an
+injection in the renderer would not be stopped by the policy; the controls that
+matter for that are the sandboxed renderer, context isolation, and the narrow
+preload API described above.
 
 These controls are not a guarantee of security. Please report bypasses or regressions privately.

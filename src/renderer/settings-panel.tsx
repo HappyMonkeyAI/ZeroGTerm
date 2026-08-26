@@ -33,6 +33,7 @@ import {
   type SpeechTask
 } from './speech-models';
 import type { BackdropDismissHandlers } from './backdrop-dismiss';
+import { isLoopbackEndpoint, isSupportedEndpoint } from './speech-server';
 
 export type SettingsPage = SettingsSection;
 
@@ -77,6 +78,19 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {hint ? <small>{hint}</small> : null}
     </label>
   );
+}
+
+/**
+ * What to say under the speech server URL field.
+ *
+ * Any http(s) host is allowed, so the hint carries the part the user cannot see
+ * from the URL alone: whether the recording is about to leave this machine.
+ */
+function speechServerUrlHint(url: string): string {
+  const shape = 'OpenAI-compatible: POST multipart audio to /v1/audio/transcriptions.';
+  if (!isSupportedEndpoint(url)) return `Any http:// or https:// address. ${shape}`;
+  if (isLoopbackEndpoint(url)) return `On this machine. ${shape}`;
+  return `Off this machine — recorded audio is sent to this host. ${shape}`;
 }
 
 function SelectField<T extends string>({
@@ -177,8 +191,8 @@ function EngineChoice({
     },
     {
       id: 'server',
-      title: 'Local server',
-      detail: 'Post audio to a transcription server on this machine — the way to use a GGUF model such as Qwen3-ASR through llama.cpp, LM Studio or Unsloth Studio.'
+      title: 'Server',
+      detail: 'Post audio to a transcription server — on this machine, on the LAN, or hosted — the way to use a GGUF model such as Qwen3-ASR through llama.cpp, LM Studio or Unsloth Studio.'
     }
   ];
   return (
@@ -517,7 +531,7 @@ export function SettingsPanel({
                   <>
                     <Field
                       label="Server URL"
-                      hint="Must be on this machine. OpenAI-compatible: POST multipart audio to /v1/audio/transcriptions."
+                      hint={speechServerUrlHint(settings.speech.serverUrl)}
                     >
                       <input
                         value={settings.speech.serverUrl}

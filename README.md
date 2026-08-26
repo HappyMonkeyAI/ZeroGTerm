@@ -21,7 +21,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Workspaces for grouping sessions and quickly switching between projects or tasks.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
-- Local voice input, either with Whisper ONNX inside the app through Transformers.js or through a transcription server on this machine; transcribed text is typed into the selected terminal without automatic execution.
+- Voice input, either with Whisper ONNX inside the app through Transformers.js or through an OpenAI-compatible transcription server you point it at — on this machine, on the LAN, or hosted; transcribed text is typed into the selected terminal without automatic execution.
 - A per-pane proceed button that sends a configurable phrase — `OK, proceed` by default — for waving an agent on without typing the same reply again.
 - A settings panel for appearance, terminal behaviour, session defaults, and speech recognition, including a built-in recognition test.
 - AI command suggestion and approval UI, keeping command execution explicit.
@@ -148,13 +148,15 @@ about 968 MB for small at full precision; models are cached after first use.
 Multilingual models add language and transcribe/translate options, which
 English-only checkpoints reject and so do not show.
 
-**Local server** posts the recorded audio as a WAV file to a transcription
-server on this machine, using the OpenAI `/v1/audio/transcriptions` shape that
-whisper.cpp's server, LM Studio, faster-whisper-server and similar tools speak.
-This is the way to use a model the built-in engine cannot load — a GGUF build
-such as `unslothai/Qwen3-ASR-0.6B-GGUF` needs a llama.cpp-family runtime, so
-something else has to host it. The URL must be on this machine; a non-loopback
-address is refused rather than sent.
+**Server** posts the recorded audio as a WAV file to a transcription server,
+using the OpenAI `/v1/audio/transcriptions` shape that whisper.cpp's server, LM
+Studio, faster-whisper-server and similar tools speak. This is the way to use a
+model the built-in engine cannot load — a GGUF build such as
+`unslothai/Qwen3-ASR-0.6B-GGUF` needs a llama.cpp-family runtime, so something
+else has to host it. Any `http://` or `https://` address works: loopback, a
+machine on the LAN such as `http://10.0.10.46:8888/v1/audio/transcriptions`, or
+a hosted service. The field says whether the address it holds is on this machine
+or not, because a remote one means recorded speech leaves it.
 
 Both engines share the maximum utterance length and the silence threshold, and
 the **Try it** button on that page records a phrase and shows the transcript,

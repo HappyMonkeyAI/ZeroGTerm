@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildTranscriptionForm,
   encodeWav,
-  isIpv6LoopbackEndpoint,
   isLoopbackEndpoint,
+  isSupportedEndpoint,
   parseTranscriptionText,
   transcribeViaServer
 } from '../src/renderer/speech-server';
@@ -21,32 +21,39 @@ function jsonResponse(body: unknown, init: { status?: number } = {}): Response {
   });
 }
 
+describe('isSupportedEndpoint', () => {
+  it('accepts any http(s) host, on this machine or not', () => {
+    expect(isSupportedEndpoint('http://127.0.0.1:8080/v1/audio/transcriptions')).toBe(true);
+    expect(isSupportedEndpoint('http://localhost:1234/inference')).toBe(true);
+    expect(isSupportedEndpoint('http://[::1]:8080/v1/audio/transcriptions')).toBe(true);
+    expect(isSupportedEndpoint('http://10.0.10.46:8888/v1/audio/transcriptions')).toBe(true);
+    expect(isSupportedEndpoint('https://api.example.com/v1/audio/transcriptions')).toBe(true);
+  });
+
+  it('refuses anything that is not an addressable http(s) URL', () => {
+    // A typo or a non-HTTP scheme is refused here rather than becoming a
+    // request that fails somewhere less explicable.
+    expect(isSupportedEndpoint('file:///etc/passwd')).toBe(false);
+    expect(isSupportedEndpoint('ws://127.0.0.1:8080')).toBe(false);
+    expect(isSupportedEndpoint('http://')).toBe(false);
+    expect(isSupportedEndpoint('not a url')).toBe(false);
+    expect(isSupportedEndpoint('')).toBe(false);
+  });
+});
+
 describe('isLoopbackEndpoint', () => {
-  it('accepts this machine', () => {
+  it('recognises this machine, including IPv6 loopback', () => {
     expect(isLoopbackEndpoint('http://127.0.0.1:8080/v1/audio/transcriptions')).toBe(true);
     expect(isLoopbackEndpoint('http://localhost:1234/inference')).toBe(true);
     expect(isLoopbackEndpoint('https://localhost:8443/v1/audio/transcriptions')).toBe(true);
     expect(isLoopbackEndpoint('http://studio.localhost/v1/audio/transcriptions')).toBe(true);
+    expect(isLoopbackEndpoint('http://[::1]:8080/v1/audio/transcriptions')).toBe(true);
   });
 
-  it('refuses IPv6 literals, which the renderer CSP cannot express', () => {
-    // Chromium reports http://[::1] and http://[::1]:8080 as invalid CSP
-    // sources and ignores them, so such a URL would pass validation here and
-    // then be blocked with no explanation.
-    expect(isLoopbackEndpoint('http://[::1]:8080/v1/audio/transcriptions')).toBe(false);
-    expect(isIpv6LoopbackEndpoint('http://[::1]:8080/v1/audio/transcriptions')).toBe(true);
-    expect(isIpv6LoopbackEndpoint('http://localhost:8080/v1/audio/transcriptions')).toBe(false);
-    expect(isIpv6LoopbackEndpoint('not a url')).toBe(false);
-  });
-
-  it('refuses anything off this machine, however it is spelled', () => {
-    // Recorded speech must not be postable to a host on the network just
-    // because a URL was pasted into a settings field.
+  it('reports a host off this machine, however it is spelled', () => {
     expect(isLoopbackEndpoint('http://192.168.1.20:8080/v1/audio/transcriptions')).toBe(false);
     expect(isLoopbackEndpoint('https://api.example.com/v1/audio/transcriptions')).toBe(false);
     expect(isLoopbackEndpoint('http://localhost.example.com/v1/audio/transcriptions')).toBe(false);
-    expect(isLoopbackEndpoint('file:///etc/passwd')).toBe(false);
-    expect(isLoopbackEndpoint('ws://127.0.0.1:8080')).toBe(false);
     expect(isLoopbackEndpoint('not a url')).toBe(false);
     expect(isLoopbackEndpoint('')).toBe(false);
   });
@@ -148,25 +155,23 @@ describe('transcribeViaServer', () => {
     expect(init.body).toBeInstanceOf(FormData);
   });
 
-  it('tells the user what to type when they give an IPv6 literal', async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse({ text: 'nope' }));
+  it('posts to a host on the network', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ text: 'git status' }));
+    const lanEndpoint = 'http://10.0.10.46:8888/v1/audio/transcriptions';
     await expect(
-      transcribeViaServer(
-        { url: 'http://[::1]:8080/v1/audio/transcriptions', model: 'm', language: 'auto', audio: samples([0]) },
-        fetchImpl as unknown as typeof fetch
-      )
-    ).rejects.toThrow('Use http://localhost instead');
-    expect(fetchImpl).not.toHaveBeenCalled();
+      transcribeViaServer({ url: lanEndpoint, model: 'm', language: 'auto', audio: samples([0]) }, fetchImpl as unknown as typeof fetch)
+    ).resolves.toBe('git status');
+    expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toBe(lanEndpoint);
   });
 
-  it('refuses a non-loopback endpoint without sending anything', async () => {
+  it('refuses a URL that is not an http(s) address without sending anything', async () => {
     const fetchImpl = vi.fn(async () => jsonResponse({ text: 'nope' }));
     await expect(
       transcribeViaServer(
-        { url: 'https://api.example.com/v1/audio/transcriptions', model: 'm', language: 'auto', audio: samples([0]) },
+        { url: 'ws://10.0.10.46:8888/v1/audio/transcriptions', model: 'm', language: 'auto', audio: samples([0]) },
         fetchImpl as unknown as typeof fetch
       )
-    ).rejects.toThrow('must be on this machine');
+    ).rejects.toThrow('must be an http:// or https:// address');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
