@@ -167,16 +167,31 @@ describe('SpeechClient with the local-server engine', () => {
     await expect(client.transcribe(audio(), SERVER)).resolves.toMatchObject({ elapsedMs: 750 });
   });
 
+  it('reaches a server on the network', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text: 'git status' }), { status: 200 }));
+    const client = new SpeechClient({
+      createWorker: () => fakeWorker().worker,
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    });
+    const onLan = updateSection(DEFAULT_SETTINGS, 'speech', {
+      engine: 'server',
+      serverUrl: 'http://10.0.10.46:8888/v1/audio/transcriptions',
+      serverModel: 'Qwen3-ASR-0.6B'
+    }).speech;
+
+    await expect(client.transcribe(audio(), onLan)).resolves.toMatchObject({ text: 'git status', engine: 'server' });
+  });
+
   it('surfaces a refused endpoint as an error', async () => {
     const client = new SpeechClient({
       createWorker: () => fakeWorker().worker,
       fetchImpl: (async () => new Response('{}')) as unknown as typeof fetch
     });
-    const offMachine = updateSection(DEFAULT_SETTINGS, 'speech', {
+    const notAnAddress = updateSection(DEFAULT_SETTINGS, 'speech', {
       engine: 'server',
-      serverUrl: 'https://api.example.com/v1/audio/transcriptions'
+      serverUrl: 'file:///etc/passwd'
     }).speech;
 
-    await expect(client.transcribe(audio(), offMachine)).rejects.toThrow('must be on this machine');
+    await expect(client.transcribe(audio(), notAnAddress)).rejects.toThrow('must be an http:// or https:// address');
   });
 });

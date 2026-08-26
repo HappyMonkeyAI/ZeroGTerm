@@ -1,5 +1,5 @@
-// The local-server speech engine: hand the recorded audio to a transcription
-// server running on this machine instead of to the in-process ONNX pipeline.
+// The server speech engine: hand the recorded audio to a transcription server
+// instead of to the in-process ONNX pipeline.
 //
 // This is how models the built-in engine cannot load become usable. A GGUF
 // build such as unslothai/Qwen3-ASR-0.6B-GGUF needs a llama.cpp-family
@@ -9,11 +9,12 @@
 // server, LM Studio, faster-whisper-server, Unsloth Studio — because that is
 // the one request format they have in common.
 //
-// Loopback only, deliberately. The endpoint is user-configurable, and audio of
-// someone at their keyboard is about as sensitive as a payload gets, so it must
-// not be possible to point this at a host on the network by pasting a URL. The
-// renderer's Content-Security-Policy allows loopback origins for the same
-// reason; see SECURITY.md.
+// The host is the operator's choice: loopback, a box on the LAN, or a hosted
+// service. Audio of someone at their keyboard is a sensitive payload, so where
+// it goes is a decision worth making deliberately — but it is the user's to
+// make, not ours to refuse. What is still enforced is the shape of the target:
+// an http(s) URL with a host, so a typo or a file:// path cannot become a
+// request. See SECURITY.md.
 
 import { WHISPER_SAMPLE_RATE } from './voice';
 
@@ -26,16 +27,7 @@ export type ServerTranscriptionRequest = {
   sampleRate?: number;
 };
 
-const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost']);
-/**
- * IPv6 loopback is loopback, but Chromium rejects IPv6 literals as CSP
- * host-sources outright — `http://[::1]` and `http://[::1]:8080` are both
- * reported as invalid and ignored — so such a URL cannot be allowed by the
- * renderer's policy. Accepting it here would mean passing validation and then
- * being blocked with no useful explanation, so it is refused with one instead:
- * `localhost` resolves to ::1 anyway.
- */
-const IPV6_LOOPBACK_HOSTNAMES = new Set(['::1', '[::1]']);
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 /** Long enough for a slow first load of a large local model. */
 const REQUEST_TIMEOUT_MS = 120000;
 /** Enough of a failing server's reply to identify the problem in a status bar. */
@@ -45,29 +37,41 @@ function hostnameOf(url: string): string | null {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    return parsed.hostname.toLowerCase();
+    const hostname = parsed.hostname.toLowerCase();
+    // http and https are special schemes, so a missing host is a parse failure
+    // rather than an empty hostname — every spelling of `http://` throws above.
+    // The check is kept anyway: this is the one gate before a request is made,
+    // and it should not rest on a parser detail holding everywhere.
+    if (!hostname) return null;
+    return hostname;
   } catch {
     return null;
   }
 }
 
 /**
- * Is this URL served by this machine?
+ * Can a transcription request be made to this URL?
  *
- * `*.localhost` resolves to loopback by specification, so it is accepted too.
- * Anything else — a LAN address, a public host, a non-HTTP scheme, an IPv6
- * literal the CSP cannot express — is not.
+ * Any reachable host is allowed — loopback, LAN, or the public internet — but
+ * it has to be an http(s) URL naming a host. A `file://` path, a `ws://` URL or
+ * a half-typed address is refused here rather than turning into a request that
+ * fails obscurely later.
+ */
+export function isSupportedEndpoint(url: string): boolean {
+  return hostnameOf(url) !== null;
+}
+
+/**
+ * Does this endpoint keep the audio on this machine?
+ *
+ * Nothing is refused on this basis; the settings panel uses it to say plainly
+ * when recorded speech is about to leave the machine. `*.localhost` resolves to
+ * loopback by specification, so it counts.
  */
 export function isLoopbackEndpoint(url: string): boolean {
   const hostname = hostnameOf(url);
   if (hostname === null) return false;
   return LOOPBACK_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost');
-}
-
-/** Was this refused only because it names IPv6 loopback? */
-export function isIpv6LoopbackEndpoint(url: string): boolean {
-  const hostname = hostnameOf(url);
-  return hostname !== null && IPV6_LOOPBACK_HOSTNAMES.has(hostname);
 }
 
 function writeAscii(view: DataView, offset: number, text: string): void {
@@ -164,7 +168,7 @@ function timeoutSignal(): AbortSignal | undefined {
 }
 
 /**
- * Post the utterance to the configured local server and return its transcript.
+ * Post the utterance to the configured server and return its transcript.
  *
  * `fetchImpl` is injectable so the request shape can be tested without a
  * server; production passes the renderer's fetch.
@@ -173,12 +177,8 @@ export async function transcribeViaServer(
   request: ServerTranscriptionRequest,
   fetchImpl: typeof fetch = fetch
 ): Promise<string> {
-  if (!isLoopbackEndpoint(request.url)) {
-    throw new Error(
-      isIpv6LoopbackEndpoint(request.url)
-        ? 'Use http://localhost instead of an IPv6 literal — the renderer cannot allow [::1]'
-        : 'Speech server URL must be on this machine (http://127.0.0.1 or http://localhost)'
-    );
+  if (!isSupportedEndpoint(request.url)) {
+    throw new Error('Speech server URL must be an http:// or https:// address, e.g. http://10.0.10.46:8888/v1/audio/transcriptions');
   }
   if (!request.model.trim()) {
     throw new Error('Speech server model name is required');
