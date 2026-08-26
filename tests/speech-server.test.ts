@@ -35,9 +35,17 @@ describe('isSupportedEndpoint', () => {
     // request that fails somewhere less explicable.
     expect(isSupportedEndpoint('file:///etc/passwd')).toBe(false);
     expect(isSupportedEndpoint('ws://127.0.0.1:8080')).toBe(false);
-    expect(isSupportedEndpoint('http://')).toBe(false);
     expect(isSupportedEndpoint('not a url')).toBe(false);
     expect(isSupportedEndpoint('')).toBe(false);
+  });
+
+  it('refuses a URL with no host, however it is spelled', () => {
+    // Every one of these fails to parse, because http is a special scheme —
+    // but the validator asserts the outcome rather than the reason, so a
+    // parser that returned an empty host instead would still be refused.
+    for (const url of ['http://', 'https://', 'http:///', 'http://?q=1', 'http://#f', 'http://:8080/', 'http://@/x']) {
+      expect(isSupportedEndpoint(url)).toBe(false);
+    }
   });
 });
 

@@ -37,9 +37,13 @@ function hostnameOf(url: string): string | null {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    // http and https are special schemes: URL refuses to parse one without a
-    // host, so a non-empty hostname here needs no separate check.
-    return parsed.hostname.toLowerCase();
+    const hostname = parsed.hostname.toLowerCase();
+    // http and https are special schemes, so a missing host is a parse failure
+    // rather than an empty hostname — every spelling of `http://` throws above.
+    // The check is kept anyway: this is the one gate before a request is made,
+    // and it should not rest on a parser detail holding everywhere.
+    if (!hostname) return null;
+    return hostname;
   } catch {
     return null;
   }
