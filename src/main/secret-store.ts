@@ -136,7 +136,16 @@ export class SecretStore {
       // 0600, and written whole then renamed, so a crash cannot leave a
       // half-written key behind for the next read to find.
       await writeFile(temp, JSON.stringify(snapshot, null, 2), { encoding: 'utf8', mode: 0o600 });
-      await rename(temp, this.filePath);
+      try {
+        await rename(temp, this.filePath);
+      } catch (error) {
+        // The temp file holds the same ciphertext under the same 0600 as the
+        // destination, so this is tidiness rather than a leak — but an orphan
+        // per failed write, each with a key the user may since have rotated,
+        // is not something to leave lying around.
+        await unlink(temp).catch(() => undefined);
+        throw error;
+      }
     });
     await this.writeQueue;
   }

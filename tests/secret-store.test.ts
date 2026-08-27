@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { EncryptionUnavailableError, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from '../src/main/secret-store';
 
@@ -111,6 +111,17 @@ describe('secret store', () => {
 
     await writeFile(path, JSON.stringify({ version: 99, secrets: { [SPEECH_API_KEY]: 'x' } }));
     expect(await new SecretStore({ filePath: path, crypto: fakeCrypto() }).has(SPEECH_API_KEY)).toBe(false);
+  });
+
+  it('leaves no temporary file behind when the write cannot be completed', async () => {
+    const path = await file();
+    const store = new SecretStore({ filePath: path, crypto: fakeCrypto() });
+    // A directory where the file should go: writeFile succeeds, rename cannot.
+    await new SecretStore({ filePath: join(path, 'nested.json'), crypto: fakeCrypto() }).set('a', '1');
+
+    await expect(store.set(SPEECH_API_KEY, 'sk-test-123')).rejects.toThrow();
+    const left = (await readdir(dirname(path))).filter((entry) => entry.startsWith('.secrets.tmp-'));
+    expect(left).toEqual([]);
   });
 
   it('puts the file next to the app data, not in the project', () => {
