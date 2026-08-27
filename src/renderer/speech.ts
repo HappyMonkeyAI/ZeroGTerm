@@ -4,7 +4,7 @@
 // settings page's test button and anything added later all take the same path,
 // so an engine or model change cannot apply to one and not the other. The
 // worker is created on first built-in use, which means a user who only ever
-// talks to a local server never pays for loading Transformers.js.
+// talks to a server never pays for loading Transformers.js.
 
 import type { SpeechSettings } from './settings';
 import { supportsLanguageSelection } from './speech-models';

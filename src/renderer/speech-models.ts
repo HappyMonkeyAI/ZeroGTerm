@@ -7,7 +7,7 @@
 // export laid out the way it expects, so an arbitrary hub id — a GGUF build,
 // or an ONNX export for a different runtime — fails at first transcription
 // with an opaque error. Models that need another runtime are reachable through
-// the local-server engine instead; see speech-server.ts.
+// the server engine instead; see speech-server.ts.
 
 /** ONNX weight precision. Transformers.js calls this `dtype`. */
 export type SpeechPrecision = 'q4' | 'q8' | 'fp16' | 'fp32';
