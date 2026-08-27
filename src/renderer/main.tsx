@@ -33,7 +33,7 @@ import {
   type TerminalSettings,
   type Theme
 } from './settings';
-import { SettingsPanel, type SpeechTestState } from './settings-panel';
+import { SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
   SPLIT_BUTTONS,
@@ -534,6 +534,14 @@ function App() {
   const [speechTest, setSpeechTest] = useState<SpeechTestState>({ status: 'idle' });
   const speechTestRecorderRef = useRef<VoiceRecorder | null>(null);
   const speechTestLimitRef = useRef<number | undefined>(undefined);
+  const [speechKey, setSpeechKey] = useState<SpeechKeyState>({ status: 'idle', stored: false, encryptionAvailable: true, sessionOnly: false });
+  /**
+   * A key this system could not encrypt, held until the app closes.
+   *
+   * A ref, not state: it is read when a request is being built, and putting a
+   * key in React state would put it in every render's closure for no reason.
+   */
+  const sessionSpeechKeyRef = useRef<string | null>(null);
   const [localBackends, setLocalBackends] = useState<ShellBackend[]>([]);
   const [selectedBackend, setSelectedBackend] = useState<LocalBackend>(settings.sessions.defaultBackend);
   const [wslDistribution, setWslDistribution] = useState<string>(settings.sessions.defaultWslDistribution);
@@ -711,6 +719,18 @@ function App() {
     const currentApi = api();
     if (!currentApi) return;
     currentApi.listKnownConnections?.().then(setKnownConnections).catch(() => setKnownConnections([]));
+  }, []);
+
+  // Whether a speech key is saved is the main process's answer, not something
+  // the renderer remembers: asked once here so the settings panel opens with
+  // the truth rather than a guess.
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.speechApiKeyStatus) return;
+    currentApi
+      .speechApiKeyStatus()
+      .then((status) => setSpeechKey((previous) => ({ ...previous, stored: status.stored, encryptionAvailable: status.encryptionAvailable })))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -1255,9 +1275,64 @@ function App() {
       // Worker's onmessage is typed around MessageEvent; the client only reads
       // `.data`, so this narrowing cast is safe and stays at the boundary.
       createWorker: () =>
-        new Worker(new URL('./voice-worker.ts', import.meta.url), { type: 'module' }) as unknown as SpeechWorker
+        new Worker(new URL('./voice-worker.ts', import.meta.url), { type: 'module' }) as unknown as SpeechWorker,
+      // Read per request rather than held here: a key saved or cleared in
+      // settings applies to the next utterance without rebuilding the client.
+      resolveApiKey: async () => sessionSpeechKeyRef.current ?? (await window.zerog?.readSpeechApiKey()) ?? null
     });
     return speechRef.current;
+  };
+
+  /**
+   * Save a speech server key, or keep it for the session when this system
+   * cannot encrypt it.
+   *
+   * A refusal from the main process is not a failure to report and forget: the
+   * user has a key in hand and a server that wants it, so it is held in memory
+   * and the panel says that is what happened.
+   */
+  const saveSpeechKey = async (key: string) => {
+    const currentApi = api();
+    if (!currentApi?.saveSpeechApiKey) return;
+    setSpeechKey((previous) => ({ ...previous, status: 'saving', error: null, notice: null }));
+    try {
+      const status = await currentApi.saveSpeechApiKey(key);
+      sessionSpeechKeyRef.current = null;
+      setSpeechKey({
+        status: 'idle',
+        stored: status.stored,
+        encryptionAvailable: status.encryptionAvailable,
+        sessionOnly: false,
+        notice: status.stored ? 'Key saved, encrypted by this system.' : 'Key cleared.'
+      });
+    } catch (error) {
+      sessionSpeechKeyRef.current = key;
+      setSpeechKey((previous) => ({
+        ...previous,
+        status: 'idle',
+        stored: false,
+        encryptionAvailable: false,
+        sessionOnly: true,
+        notice: 'Kept for this session only — it could not be stored safely, so it is gone when ZeroG closes.',
+        error: null
+      }));
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const clearSpeechKey = async () => {
+    const currentApi = api();
+    sessionSpeechKeyRef.current = null;
+    if (!currentApi?.clearSpeechApiKey) {
+      setSpeechKey((previous) => ({ ...previous, stored: false, sessionOnly: false, notice: 'Key cleared.', error: null }));
+      return;
+    }
+    try {
+      const status = await currentApi.clearSpeechApiKey();
+      setSpeechKey((previous) => ({ ...previous, status: 'idle', stored: status.stored, sessionOnly: false, notice: 'Key cleared.', error: null }));
+    } catch (error) {
+      setSpeechKey((previous) => ({ ...previous, status: 'idle', sessionOnly: false, error: error instanceof Error ? error.message : String(error) }));
+    }
   };
 
   const reportSpeechProgress = (progress: { kind: 'loading'; progress: number | null } | { kind: 'notice'; message: string }) => {
@@ -2204,6 +2279,9 @@ function App() {
           wslDistributions={wslDistributions}
           speechTest={speechTest}
           onSpeechTest={() => void runSpeechTest()}
+          speechKey={speechKey}
+          onSpeechKeySave={(key) => void saveSpeechKey(key)}
+          onSpeechKeyClear={() => void clearSpeechKey()}
         />
       )}
 

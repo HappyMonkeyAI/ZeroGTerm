@@ -33,7 +33,7 @@ import {
   type SpeechTask
 } from './speech-models';
 import type { BackdropDismissHandlers } from './backdrop-dismiss';
-import { isLoopbackEndpoint, isSupportedEndpoint } from './speech-server';
+import { isLoopbackEndpoint, isSupportedEndpoint, sendsKeyInClear } from './speech-server';
 
 export type SettingsPage = SettingsSection;
 
@@ -49,6 +49,23 @@ export type SpeechTestState = {
   error?: string | null;
 };
 
+/**
+ * What the app knows about the speech server key.
+ *
+ * The key itself is deliberately absent: it lives encrypted in the main
+ * process, so the panel can say whether one is saved but never shows it.
+ * `sessionOnly` means this system could not encrypt it and it is being held in
+ * memory until the app closes.
+ */
+export type SpeechKeyState = {
+  status: 'idle' | 'saving';
+  stored: boolean;
+  encryptionAvailable: boolean;
+  sessionOnly: boolean;
+  notice?: string | null;
+  error?: string | null;
+};
+
 export type SettingsPanelProps = {
   settings: Settings;
   onChange: <K extends SettingsSection>(section: K, patch: Partial<Settings[K]>) => void;
@@ -60,6 +77,9 @@ export type SettingsPanelProps = {
   wslDistributions: string[];
   speechTest: SpeechTestState;
   onSpeechTest: () => void;
+  speechKey: SpeechKeyState;
+  onSpeechKeySave: (key: string) => void;
+  onSpeechKeyClear: () => void;
 };
 
 const PAGES: Array<{ id: SettingsPage; label: string; hint: string; blurb: string }> = [
@@ -91,6 +111,74 @@ function speechServerUrlHint(url: string): string {
   if (!isSupportedEndpoint(url)) return `Any http:// or https:// address. ${shape}`;
   if (isLoopbackEndpoint(url)) return `On this machine. ${shape}`;
   return `Off this machine — recorded audio is sent to this host. ${shape}`;
+}
+
+/**
+ * The key field: type a key, save it, or clear the saved one.
+ *
+ * The input is local state rather than a setting, because the key is never
+ * part of the settings object — there is nothing to render it back from, and
+ * that is the point. It empties on save, and the field below says what is
+ * stored.
+ */
+function ServerApiKeyField({
+  state,
+  url,
+  onSave,
+  onClear
+}: {
+  state: SpeechKeyState;
+  url: string;
+  onSave: (key: string) => void;
+  onClear: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const saving = state.status === 'saving';
+  const trimmed = draft.trim();
+
+  const hint = !state.encryptionAvailable
+    ? 'This system has no secret store, so a key can only be held until the app closes.'
+    : sendsKeyInClear(url)
+      ? 'Sent as a Bearer token. This endpoint is plain http to another host, so the key travels in the clear.'
+      : 'Sent as a Bearer token. Stored encrypted by this system, never in the settings file.';
+
+  return (
+    <Field label="Server API key" hint={hint}>
+      <div className="settings-key-row">
+        <input
+          type="password"
+          value={draft}
+          placeholder={state.stored || state.sessionOnly ? '••••••••  (a key is set)' : 'Leave empty if the server needs none'}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || !trimmed || saving) return;
+            event.preventDefault();
+            onSave(trimmed);
+            setDraft('');
+          }}
+        />
+        <button
+          type="button"
+          disabled={!trimmed || saving}
+          onClick={() => {
+            onSave(trimmed);
+            setDraft('');
+          }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {state.stored || state.sessionOnly ? (
+          <button type="button" disabled={saving} onClick={onClear}>
+            Clear
+          </button>
+        ) : null}
+      </div>
+      {state.error ? <small className="settings-key-error">{state.error}</small> : null}
+      {!state.error && state.notice ? <small className="settings-key-notice">{state.notice}</small> : null}
+    </Field>
+  );
 }
 
 function SelectField<T extends string>({
@@ -258,7 +346,10 @@ export function SettingsPanel({
   backends,
   wslDistributions,
   speechTest,
-  onSpeechTest
+  onSpeechTest,
+  speechKey,
+  onSpeechKeySave,
+  onSpeechKeyClear
 }: SettingsPanelProps) {
   const [page, setPage] = useState<SettingsPage>('appearance');
   const active = PAGES.find((entry) => entry.id === page) ?? PAGES[0];
@@ -546,6 +637,12 @@ export function SettingsPanel({
                         onChange={(event) => onChange('speech', { serverModel: event.target.value })}
                       />
                     </Field>
+                    <ServerApiKeyField
+                      state={speechKey}
+                      url={settings.speech.serverUrl}
+                      onSave={onSpeechKeySave}
+                      onClear={onSpeechKeyClear}
+                    />
                   </>
                 ) : null}
 

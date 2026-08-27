@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Menu, session, shell } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, safeStorage, session, shell } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
@@ -9,7 +9,8 @@ import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownC
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
-import type { FileEntry } from '../shared/types.js';
+import { SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
+import type { FileEntry, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
@@ -18,6 +19,9 @@ let win: BrowserWindow | undefined;
 // Transfer connections outlive any single panel opening, so the panel can be
 // closed and reopened without re-authenticating to the host.
 const sftp = new SftpService({ onEvent: (event) => win?.webContents.send('sftp:event', event) });
+// API keys for speech servers. safeStorage is only usable after the app is
+// ready, which every IPC call here already is.
+const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('userData')), crypto: safeStorage });
 
 /** A pane's measured size, as it arrives from the renderer. */
 function parsePtySize(value: unknown): PtySize | undefined {
@@ -257,6 +261,23 @@ ipcMain.handle('ai:suggest', () => ({
   command: 'git status --short',
   explanation: 'Read-only preview of changed files in the active workspace.'
 }));
+
+async function speechKeyStatus(): Promise<SpeechApiKeyStatus> {
+  return { stored: await secrets.has(SPEECH_API_KEY), encryptionAvailable: secrets.encryptionAvailable() };
+}
+
+ipcMain.handle('speechKey:status', () => speechKeyStatus());
+ipcMain.handle('speechKey:save', async (_event, key: unknown) => {
+  // An empty key means "clear", which SecretStore already does — but the
+  // string still has to be a string, and a pasted key often carries newlines.
+  await secrets.set(SPEECH_API_KEY, typeof key === 'string' ? key.trim() : '');
+  return speechKeyStatus();
+});
+ipcMain.handle('speechKey:clear', async () => {
+  await secrets.clear(SPEECH_API_KEY);
+  return speechKeyStatus();
+});
+ipcMain.handle('speechKey:read', () => secrets.get(SPEECH_API_KEY));
 
 app.whenReady().then(() => {
   // Voice input captures the local microphone only. Electron denies all

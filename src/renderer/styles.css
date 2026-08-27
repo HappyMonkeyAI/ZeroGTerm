@@ -1582,6 +1582,31 @@ input:focus-visible {
   line-height: 1.45;
 }
 
+/* The API key row: a password field with Save and Clear beside it. */
+.settings-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-key-row input { flex: 1; min-width: 0; }
+
+.settings-key-row button {
+  flex: none;
+  padding: 8px 11px;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  background: #151a22;
+  color: #8b93a3;
+  font-size: 11px;
+}
+
+.settings-key-row button:hover:not(:disabled) { border-color: #7aa2f7; color: #d8dee9; }
+.settings-key-row button:disabled { opacity: .5; }
+
+.settings-field .settings-key-notice { color: #9ece6a; }
+.settings-field .settings-key-error { color: #f7768e; }
+
 .settings-test-transcript {
   display: block;
   margin-top: 9px;
@@ -1687,12 +1712,14 @@ input:focus-visible {
 :root[data-theme='light'] .settings-preview,
 :root[data-theme='light'] .settings-test-transcript,
 :root[data-theme='light'] .settings-test-button,
+:root[data-theme='light'] .settings-key-row button,
 :root[data-theme='light'] .settings-foot button {
   background: #ffffff;
   border-color: #c7d2e1;
   color: #536176;
 }
 
+:root[data-theme='light'] .settings-field .settings-key-notice { color: #16803c; }
 :root[data-theme='light'] .settings-preview { color: #16803c; }
 :root[data-theme='light'] .settings-test-transcript { color: #2459a6; }
 :root[data-theme='light'] .settings-foot { border-top-color: #dbe2ec; }

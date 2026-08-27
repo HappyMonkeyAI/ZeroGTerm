@@ -15,6 +15,10 @@
 // make, not ours to refuse. What is still enforced is the shape of the target:
 // an http(s) URL with a host, so a typo or a file:// path cannot become a
 // request. See SECURITY.md.
+//
+// A key, where the server wants one, is sent as `Authorization: Bearer`. It
+// arrives as an argument and is never stored here: the main process holds it
+// encrypted and hands it over per request. See src/main/secret-store.ts.
 
 import { WHISPER_SAMPLE_RATE } from './voice';
 
@@ -25,6 +29,11 @@ export type ServerTranscriptionRequest = {
   language: string;
   audio: Float32Array;
   sampleRate?: number;
+  /**
+   * Bearer token for servers that want one. Absent for a local server that
+   * does not, which is why it is optional rather than an empty string.
+   */
+  apiKey?: string;
 };
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
@@ -33,20 +42,25 @@ const REQUEST_TIMEOUT_MS = 120000;
 /** Enough of a failing server's reply to identify the problem in a status bar. */
 const ERROR_BODY_CHARS = 300;
 
-function hostnameOf(url: string): string | null {
+/** The endpoint as a URL, or null when it is not one a request can be made to. */
+function endpointOf(url: string): URL | null {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    const hostname = parsed.hostname.toLowerCase();
     // http and https are special schemes, so a missing host is a parse failure
     // rather than an empty hostname — every spelling of `http://` throws above.
     // The check is kept anyway: this is the one gate before a request is made,
     // and it should not rest on a parser detail holding everywhere.
-    if (!hostname) return null;
-    return hostname;
+    if (!parsed.hostname) return null;
+    return parsed;
   } catch {
     return null;
   }
+}
+
+function hostnameOf(url: string): string | null {
+  const parsed = endpointOf(url);
+  return parsed === null ? null : parsed.hostname.toLowerCase();
 }
 
 /**
@@ -72,6 +86,20 @@ export function isLoopbackEndpoint(url: string): boolean {
   const hostname = hostnameOf(url);
   if (hostname === null) return false;
   return LOOPBACK_HOSTNAMES.has(hostname) || hostname.endsWith('.localhost');
+}
+
+/**
+ * Would a key sent to this endpoint travel in the clear?
+ *
+ * True for plain http to anywhere but this machine. Nothing is blocked on this
+ * basis — a self-hosted server on the LAN commonly has no certificate, and
+ * refusing to authenticate to it would break the ordinary case — but it is
+ * worth saying out loud next to the field where the key is typed.
+ */
+export function sendsKeyInClear(url: string): boolean {
+  const parsed = endpointOf(url);
+  if (parsed === null) return false;
+  return parsed.protocol === 'http:' && !isLoopbackEndpoint(url);
 }
 
 function writeAscii(view: DataView, offset: number, text: string): void {
@@ -184,8 +212,12 @@ export async function transcribeViaServer(
     throw new Error('Speech server model name is required');
   }
 
+  const key = request.apiKey?.trim();
   const response = await fetchImpl(request.url, {
     method: 'POST',
+    // Bearer is what every OpenAI-compatible server reads, including the ones
+    // that ignore it. No Content-Type: fetch sets the multipart boundary.
+    headers: key ? { Authorization: `Bearer ${key}` } : undefined,
     body: buildTranscriptionForm(request),
     signal: timeoutSignal()
   });
@@ -193,7 +225,10 @@ export async function transcribeViaServer(
   const body = await response.text();
   if (!response.ok) {
     const detail = body.slice(0, ERROR_BODY_CHARS).trim();
-    throw new Error(`Speech server returned ${response.status}${detail ? `: ${detail}` : ''}`);
+    // 401 with no key is the commonest way a hosted endpoint fails, and the
+    // server's own wording rarely says which key it wanted.
+    const hint = !key && (response.status === 401 || response.status === 403) ? ' — this server wants an API key' : '';
+    throw new Error(`Speech server returned ${response.status}${detail ? `: ${detail}` : ''}${hint}`);
   }
 
   let payload: unknown = body;
