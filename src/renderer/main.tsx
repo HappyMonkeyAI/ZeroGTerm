@@ -1268,7 +1268,7 @@ function App() {
   };
 
   // One speech client for the whole window: it owns the worker for the built-in
-  // engine and the request for the local-server engine, so the pane mic and the
+  // engine and the request for the server engine, so the pane mic and the
   // settings test always run whatever is configured right now.
   const speechClient = () => {
     speechRef.current ??= new SpeechClient({
@@ -1488,7 +1488,7 @@ function App() {
         message: belowThreshold
           ? 'Below the silence threshold — a real recording at this level would have been discarded.'
           : result.engine === 'server'
-            ? 'Transcribed by the local server.'
+            ? 'Transcribed by the server.'
             : 'Transcribed by the built-in engine.',
         error: null
       });
