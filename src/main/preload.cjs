@@ -47,6 +47,10 @@ const api = {
     ipcRenderer.on('sftp:event', listener);
     return () => ipcRenderer.removeListener('sftp:event', listener);
   },
+  speechApiKeyStatus: () => ipcRenderer.invoke('speechKey:status'),
+  saveSpeechApiKey: (key) => ipcRenderer.invoke('speechKey:save', key),
+  clearSpeechApiKey: () => ipcRenderer.invoke('speechKey:clear'),
+  readSpeechApiKey: () => ipcRenderer.invoke('speechKey:read'),
   openExternal: (url) => ipcRenderer.invoke('links:openExternal', url),
   onLinkRefused: (callback) => {
     const listener = (_event, reason) => callback(reason);

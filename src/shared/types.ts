@@ -135,6 +135,18 @@ export type SftpEvent =
   | { type: 'prompt'; prompt: SftpPrompt }
   | { type: 'closed'; sessionId: string; message: string };
 
+/**
+ * What the main process knows about the stored speech server key.
+ *
+ * The key itself is never part of this: the panel needs to say whether one is
+ * saved, not show it. `encryptionAvailable` is false on a system with no
+ * keyring, where saving is refused rather than written in the clear.
+ */
+export interface SpeechApiKeyStatus {
+  stored: boolean;
+  encryptionAvailable: boolean;
+}
+
 export interface TerminalApi {
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
@@ -182,6 +194,20 @@ export interface TerminalApi {
   openExternal(url: string): Promise<void>;
   /** A link the main process refused, so a click that did nothing can say why. */
   onLinkRefused(callback: (reason: string) => void): () => void;
+  /** Whether a speech server key is saved, and whether saving one is possible. */
+  speechApiKeyStatus(): Promise<SpeechApiKeyStatus>;
+  /**
+   * Store the speech server key, encrypted by the OS. Rejects on a system with
+   * no secret store rather than writing it in the clear. An empty key clears it.
+   */
+  saveSpeechApiKey(key: string): Promise<SpeechApiKeyStatus>;
+  /** Forget the stored key. */
+  clearSpeechApiKey(): Promise<SpeechApiKeyStatus>;
+  /**
+   * The stored key, for the one moment it is needed: building the Authorization
+   * header of a transcription request. Not held in renderer state.
+   */
+  readSpeechApiKey(): Promise<string | null>;
 }
 
 declare global {

@@ -117,4 +117,28 @@ injection in the renderer would not be stopped by the policy; the controls that
 matter for that are the sandboxed renderer, context isolation, and the narrow
 preload API described above.
 
+## The speech server API key
+
+A server that authenticates needs a key, and the renderer's own settings live in
+localStorage — a plain file. So the key is not kept there:
+
+- The main process stores it through Electron's `safeStorage`, which is DPAPI on
+  Windows, Keychain on macOS, and libsecret or kwallet on Linux. The ciphertext
+  goes in `secrets.json` under the app's data directory, written 0600 and
+  replaced atomically.
+- When `safeStorage` reports that encryption is unavailable — a Linux box with no
+  keyring configured — saving is refused rather than downgraded to plaintext. The
+  panel says so and offers to hold the key in memory until the app closes, which
+  is the user's decision to make with the facts in front of them.
+- A stored value that will not decrypt is treated as absent. That is what a file
+  copied from another machine or another user account looks like, and there is
+  nothing to do with it but ask for the key again.
+- The renderer never holds the key in its own state or storage. It asks for it
+  when a transcription request is being built and uses it for that request, so
+  clearing the key takes effect on the next utterance.
+- The key is sent as `Authorization: Bearer`. Over plain `http` to a host that is
+  not this machine it travels in the clear; that is allowed, because a
+  self-hosted server on the LAN commonly has no certificate and refusing would
+  break the ordinary case, but the field says plainly when it applies.
+
 These controls are not a guarantee of security. Please report bypasses or regressions privately.

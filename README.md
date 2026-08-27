@@ -158,6 +158,14 @@ machine on the LAN such as `http://10.0.10.46:8888/v1/audio/transcriptions`, or
 a hosted service. The field says whether the address it holds is on this machine
 or not, because a remote one means recorded speech leaves it.
 
+Servers that want authentication take an API key in the same panel, sent as an
+`Authorization: Bearer` header. The key is not kept in the settings file: the
+main process stores it encrypted through the operating system's own secret store
+— DPAPI on Windows, Keychain on macOS, libsecret or kwallet on Linux — and hands
+it to the renderer only for the request being made. On a system with no keyring
+available, saving is refused rather than written in the clear, and the key can be
+held for the session instead. Leave it empty for a local server that wants none.
+
 Both engines share the maximum utterance length and the silence threshold, and
 the **Try it** button on that page records a phrase and shows the transcript,
 the recording level and how long transcription took, without typing into a

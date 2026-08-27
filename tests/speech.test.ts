@@ -139,7 +139,7 @@ describe('SpeechClient with the built-in engine', () => {
   });
 });
 
-describe('SpeechClient with the local-server engine', () => {
+describe('SpeechClient with the server engine', () => {
   it('never starts a worker', async () => {
     let created = 0;
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text: 'git status' }), { status: 200 }));
@@ -180,6 +180,40 @@ describe('SpeechClient with the local-server engine', () => {
     }).speech;
 
     await expect(client.transcribe(audio(), onLan)).resolves.toMatchObject({ text: 'git status', engine: 'server' });
+  });
+
+  it('asks for the key per request, so a change applies to the next utterance', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text: 'ok' }), { status: 200 }));
+    const keys = ['sk-first', 'sk-second'];
+    const resolveApiKey = vi.fn(async () => keys.shift() ?? null);
+    const client = new SpeechClient({
+      createWorker: () => fakeWorker().worker,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      resolveApiKey
+    });
+
+    await client.transcribe(audio(), SERVER);
+    await client.transcribe(audio(), SERVER);
+
+    expect(resolveApiKey).toHaveBeenCalledTimes(2);
+    const headerOf = (call: number) => (fetchImpl.mock.calls[call] as unknown as [string, RequestInit])[1].headers;
+    expect(headerOf(0)).toEqual({ Authorization: 'Bearer sk-first' });
+    expect(headerOf(1)).toEqual({ Authorization: 'Bearer sk-second' });
+  });
+
+  it('transcribes without a key when there is none, or when reading it fails', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text: 'ok' }), { status: 200 }));
+    // A key store that throws must not stop transcription: plenty of servers
+    // want no key at all, and the server itself says so with a 401 if it does.
+    const client = new SpeechClient({
+      createWorker: () => fakeWorker().worker,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      resolveApiKey: async () => { throw new Error('no keyring'); }
+    });
+
+    await expect(client.transcribe(audio(), SERVER)).resolves.toMatchObject({ text: 'ok' });
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.headers).toBeUndefined();
   });
 
   it('surfaces a refused endpoint as an error', async () => {

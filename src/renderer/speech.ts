@@ -41,6 +41,14 @@ export type SpeechClientOptions = {
   createWorker: () => SpeechWorker;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /**
+   * Fetches the speech server key when one is needed.
+   *
+   * A function rather than a value because the key lives encrypted in the main
+   * process: it is read for the request being made and not kept here, so a
+   * key saved or cleared mid-session takes effect on the next utterance.
+   */
+  resolveApiKey?: () => Promise<string | null>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,12 +70,16 @@ export class SpeechClient {
     if (settings.engine === 'server') {
       const now = this.options.now ?? (() => Date.now());
       const started = now();
+      // A missing key is not an error here: plenty of local servers want none,
+      // and the server itself says so with a 401 if it does.
+      const apiKey = (await this.options.resolveApiKey?.().catch(() => null)) ?? undefined;
       const text = await transcribeViaServer(
         {
           url: settings.serverUrl,
           model: settings.serverModel,
           language: settings.language,
-          audio
+          audio,
+          apiKey
         },
         this.options.fetchImpl
       );

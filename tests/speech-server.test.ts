@@ -5,6 +5,7 @@ import {
   isLoopbackEndpoint,
   isSupportedEndpoint,
   parseTranscriptionText,
+  sendsKeyInClear,
   transcribeViaServer
 } from '../src/renderer/speech-server';
 
@@ -64,6 +65,20 @@ describe('isLoopbackEndpoint', () => {
     expect(isLoopbackEndpoint('http://localhost.example.com/v1/audio/transcriptions')).toBe(false);
     expect(isLoopbackEndpoint('not a url')).toBe(false);
     expect(isLoopbackEndpoint('')).toBe(false);
+  });
+});
+
+describe('sendsKeyInClear', () => {
+  it('flags plain http to another host, where a key is readable on the wire', () => {
+    expect(sendsKeyInClear('http://10.0.10.46:8888/v1/audio/transcriptions')).toBe(true);
+    expect(sendsKeyInClear('http://asr.example.com/v1/audio/transcriptions')).toBe(true);
+  });
+
+  it('says nothing about loopback or https, where it is not in the clear', () => {
+    expect(sendsKeyInClear('http://127.0.0.1:8080/v1/audio/transcriptions')).toBe(false);
+    expect(sendsKeyInClear('http://localhost:8080/inference')).toBe(false);
+    expect(sendsKeyInClear('https://api.example.com/v1/audio/transcriptions')).toBe(false);
+    expect(sendsKeyInClear('not a url')).toBe(false);
   });
 });
 
@@ -170,6 +185,48 @@ describe('transcribeViaServer', () => {
       transcribeViaServer({ url: lanEndpoint, model: 'm', language: 'auto', audio: samples([0]) }, fetchImpl as unknown as typeof fetch)
     ).resolves.toBe('git status');
     expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toBe(lanEndpoint);
+  });
+
+  it('sends an api key as a bearer token', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ text: 'git status' }));
+    await transcribeViaServer(
+      { url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]), apiKey: '  sk-test-123  ' },
+      fetchImpl as unknown as typeof fetch
+    );
+
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    // Trimmed: a pasted key often carries whitespace, and a header with it
+    // fails authentication for a reason nothing reports.
+    expect(init.headers).toEqual({ Authorization: 'Bearer sk-test-123' });
+  });
+
+  it('sends no authorization header when there is no key', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ text: 'git status' }));
+    await transcribeViaServer({ url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]) }, fetchImpl as unknown as typeof fetch);
+    const [, withoutKey] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(withoutKey.headers).toBeUndefined();
+
+    // An empty or whitespace key is the same as none: a server that reads
+    // Bearer would otherwise reject the empty one instead of ignoring it.
+    await transcribeViaServer({ url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]), apiKey: '   ' }, fetchImpl as unknown as typeof fetch);
+    const [, blankKey] = fetchImpl.mock.calls[1] as unknown as [string, RequestInit];
+    expect(blankKey.headers).toBeUndefined();
+  });
+
+  it('says a key is wanted when the server refuses an unauthenticated request', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse('invalid_api_key', { status: 401 }));
+    await expect(
+      transcribeViaServer({ url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]) }, fetchImpl as unknown as typeof fetch)
+    ).rejects.toThrow('this server wants an API key');
+  });
+
+  it('does not blame a missing key when one was sent', async () => {
+    // With a key in the request, a 401 means the key is wrong or expired —
+    // pointing at the empty field would send the user the wrong way.
+    const fetchImpl = vi.fn(async () => jsonResponse('invalid_api_key', { status: 401 }));
+    await expect(
+      transcribeViaServer({ url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]), apiKey: 'sk-wrong' }, fetchImpl as unknown as typeof fetch)
+    ).rejects.toThrow(/^Speech server returned 401: invalid_api_key$/);
   });
 
   it('refuses a URL that is not an http(s) address without sending anything', async () => {
