@@ -429,6 +429,87 @@ input:focus-visible {
   line-height: 1.45;
 }
 
+/* A shared-port row is three controls in a row shape, not one button: the label
+   reconnects a remembered tunnel and the cross closes a live one, so nesting
+   them in a single button would be invalid and unreachable by keyboard. */
+.forward-row {
+  gap: 7px;
+}
+
+.forward-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  padding: 0;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+}
+
+.forward-badge {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid #e0af68;
+  border-radius: 3px;
+  color: #e0af68;
+  font: 9px JetBrains Mono, monospace;
+  letter-spacing: .04em;
+}
+
+.forward-close {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #697386;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.forward-row:hover .forward-close,
+.forward-close:focus-visible {
+  opacity: 1;
+}
+
+.forward-close:hover {
+  background: #303b4b;
+  color: #f7768e;
+}
+
+.dialog-disclosure {
+  align-self: flex-start;
+  padding: 3px 0;
+  background: transparent;
+  color: #7aa2f7;
+  font-size: 11px;
+}
+
+.dialog-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialog-check input {
+  width: auto;
+  margin: 0;
+}
+
+.dialog-warning {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #e0af68;
+  border-radius: 4px;
+  color: #e0af68;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .session-group-label {
   padding: 8px 10px 4px;
   color: #697386;
@@ -1424,13 +1505,29 @@ input:focus-visible {
   color: #253044;
 }
 
-:root[data-theme='light'] .workspace-tab-close {
+:root[data-theme='light'] .workspace-tab-close,
+:root[data-theme='light'] .forward-close {
   color: #5c687b;
 }
 
 :root[data-theme='light'] .workspace-tab-close:hover {
   background: #c7d5e8;
   color: #253044;
+}
+
+:root[data-theme='light'] .forward-close:hover {
+  background: #c7d5e8;
+  color: #b3213b;
+}
+
+:root[data-theme='light'] .forward-badge,
+:root[data-theme='light'] .dialog-warning {
+  border-color: #b07d1a;
+  color: #8a5d00;
+}
+
+:root[data-theme='light'] .dialog-disclosure {
+  color: #2459a6;
 }
 
 :root[data-theme='light'] .modal-layer,

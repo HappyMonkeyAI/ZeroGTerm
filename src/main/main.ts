@@ -6,17 +6,23 @@ import { ScreenService, parseWslDistributions, type PtySize } from './session-se
 import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
+import { PortForwardService } from './port-forward-service.js';
+import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
 import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
 import { AiService } from './ai-service.js';
-import type { AiSuggestionRequest, FileEntry, SpeechApiKeyStatus } from '../shared/types.js';
+import type { AiSuggestionRequest, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
 const workspaceStore = new WorkspaceStore({ filePath: defaultWorkspacePath(app.getPath('userData')) });
+const forwardStore = new PortForwardStore({ filePath: defaultPortForwardPath(app.getPath('userData')) });
+// Tunnels outlive the Ports view being closed: authenticating again is a real
+// cost to pay for having looked away.
+const forwards = new PortForwardService({ onEvent: (event) => win?.webContents.send('forwards:event', event) });
 const service = new ScreenService({ onEvent: (event, session, available) => { void history.record(event, session, available); } });
 let win: BrowserWindow | undefined;
 // Transfer connections outlive any single panel opening, so the panel can be
@@ -104,6 +110,9 @@ function createWindow() {
     win = undefined;
     service.detachAll();
     sftp.closeAll();
+    // A tunnel is a listening socket on someone's machine. It does not outlive
+    // the window that opened it.
+    forwards.closeAll();
   });
 }
 
@@ -144,6 +153,14 @@ ipcMain.handle('links:openExternal', (_event, url: unknown) => {
 ipcMain.handle('sessions:list', () => service.list());
 ipcMain.handle('sessions:history', () => history.list());
 ipcMain.handle('sessions:historyRemove', (_event, entryId: string) => history.remove(entryId));
+
+ipcMain.handle('forwards:list', () => forwards.list());
+ipcMain.handle('forwards:open', (_event, request: unknown) => forwards.open(requireForwardRequest(request)));
+ipcMain.handle('forwards:close', (_event, id: unknown) => forwards.close(requireString(id, 'A shared port')));
+ipcMain.handle('forwards:answerPrompt', (_event, id: unknown, answer: unknown) =>
+  forwards.answerPrompt(requireString(id, 'A shared port'), requireString(answer, 'An answer')));
+ipcMain.handle('forwards:load', () => forwardStore.load());
+ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(file));
 
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
@@ -267,6 +284,26 @@ function requireSuggestionRequest(value: unknown): AiSuggestionRequest {
       ...(context.kind === 'ssh' || context.kind === 'local' ? { kind: context.kind } : {}),
       ...(text(context.output) ? { output: String(context.output) } : {})
     }
+  };
+}
+
+/**
+ * A forwarding request, shaped.
+ *
+ * Only the shape is checked here: the values are vetted by buildForwardArgs,
+ * which is where the rules live and where they are tested, and which throws a
+ * sentence the renderer can show as-is.
+ */
+function requireForwardRequest(value: unknown): PortForwardRequest {
+  if (!isRecord(value)) throw new Error('A shared port is required.');
+  return {
+    target: requireString(value.target, 'An SSH target'),
+    direction: value.direction as PortForwardRequest['direction'],
+    bind: value.bind as PortForwardRequest['bind'],
+    listenPort: value.listenPort as number,
+    destinationPort: value.destinationPort as number,
+    ...(typeof value.destinationHost === 'string' && value.destinationHost ? { destinationHost: value.destinationHost } : {}),
+    ...(typeof value.id === 'string' && value.id ? { id: value.id } : {})
   };
 }
 

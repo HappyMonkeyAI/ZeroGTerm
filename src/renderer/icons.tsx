@@ -170,6 +170,26 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
           <path d="M16 4v14M16 18l3.5-3.5M16 18l-3.5-3.5" />
         </svg>
       );
+    // Two ends and a line between them: a tunnel, rather than a plug, because a
+    // forward is a route from somewhere to somewhere and both ends matter.
+    case 'ports':
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="8.5" width="5" height="7" rx="1" />
+          <rect x="16.5" y="8.5" width="5" height="7" rx="1" />
+          <path d="M7.5 12h9M14 9.5l2.5 2.5L14 14.5" />
+        </svg>
+      );
+    // The ports glyph with a plus, as folder-plus is to folder: one opens the
+    // list, the other adds to it, and the rail shows both at once.
+    case 'port-plus':
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="8.5" width="5" height="7" rx="1" />
+          <path d="M7.5 12h7" />
+          <path d="M18.5 8v8M14.5 12h8" />
+        </svg>
+      );
     case 'folder':
       return (
         <svg {...common}>

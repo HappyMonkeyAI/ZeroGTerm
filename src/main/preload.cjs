@@ -4,6 +4,17 @@ const api = {
   listSessions: () => ipcRenderer.invoke('sessions:list'),
   listHistory: () => ipcRenderer.invoke('sessions:history'),
   removeHistory: (entryId) => ipcRenderer.invoke('sessions:historyRemove', entryId),
+  listForwards: () => ipcRenderer.invoke('forwards:list'),
+  openForward: (request) => ipcRenderer.invoke('forwards:open', request),
+  closeForward: (id) => ipcRenderer.invoke('forwards:close', id),
+  answerForwardPrompt: (id, answer) => ipcRenderer.invoke('forwards:answerPrompt', id, answer),
+  loadForwards: () => ipcRenderer.invoke('forwards:load'),
+  saveForwards: (file) => ipcRenderer.invoke('forwards:save', file),
+  onForwardEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('forwards:event', listener);
+    return () => ipcRenderer.removeListener('forwards:event', listener);
+  },
   loadWorkspaces: () => ipcRenderer.invoke('workspaces:load'),
   saveWorkspaces: (file) => ipcRenderer.invoke('workspaces:save', file),
   listBackends: () => ipcRenderer.invoke('sessions:backends'),

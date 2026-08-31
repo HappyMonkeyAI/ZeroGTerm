@@ -13,6 +13,18 @@ export interface KnownConnection {
 
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const HOST = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,253}$/;
+
+/**
+ * Is this a hostname ZeroG will put in front of an SSH client?
+ *
+ * Exported so the port-forwarding side vets the far end of a tunnel by the same
+ * rule that vets a HostName here, rather than carrying a second copy of it that
+ * can drift. The leading-alphanumeric requirement is the load-bearing part: the
+ * value ends up in an argv element, and one starting with '-' reads as an option.
+ */
+export function isSshHostName(value: string): boolean {
+  return HOST.test(value);
+}
 // Must start alphanumeric like TOKEN/HOST above: the user is concatenated into
 // `user@host`, so a leading '-' makes the whole destination look like an option
 // to ssh's getopt (`-Fevil.cfg@host` reads an attacker-chosen config file).

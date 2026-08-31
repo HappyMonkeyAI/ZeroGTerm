@@ -16,6 +16,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - SSH configuration discovery from known connections, including remote `screen` session discovery. In the sidebar's Connections tab, clicking a saved connection opens the connect dialog with the host filled in, and double-clicking it skips the dialog and opens the host in a new pane.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
 - Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
+- Shared ports over SSH, in a Ports view opened from the rail: forward a port on a remote host so it answers on this machine, or a port here so it answers on the remote. Each tunnel is its own SSH connection, so a host needs no terminal open first. Ports bind to loopback unless you widen them, and are remembered between launches.
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
 - Workspaces for grouping sessions and quickly switching between projects or tasks. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
@@ -74,6 +75,34 @@ The dividers take keyboard focus as well: the arrow keys nudge one two percent a
 a time, and Enter or a double-click puts it back in the middle. One divider
 position is shared by every layout, so a split you set up in the vertical split
 is the same split you get in the four-pane grid.
+
+## Sharing ports over SSH
+
+The Ports button in the rail opens a list of shared ports, grouped by the host
+each one runs through. "Share port" asks for a host and a port, and the port is
+then reachable as though the service were running here.
+
+Two directions are available under "More options". The default sends a port on
+the remote to this machine, which is what a remote dev server, database, or
+debugger needs. The other sends a port here to the remote, for a webhook or an
+agent on that host calling back. A row always names the side that listens first,
+so which way a tunnel runs is never left to be inferred.
+
+A shared port answers only on the machine that binds it, unless you tick "Share
+on my network" — which re-exports the service to whatever network that machine is
+attached to, and is marked `LAN` on the row so it cannot be forgotten about. A
+port sent to the remote is bound on loopback there by default; widening it also
+needs `GatewayPorts` enabled in that host's `sshd_config`, and the row says so
+when the server refuses.
+
+Each tunnel is a separate `ssh` process, which is what makes closing one exact:
+the cross stops that tunnel and nothing else. It also means a host that
+authenticates with a password asks once per tunnel, in the panel, and nothing
+typed there is stored. Hosts using a key or an agent are not asked at all.
+
+Shared ports are remembered between launches and come back listed but not
+connected. Clicking one reconnects it — the app never opens a connection to a
+host on its own at startup.
 
 ## AI command suggestions
 
