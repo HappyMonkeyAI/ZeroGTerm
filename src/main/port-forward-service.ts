@@ -1,9 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import type { PtyProcess, SpawnPty } from './session-service.js';
 import { FORWARD_SETTLE_MS, buildForwardArgs, describeForward, readForwardOutcome } from './port-forward-protocol.js';
 import { detectPrompt } from './sftp-protocol.js';
 import type { PortForwardEvent, PortForwardInfo, PortForwardRequest } from '../shared/types.js';
+
+// node-pty is a native addon with no ESM entry point, and this file is compiled
+// as a module. Same shim as session-service.ts and sftp-service.ts.
+const require = createRequire(import.meta.url);
 
 /** A ceiling on live tunnels, so a stuck panel cannot spawn clients forever. */
 const MAX_FORWARDS = 16;

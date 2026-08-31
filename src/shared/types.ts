@@ -258,6 +258,21 @@ export interface TerminalApi {
    */
   loadWorkspaces(): Promise<StoredWorkspaceFile>;
   saveWorkspaces(file: StoredWorkspaceFile): Promise<StoredWorkspaceFile>;
+  /** Tunnels currently open, which outlive the Ports view being closed. */
+  listForwards(): Promise<PortForwardInfo[]>;
+  /**
+   * Open a tunnel, resolving once it is actually listening.
+   *
+   * Rejects with the client's own reason when it cannot — a port already bound,
+   * a refused key, an sshd that will not widen a remote forward. A password or
+   * host-key question arrives as a `prompt` event while this is still pending.
+   */
+  openForward(request: PortForwardRequest): Promise<PortForwardInfo>;
+  closeForward(id: string): Promise<void>;
+  answerForwardPrompt(id: string, answer: string): Promise<void>;
+  loadForwards(): Promise<StoredPortForwardFile>;
+  saveForwards(file: StoredPortForwardFile): Promise<StoredPortForwardFile>;
+  onForwardEvent(callback: (event: PortForwardEvent) => void): () => void;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;
   createLocalSession(request: CreateLocalRequest): Promise<SessionInfo>;
