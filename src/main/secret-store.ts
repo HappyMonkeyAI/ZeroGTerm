@@ -165,3 +165,12 @@ export function defaultSecretsPath(userDataPath: string): string {
 
 /** The name the speech server key is stored under. */
 export const SPEECH_API_KEY = 'speech.serverApiKey';
+
+/**
+ * The name the AI endpoint key is stored under.
+ *
+ * Separate from the speech key: the two point at different services often
+ * enough — a local Ollama and a hosted transcription server, say — that sharing
+ * one key would be wrong more often than right.
+ */
+export const AI_API_KEY = 'ai.serverApiKey';

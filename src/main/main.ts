@@ -12,8 +12,9 @@ import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownC
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
-import { SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
-import type { FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
+import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
+import { AiService } from './ai-service.js';
+import type { AiSuggestionRequest, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
@@ -253,6 +254,39 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
+function requireAiConfig(value: unknown): { baseUrl: string; model: string } {
+  if (!isRecord(value)) throw new Error('An AI endpoint is required.');
+  return {
+    baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl : '',
+    model: typeof value.model === 'string' ? value.model : ''
+  };
+}
+
+/**
+ * A suggestion request, shaped.
+ *
+ * The prompt and the context are checked for type here and for content by
+ * buildSuggestionRequest, which is where those rules are tested. The captured
+ * output is deliberately not inspected: it is untrusted by design, and
+ * ai-protocol is what makes it safe to include.
+ */
+function requireSuggestionRequest(value: unknown): AiSuggestionRequest {
+  if (!isRecord(value)) throw new Error('A request is required.');
+  const context = isRecord(value.context) ? value.context : {};
+  const text = (field: unknown): string | undefined => (typeof field === 'string' && field ? field : undefined);
+  return {
+    prompt: typeof value.prompt === 'string' ? value.prompt : '',
+    ...(text(value.sessionId) ? { sessionId: String(value.sessionId) } : {}),
+    context: {
+      ...(text(context.shell) ? { shell: String(context.shell) } : {}),
+      ...(text(context.cwd) ? { cwd: String(context.cwd) } : {}),
+      ...(text(context.host) ? { host: String(context.host) } : {}),
+      ...(context.kind === 'ssh' || context.kind === 'local' ? { kind: context.kind } : {}),
+      ...(text(context.output) ? { output: String(context.output) } : {})
+    }
+  };
+}
+
 /**
  * A forwarding request, shaped.
  *
@@ -299,10 +333,28 @@ ipcMain.handle('sftp:answerPrompt', (_event, id: unknown, answer: unknown) => {
 });
 ipcMain.handle('sftp:close', (_event, id: unknown) => sftp.close(requireString(id, 'A transfer connection')));
 
-ipcMain.handle('ai:suggest', () => ({
-  command: 'git status --short',
-  explanation: 'Read-only preview of changed files in the active workspace.'
-}));
+// The key is read here, per request, and never handed to the renderer.
+const ai = new AiService({ readApiKey: () => secrets.get(AI_API_KEY) });
+
+ipcMain.handle('ai:suggest', (_event, config: unknown, request: unknown) =>
+  ai.suggest(requireAiConfig(config), requireSuggestionRequest(request)));
+ipcMain.handle('ai:models', (_event, baseUrl: unknown) => ai.listModels(requireString(baseUrl, 'A base URL')));
+ipcMain.handle('ai:test', (_event, config: unknown) => ai.test(requireAiConfig(config)));
+ipcMain.handle('ai:cancel', () => ai.cancel());
+
+async function aiKeyStatus(): Promise<SpeechApiKeyStatus> {
+  return { stored: await secrets.has(AI_API_KEY), encryptionAvailable: secrets.encryptionAvailable() };
+}
+
+ipcMain.handle('aiKey:status', () => aiKeyStatus());
+ipcMain.handle('aiKey:save', async (_event, key: unknown) => {
+  await secrets.set(AI_API_KEY, typeof key === 'string' ? key.trim() : '');
+  return aiKeyStatus();
+});
+ipcMain.handle('aiKey:clear', async () => {
+  await secrets.clear(AI_API_KEY);
+  return aiKeyStatus();
+});
 
 async function speechKeyStatus(): Promise<SpeechApiKeyStatus> {
   return { stored: await secrets.has(SPEECH_API_KEY), encryptionAvailable: secrets.encryptionAvailable() };

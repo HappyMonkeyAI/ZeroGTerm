@@ -40,7 +40,13 @@ const api = {
     ipcRenderer.on('terminal:status', listener);
     return () => ipcRenderer.removeListener('terminal:status', listener);
   },
-  requestAiCommand: () => ipcRenderer.invoke('ai:suggest'),
+  requestAiCommand: (config, request) => ipcRenderer.invoke('ai:suggest', config, request),
+  listAiModels: (baseUrl) => ipcRenderer.invoke('ai:models', baseUrl),
+  testAiEndpoint: (config) => ipcRenderer.invoke('ai:test', config),
+  cancelAiRequest: () => ipcRenderer.invoke('ai:cancel'),
+  aiApiKeyStatus: () => ipcRenderer.invoke('aiKey:status'),
+  saveAiApiKey: (key) => ipcRenderer.invoke('aiKey:save', key),
+  clearAiApiKey: () => ipcRenderer.invoke('aiKey:clear'),
   listLocalDirectory: (path) => ipcRenderer.invoke('fs:listLocal', path),
   localHome: () => ipcRenderer.invoke('fs:localHome'),
   createLocalDirectory: (path) => ipcRenderer.invoke('fs:mkdirLocal', path),

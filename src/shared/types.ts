@@ -188,6 +188,45 @@ export interface StoredWorkspaceFile {
 }
 
 /**
+ * What the model is told about where the developer is working.
+ *
+ * `output` is the untrusted part: a bounded tail of the pane, included only when
+ * the setting says so, and never treated as instruction. See ai-protocol.ts.
+ */
+export interface AiSuggestionContext {
+  shell?: string;
+  cwd?: string;
+  host?: string;
+  kind?: SessionKind;
+  output?: string;
+}
+
+export interface AiSuggestionRequest {
+  prompt: string;
+  /** The pane this was asked about, so the answer cannot land in another one. */
+  sessionId?: string;
+  context: AiSuggestionContext;
+}
+
+/**
+ * A suggested command, or an explanation of why there is not one.
+ *
+ * An empty `command` is a normal outcome, not an error: it is what a reply that
+ * did not parse, named several commands, or declined produces. The dialog shows
+ * the explanation and has nothing to run.
+ */
+export interface AiSuggestion {
+  command: string;
+  explanation: string;
+}
+
+/** What the settings panel learns from testing an endpoint. */
+export interface AiTestResult {
+  ok: boolean;
+  message: string;
+}
+
+/**
  * Which way a tunnel runs.
  *
  * `local` makes a port on the remote reachable here — the common case, and what
@@ -289,7 +328,23 @@ export interface TerminalApi {
   readText(): Promise<string>;
   onData(callback: (sessionId: string, data: string) => void): () => void;
   onStatus(callback: (sessionId: string, message: string) => void): () => void;
-  requestAiCommand(): Promise<{ command: string; explanation: string }>;
+  /**
+   * Ask the configured endpoint for a command.
+   *
+   * Made in the main process, not here: a renderer fetch is cross-origin and
+   * Ollama refuses those unless OLLAMA_ORIGINS is set, and the API key then
+   * never has to enter the renderer at all. An empty `command` in the answer is
+   * a normal outcome — see AiSuggestion.
+   */
+  requestAiCommand(config: { baseUrl: string; model: string }, request: AiSuggestionRequest): Promise<AiSuggestion>;
+  /** Model ids the endpoint reports, for the settings panel's list. */
+  listAiModels(baseUrl: string): Promise<string[]>;
+  testAiEndpoint(config: { baseUrl: string; model: string }): Promise<AiTestResult>;
+  /** Abandon a suggestion in flight, when the dialog that wanted it has gone. */
+  cancelAiRequest(): Promise<void>;
+  aiApiKeyStatus(): Promise<SpeechApiKeyStatus>;
+  saveAiApiKey(key: string): Promise<SpeechApiKeyStatus>;
+  clearAiApiKey(): Promise<SpeechApiKeyStatus>;
   /** Local filesystem browsing for the transfer panel. Listing only; no reads. */
   listLocalDirectory(path?: string): Promise<DirectoryListing>;
   localHome(): Promise<string>;
