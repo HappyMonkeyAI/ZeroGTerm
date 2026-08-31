@@ -1581,6 +1581,13 @@ input:focus-visible {
 .settings-toggle b { color: #d8dee9; font-size: 12px; font-weight: 550; }
 .settings-toggle small { color: #697386; font-size: 10px; line-height: 1.45; }
 
+/* A toggle held on by a rule rather than by choice. Dimmed and not clickable,
+   but still shown: the hint beside it is where the reason lives, and hiding the
+   control would leave the reason with nothing to attach to. */
+.settings-toggle-fixed { cursor: default; }
+.settings-toggle-fixed b { color: #8b93a3; }
+.settings-toggle-fixed input { accent-color: #4e5969; }
+
 .settings-preview {
   display: flex;
   flex-direction: column;

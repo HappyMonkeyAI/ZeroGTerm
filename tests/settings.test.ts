@@ -3,6 +3,7 @@ import {
   DEFAULT_SETTINGS,
   LEGACY_THEME_KEY,
   SETTINGS_KEY,
+  SETTING_LIMITS,
   fontStack,
   loadSettings,
   parseSettings,
@@ -245,5 +246,61 @@ describe('fontStack', () => {
     for (const choice of ['system', 'jetbrains', 'cascadia', 'consolas', 'fira', 'menlo'] as const) {
       expect(fontStack(choice).endsWith('monospace')).toBe(true);
     }
+  });
+});
+
+describe('AI endpoint settings', () => {
+  it('defaults to a local endpoint with nothing sent off the machine', () => {
+    // Ollama's default: the case with no key to set up and no data leaving.
+    expect(DEFAULT_SETTINGS.ai.baseUrl).toBe('http://127.0.0.1:11434/v1');
+    expect(DEFAULT_SETTINGS.ai.includeOutput).toBe(false);
+    expect(DEFAULT_SETTINGS.ai.requireApproval).toBe(true);
+  });
+
+  it('has no default model, so nothing is guessed at', () => {
+    expect(DEFAULT_SETTINGS.ai.model).toBe('');
+  });
+
+  it('keeps a stored endpoint and model', () => {
+    const parsed = parseSettings({ ai: { baseUrl: 'https://api.example.com/v1', model: 'gpt-4o-mini' } });
+    expect(parsed.ai.baseUrl).toBe('https://api.example.com/v1');
+    expect(parsed.ai.model).toBe('gpt-4o-mini');
+  });
+
+  it('falls back for a base URL or model that is not a string', () => {
+    expect(parseSettings({ ai: { baseUrl: 42 } }).ai.baseUrl).toBe(DEFAULT_SETTINGS.ai.baseUrl);
+    expect(parseSettings({ ai: { model: null } }).ai.model).toBe(DEFAULT_SETTINGS.ai.model);
+  });
+
+  it('clamps how much output may be sent', () => {
+    expect(parseSettings({ ai: { outputChars: 50 } }).ai.outputChars).toBe(SETTING_LIMITS.outputChars.min);
+    expect(parseSettings({ ai: { outputChars: 999999 } }).ai.outputChars).toBe(SETTING_LIMITS.outputChars.max);
+    expect(parseSettings({ ai: { outputChars: 'lots' } }).ai.outputChars).toBe(DEFAULT_SETTINGS.ai.outputChars);
+    expect(parseSettings({ ai: { outputChars: 2500.7 } }).ai.outputChars).toBe(2501);
+  });
+
+  it('never reads a non-boolean as permission to send output', () => {
+    // A truthy string in a hand-edited file must not turn output capture on.
+    expect(parseSettings({ ai: { includeOutput: 'yes' } }).ai.includeOutput).toBe(false);
+    expect(parseSettings({ ai: { includeOutput: 1 } }).ai.includeOutput).toBe(false);
+    expect(parseSettings({ ai: { includeOutput: true } }).ai.includeOutput).toBe(true);
+  });
+
+  it('never reads a non-boolean as permission to skip approval', () => {
+    expect(parseSettings({ ai: { requireApproval: 'no' } }).ai.requireApproval).toBe(true);
+    expect(parseSettings({ ai: { requireApproval: 0 } }).ai.requireApproval).toBe(true);
+    expect(parseSettings({ ai: { requireApproval: false } }).ai.requireApproval).toBe(false);
+  });
+
+  it('loads a settings file written before these fields existed', () => {
+    const parsed = parseSettings({ ai: { proceedPhrase: 'go on' } });
+    expect(parsed.ai.proceedPhrase).toBe('go on');
+    expect(parsed.ai.baseUrl).toBe(DEFAULT_SETTINGS.ai.baseUrl);
+    expect(parsed.ai.includeOutput).toBe(false);
+  });
+
+  it('resets the section back to the safe defaults', () => {
+    const changed = parseSettings({ ai: { includeOutput: true, requireApproval: false, model: 'x' } });
+    expect(resetSection(changed, 'ai').ai).toEqual(DEFAULT_SETTINGS.ai);
   });
 });

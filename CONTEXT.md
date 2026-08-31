@@ -130,6 +130,8 @@ The session service owns `screen`, SSH, attach/detach, discovery, naming, and li
 
 AI actions are represented as typed requests and events. Generated commands are suggestions until explicitly approved. Output capture must be bounded, cancellable, and associated with a session/task ID.
 
+As implemented: suggestions go to an OpenAI-compatible endpoint from the main process, so the API key never enters the renderer and a local server is not blocked by cross-origin rules. Terminal output is opt-in, capped, stripped of the delimiter that fences it, and labelled as untrusted data in the prompt. The guarantee does not rest on the model honouring that label: a reply is only believed when it parses into exactly one command, and approval cannot be disabled while output is being sent. Every request carries an AbortController and a timeout, and a suggestion is bound to the session id it was built from so it cannot be written into a different pane.
+
 ### File transfer boundary
 
 File transfer is a separate connection to the same host, not a use of the

@@ -58,7 +58,7 @@ import {
   type TerminalSettings,
   type Theme
 } from './settings';
-import { SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { SettingsPanel, type AiTestState, type SpeechKeyState, type SpeechTestState } from './settings-panel';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
   SPLIT_BUTTONS,
@@ -70,6 +70,7 @@ import {
   type PaneView
 } from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
+import { askSuggestion, boundedTail, canAutoRun, isConfigured, type SuggestPhase } from './ai-suggest';
 
 /** Settle once output has been quiet this long — the primary readiness signal. */
 const PROMPT_QUIET_MS = 150;
@@ -188,6 +189,30 @@ function ConnectionRow({ connection, onConfigure, onConnect }: { connection: Kno
   );
 }
 
+/**
+ * What a pane is showing, as plain text.
+ *
+ * Walks xterm's buffer rather than accumulating output as it arrives: the buffer
+ * is already the wrapped, overwritten, cursor-addressed result, which is what
+ * the user is looking at. A rolling copy of the raw stream would include frames
+ * that were painted over and escape sequences that never rendered.
+ *
+ * translateToString already yields plain text, so nothing needs stripping. Only
+ * the tail is read — a scrollback of 200,000 lines is not worth walking to throw
+ * most of it away.
+ */
+function readTerminalText(terminal: Terminal | null, maxLines = 200): string {
+  if (!terminal) return '';
+  const buffer = terminal.buffer.active;
+  const end = buffer.length;
+  const start = Math.max(0, end - maxLines);
+  const lines: string[] = [];
+  for (let index = start; index < end; index += 1) {
+    lines.push(buffer.getLine(index)?.translateToString(true) ?? '');
+  }
+  return lines.join('\n');
+}
+
 function sessionBackendTag(session: SessionInfo): string {
   if (session.kind === 'ssh') return 'SSH';
   if (session.backend === 'screen') return 'screen';
@@ -210,7 +235,8 @@ function TerminalView({
   onStatus,
   appearance,
   terminalSettings,
-  registerFocus
+  registerFocus,
+  registerRead
 }: {
   sessionId?: string;
   focused?: boolean;
@@ -221,6 +247,14 @@ function TerminalView({
   terminalSettings: TerminalSettings;
   /** Lets the app put the keyboard back in this pane after a control took it. */
   registerFocus?: (sessionId: string, focus: (() => void) | null) => void;
+  /**
+   * Lets the app read what this pane is showing, for an AI suggestion.
+   *
+   * A registration rather than a prop of content, because the buffer is xterm's
+   * and copying it on every render would be absurd — the app asks at the one
+   * moment it needs to.
+   */
+  registerRead?: (sessionId: string, read: (() => string) | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -485,6 +519,12 @@ function TerminalView({
     return () => registerFocus(sessionId, null);
   }, [sessionId, registerFocus]);
 
+  useEffect(() => {
+    if (!sessionId || !registerRead) return;
+    registerRead(sessionId, () => readTerminalText(terminalRef.current));
+    return () => registerRead(sessionId, null);
+  }, [sessionId, registerRead]);
+
   return (
     <div className="terminal" ref={ref} onMouseDownCapture={(event) => event.preventDefault()} />
   );
@@ -622,7 +662,10 @@ function App() {
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
   const [sshTarget, setSshTarget] = useState('');
-  const [approval, setApproval] = useState<{ command: string; explanation: string } | null>(null);
+  const [suggest, setSuggest] = useState<SuggestPhase | null>(null);
+  const [aiKey, setAiKey] = useState<SpeechKeyState>({ status: 'idle', stored: false, encryptionAvailable: true, sessionOnly: false });
+  const [aiModels, setAiModels] = useState<string[]>([]);
+  const [aiTest, setAiTest] = useState<AiTestState>({ status: 'idle' });
   const [voice, setVoice] = useState<{ status: VoiceStatus; sessionId: string | null }>({ status: 'idle', sessionId: null });
   const [voiceReview, setVoiceReview] = useState<{ sessionId: string; text: string } | null>(null);
   const recorderRef = useRef<VoiceRecorder | null>(null);
@@ -661,6 +704,14 @@ function App() {
     if (focus) terminalFocusRef.current.set(sessionId, focus);
     else terminalFocusRef.current.delete(sessionId);
   }, []);
+  // What each pane is showing, for a suggestion that includes output. Registered
+  // the same way focus is, and read only at the moment a request is made.
+  const terminalReadRef = useRef(new Map<string, () => string>());
+  const registerTerminalRead = useCallback((sessionId: string, read: (() => string) | null) => {
+    if (read) terminalReadRef.current.set(sessionId, read);
+    else terminalReadRef.current.delete(sessionId);
+  }, []);
+
   /** Put the keyboard back in a pane, so the user can carry on typing. */
   const focusTerminal = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return;
@@ -673,7 +724,10 @@ function App() {
   // Backdrop dismissal, gated on where the press started so that selecting
   // text inside a dialog cannot close it. See backdrop-dismiss.ts.
   const dismissModal = useBackdropDismiss(() => setModal(null));
-  const dismissApproval = useBackdropDismiss(() => setApproval(null));
+  const dismissSuggest = useBackdropDismiss(() => {
+    void api()?.cancelAiRequest?.();
+    setSuggest(null);
+  });
   const dismissOverview = useBackdropDismiss(() => setOverview(false));
   const dismissHistory = useBackdropDismiss(() => setHistoryOpen(false));
   const dismissSettings = useBackdropDismiss(() => setSettingsOpen(false));
@@ -886,6 +940,15 @@ function App() {
       .catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.aiApiKeyStatus) return;
+    currentApi
+      .aiApiKeyStatus()
+      .then((status) => setAiKey((previous) => ({ ...previous, stored: status.stored, encryptionAvailable: status.encryptionAvailable })))
+      .catch(() => undefined);
+  }, []);
+
   /**
    * Drop session ids the workspaces still name but that no longer exist.
    *
@@ -1059,9 +1122,12 @@ function App() {
           setOverview(false);
           return;
         }
-        if (approval) {
+        if (suggest) {
           event.preventDefault();
-          setApproval(null);
+          // Abandon whatever is in flight: its answer would arrive against a
+          // dialog that has gone.
+          void api()?.cancelAiRequest?.();
+          setSuggest(null);
           return;
         }
         if (modal) {
@@ -1128,7 +1194,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, approval, modal, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, suggest, modal, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -1457,6 +1523,99 @@ function App() {
       quietTimer = setTimeout(finish, PROMPT_QUIET_MS);
     });
   });
+
+  /**
+   * Open the prompt box, remembering which pane it was asked from.
+   *
+   * The pane is captured here rather than when the answer arrives: a suggestion
+   * built from one pane's output must not land in another, which is what
+   * CONTEXT.md's "associated with a session/task ID" is there to prevent.
+   */
+  const openSuggest = () => {
+    if (!isConfigured(settings.ai)) {
+      setSettingsOpen(true);
+      setStatus('Set an AI endpoint and model in Settings first.');
+      return;
+    }
+    setSuggest(askSuggestion(active?.id ?? focusedSessionId));
+  };
+
+  /** Ask the endpoint, then show what came back. */
+  const runSuggest = async (prompt: string) => {
+    const currentApi = api();
+    const current = suggest;
+    if (!currentApi?.requestAiCommand || !current) return;
+
+    // Read the pane now, at the moment the request is made: the setting can
+    // change and the pane can scroll while an answer is in flight.
+    const sessionId = current.sessionId;
+    const session = sessionId ? sessions.find((item) => item.id === sessionId) : undefined;
+    const usedOutput = settings.ai.includeOutput && Boolean(sessionId);
+    const output = usedOutput && sessionId
+      ? boundedTail(terminalReadRef.current.get(sessionId)?.() ?? '', settings.ai.outputChars)
+      : '';
+
+    setSuggest({ phase: 'thinking', sessionId, prompt, usedOutput: usedOutput && Boolean(output) });
+    try {
+      const suggestion = await currentApi.requestAiCommand(
+        { baseUrl: settings.ai.baseUrl, model: settings.ai.model },
+        {
+          prompt,
+          ...(sessionId ? { sessionId } : {}),
+          context: {
+            ...(session?.backend ? { shell: backendLabel(session.backend) } : {}),
+            ...(session?.cwd ? { cwd: session.cwd } : {}),
+            ...(session?.host ? { host: session.host } : {}),
+            ...(session?.kind ? { kind: session.kind } : {}),
+            ...(output ? { output } : {})
+          }
+        }
+      );
+
+      const withOutput = usedOutput && Boolean(output);
+      if (canAutoRun(settings.ai, withOutput, suggestion.command) && sessionId) {
+        // Approval is off and nothing but metadata was sent, so the setting is
+        // taken at its word.
+        currentApi.write(sessionId, `${suggestion.command}\r`);
+        setSuggest(null);
+        setStatus(`Ran suggestion: ${suggestion.command}`);
+        return;
+      }
+      setSuggest({ phase: 'reviewing', sessionId, prompt, usedOutput: withOutput, suggestion });
+    } catch (error) {
+      setSuggest({ phase: 'failed', sessionId, prompt, message: ipcMessage(error) });
+    }
+  };
+
+  /** Send the reviewed command to the pane it was built from. */
+  const acceptSuggestion = () => {
+    if (suggest?.phase !== 'reviewing') return;
+    const { sessionId, suggestion } = suggest;
+    setSuggest(null);
+    if (!sessionId || !suggestion.command) return;
+    api()?.write(sessionId, `${suggestion.command}\r`);
+    setStatus(`Sent: ${suggestion.command}`);
+    focusTerminal(sessionId);
+  };
+
+  const refreshAiModels = async () => {
+    const currentApi = api();
+    if (!currentApi?.listAiModels) return;
+    try {
+      setAiModels(await currentApi.listAiModels(settings.ai.baseUrl));
+    } catch (error) {
+      setAiModels([]);
+      setStatus(ipcMessage(error));
+    }
+  };
+
+  const runAiTest = async () => {
+    const currentApi = api();
+    if (!currentApi?.testAiEndpoint) return;
+    setAiTest({ status: 'testing', message: null });
+    const result = await currentApi.testAiEndpoint({ baseUrl: settings.ai.baseUrl, model: settings.ai.model });
+    setAiTest({ status: 'idle', ok: result.ok, message: result.message });
+  };
 
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
@@ -1791,6 +1950,42 @@ function App() {
     }
   };
 
+  /**
+   * Save or clear the AI endpoint key.
+   *
+   * Simpler than the speech pair: there is no in-memory fallback for a machine
+   * without a keyring. A suggestion is not worth holding a key in renderer
+   * memory for, and the panel already says when a system cannot encrypt one.
+   */
+  const saveAiKey = async (key: string) => {
+    const currentApi = api();
+    if (!currentApi?.saveAiApiKey) return;
+    setAiKey((previous) => ({ ...previous, status: 'saving', error: null, notice: null }));
+    try {
+      const status = await currentApi.saveAiApiKey(key);
+      setAiKey({
+        status: 'idle',
+        stored: status.stored,
+        encryptionAvailable: status.encryptionAvailable,
+        sessionOnly: false,
+        notice: status.stored ? 'Key saved, encrypted by this system.' : 'Key cleared.'
+      });
+    } catch (error) {
+      setAiKey((previous) => ({ ...previous, status: 'idle', error: ipcMessage(error) }));
+    }
+  };
+
+  const clearAiKey = async () => {
+    const currentApi = api();
+    if (!currentApi?.clearAiApiKey) return;
+    try {
+      const status = await currentApi.clearAiApiKey();
+      setAiKey((previous) => ({ ...previous, status: 'idle', stored: status.stored, notice: 'Key cleared.', error: null }));
+    } catch (error) {
+      setAiKey((previous) => ({ ...previous, status: 'idle', error: ipcMessage(error) }));
+    }
+  };
+
   const reportSpeechProgress = (progress: { kind: 'loading'; progress: number | null } | { kind: 'notice'; message: string }) => {
     if (progress.kind === 'notice') {
       setStatus(progress.message);
@@ -2089,23 +2284,8 @@ function App() {
           <button
             type="button"
             className="bar-button"
-            onClick={async () => {
-              const currentApi = api();
-              if (!currentApi) return;
-              const suggestion = await currentApi.requestAiCommand();
-              if (settings.ai.requireApproval) {
-                setApproval(suggestion);
-                return;
-              }
-              // Approval turned off means the suggestion runs — the setting says so.
-              const target = active?.id ?? focusedSessionId;
-              if (!target) {
-                setStatus('No terminal selected for the suggestion');
-                return;
-              }
-              currentApi.write(target, `${suggestion.command}\r`);
-              setStatus(`Ran suggestion: ${suggestion.command}`);
-            }}
+            onClick={openSuggest}
+            title={isConfigured(settings.ai) ? 'Ask for a command (Ctrl+Shift+A)' : 'Set an AI endpoint in Settings first'}
           >
             <Icon name="spark" />
             <span>Suggest</span>
@@ -2499,6 +2679,7 @@ function App() {
                     appearance={settings.appearance}
                     terminalSettings={settings.terminal}
                     registerFocus={registerTerminalFocus}
+                    registerRead={registerTerminalRead}
                   />
                 </article>
               );
@@ -2762,6 +2943,13 @@ function App() {
           speechKey={speechKey}
           onSpeechKeySave={(key) => void saveSpeechKey(key)}
           onSpeechKeyClear={() => void clearSpeechKey()}
+          aiKey={aiKey}
+          onAiKeySave={(key) => void saveAiKey(key)}
+          onAiKeyClear={() => void clearAiKey()}
+          aiModels={aiModels}
+          onAiModelsRefresh={() => void refreshAiModels()}
+          aiTest={aiTest}
+          onAiTest={() => void runAiTest()}
         />
       )}
 
@@ -2795,36 +2983,142 @@ function App() {
         </div>
       )}
 
-      {approval && (
-        <div className="modal-layer" role="presentation" {...dismissApproval}>
+      {/* One dialog through the whole exchange: ask, wait, then review. The
+          command is shown before it can run whenever terminal output was part
+          of the prompt — see canAutoRun in ai-suggest.ts — because the answer is
+          then downstream of text a remote host chose. */}
+      {suggest && (
+        <div className="modal-layer" role="presentation" {...dismissSuggest}>
           <div className="modal-card approval-card">
             <div className="modal-head">
               <div>
-                <span className="eyebrow warning-text">APPROVAL REQUIRED</span>
-                <h2>Run suggestion?</h2>
+                <span className={suggest.phase === 'reviewing' ? 'eyebrow warning-text' : 'eyebrow'}>
+                  {suggest.phase === 'reviewing' ? 'APPROVAL REQUIRED' : 'AI SUGGESTION'}
+                </span>
+                <h2>
+                  {suggest.phase === 'asking'
+                    ? 'What would you like to do?'
+                    : suggest.phase === 'thinking'
+                      ? 'Asking the model…'
+                      : suggest.phase === 'failed'
+                        ? 'No suggestion'
+                        : 'Run this command?'}
+                </h2>
               </div>
-              <button type="button" className="close-button" onClick={() => setApproval(null)}>Esc</button>
-            </div>
-            <p>{approval.explanation}</p>
-            <code>{approval.command}</code>
-            <div className="modal-actions">
-              <button type="button" onClick={() => setApproval(null)}>Cancel</button>
               <button
                 type="button"
-                className="primary-button"
+                className="close-button"
                 onClick={() => {
-                  if (active) api()?.write(active.id, `${approval.command}\r`);
-                  setApproval(null);
+                  void api()?.cancelAiRequest?.();
+                  setSuggest(null);
                 }}
               >
-                Approve & run
+                Esc
               </button>
             </div>
+
+            {suggest.phase === 'asking' && (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const prompt = String(new FormData(event.currentTarget).get('prompt') ?? '').trim();
+                  if (prompt) void runSuggest(prompt);
+                }}
+              >
+                <p>
+                  {settings.ai.model} at {settings.ai.baseUrl}.{' '}
+                  {settings.ai.includeOutput
+                    ? 'The last of this pane\u2019s output is sent with your request.'
+                    : 'Only the shell, directory and host are sent.'}
+                </p>
+                <label>
+                  Request
+                  <input autoFocus name="prompt" placeholder="fix that error" autoComplete="off" />
+                </label>
+                <div className="modal-actions">
+                  <button type="button" onClick={() => setSuggest(null)}>Cancel</button>
+                  <button className="primary-button" type="submit">Ask</button>
+                </div>
+              </form>
+            )}
+
+            {suggest.phase === 'thinking' && (
+              <>
+                <p>{suggest.prompt}</p>
+                <p className="muted-text">
+                  {suggest.usedOutput ? 'Sent with recent output from this pane.' : 'Sent without terminal output.'}
+                </p>
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void api()?.cancelAiRequest?.();
+                      setSuggest(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {suggest.phase === 'reviewing' && (
+              <>
+                <p>{suggest.suggestion.explanation}</p>
+                {suggest.suggestion.command ? <code>{suggest.suggestion.command}</code> : null}
+                {suggest.usedOutput ? (
+                  <p className="dialog-warning">
+                    This was suggested from output in the pane, which can come from a remote host. Read the
+                    command before running it.
+                  </p>
+                ) : null}
+                <div className="modal-actions">
+                  <button type="button" onClick={() => setSuggest(null)}>Cancel</button>
+                  {/* Nothing to run when the reply did not parse or named several
+                      commands, which is what an empty command means. */}
+                  {suggest.suggestion.command ? (
+                    <button type="button" className="primary-button" onClick={acceptSuggestion}>Run</button>
+                  ) : (
+                    <button type="button" onClick={() => setSuggest(askSuggestion(suggest.sessionId))}>Ask again</button>
+                  )}
+                </div>
+              </>
+            )}
+
+            {suggest.phase === 'failed' && (
+              <>
+                <p>{suggest.message}</p>
+                <div className="modal-actions">
+                  <button type="button" onClick={() => setSuggest(null)}>Close</button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => setSuggest(askSuggestion(suggest.sessionId))}
+                  >
+                    Try again
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
     </main>
   );
+}
+
+/**
+ * The message a main-process error actually carries.
+ *
+ * Electron wraps a rejected ipcMain handler as "Error invoking remote method
+ * 'channel': Error: …", burying a sentence written for the user behind two
+ * layers of plumbing. The AI service takes trouble over those sentences —
+ * "Could not reach http://…/v1/chat/completions. Is the server running?" — and
+ * they are worth showing as written.
+ */
+function ipcMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:Error|TypeError):\s*/, '');
 }
 
 function terminalTheme(theme: Theme) {
