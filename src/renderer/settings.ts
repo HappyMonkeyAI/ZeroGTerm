@@ -102,6 +102,14 @@ export type AiSettings = {
    */
   proceedPhrase: string;
   /**
+   * Record the commands run in each pane, for the history palette.
+   *
+   * Off by default, and the only setting in ZeroG that turns on storing what the
+   * user typed. Nothing is recorded from a pane whose shell emits no OSC 133
+   * marks, and nothing at all that command-redaction refuses.
+   */
+  recordCommands: boolean;
+   /**
    * An OpenAI-compatible base URL, ending in the version segment.
    *
    * One field serves OpenAI, Ollama, LM Studio, llama.cpp, vLLM and OpenRouter,
@@ -177,6 +185,7 @@ export const DEFAULT_SETTINGS: Settings = {
     requireApproval: true,
     voiceInsert: 'type',
     proceedPhrase: 'OK, proceed',
+    recordCommands: false,
     // Ollama's default, because a local model is the case with no key to set up
     // and nothing leaving the machine.
     baseUrl: 'http://127.0.0.1:11434/v1',
@@ -368,6 +377,7 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
       voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert),
       proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase),
+      recordCommands: pickBoolean(ai.recordCommands, DEFAULT_SETTINGS.ai.recordCommands),
       baseUrl: pickString(ai.baseUrl, DEFAULT_SETTINGS.ai.baseUrl, 512),
       model: pickString(ai.model, DEFAULT_SETTINGS.ai.model, 200),
       includeOutput: pickBoolean(ai.includeOutput, DEFAULT_SETTINGS.ai.includeOutput),

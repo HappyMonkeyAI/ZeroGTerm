@@ -19,6 +19,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Shared ports over SSH, in a Ports view opened from the rail: forward a port on a remote host so it answers on this machine, or a port here so it answers on the remote. Each tunnel is its own SSH connection, so a host needs no terminal open first. Ports bind to loopback unless you widen them, and are remembered between launches.
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
+- A ranked command palette on `Ctrl+Shift+R`, in the spirit of [McFly](https://github.com/cantino/mcfly): commands you have run, ranked by directory, host, recency, frequency, whether they worked, and whether you picked them before. Off by default — it is the one feature that stores what you typed — and it refuses anything that looks like it carries a credential.
 - Workspaces for grouping sessions and quickly switching between projects or tasks. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
@@ -47,6 +48,7 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+N` — new workspace
 - `Ctrl+Shift+1` … `Ctrl+Shift+9` — switch to a workspace by position
 - `Ctrl+Shift+T` — new local terminal in the current workspace
+- `Ctrl+Shift+R` — ranked command history palette
 - `Ctrl+Shift+O` — session overview
 - `Ctrl+Shift+B` — toggle sessions sidebar
 - `Ctrl+Shift+,` — settings
@@ -64,6 +66,61 @@ terminal can copy to the system clipboard themselves through the OSC 52 escape
 sequence — this is how TUI tools such as CLI coding agents, tmux and Neovim put
 text on the clipboard, including over SSH. Reading the clipboard through OSC 52
 is refused, so a program on a remote host cannot see what you last copied.
+
+## The command history palette
+
+`Ctrl+Shift+R` opens a search over the commands you have actually run, ranked so
+the one you want is usually first: same directory beats same host, recent beats
+frequent, something that worked beats something that failed, and something you
+picked from this palette before beats something you merely ran. Typing matches a
+subsequence, so `gcm` finds `git commit -m`, and the matched characters are
+highlighted so it is clear why a row is there.
+
+Enter puts the command on the prompt **without running it**. The command came out
+of a store rather than from your hands a moment ago, so pressing Enter is your
+decision — and it leaves room to change an argument, which is most of why anyone
+reaches for history.
+
+`Ctrl+R` is untouched. Your shell keeps its own reverse search; McFly can rebind
+that key because it *is* the shell, and ZeroG taking it would remove
+reverse-search from every pane including remote ones this feature cannot see.
+
+### Turning it on
+
+Recording is off until you switch it on in Settings under "AI & voice". It is the
+only part of ZeroG that stores what you typed, so it is opt-in rather than a
+default you have to find and disable.
+
+Commands are read from the standard OSC 133 prompt marks a shell emits — the same
+marks VS Code, kitty, WezTerm and Windows Terminal use. If you already have shell
+integration from any of those, or from an oh-my-zsh plugin, ZeroG reads what is
+already there and you need to add nothing. Otherwise Settings offers a snippet
+per shell to paste into your rc file, and the panel says how many of your open
+panes are actually reporting marks, so "did that work" has an answer.
+
+A remote host needs the snippet installed on the remote host: the marks come from
+the shell, and over SSH that shell is on the far side. A pane whose shell reports
+no marks records nothing, rather than guessing from the screen and recording
+something wrong.
+
+### What is stored, and what is refused
+
+Each entry holds the command, the directory and host it ran in, its exit status,
+when it last ran, how many times, and how often you picked it. It lives in
+`command-history.json` in ZeroG's profile directory, written with owner-only
+permissions. "Forget all remembered commands" empties it and deletes the file.
+
+A command that looks like it carries a credential is refused outright rather than
+stored with the value masked — a masked entry still records that you set a
+particular secret in a particular directory at a particular time. Refused shapes
+include assignments to anything named like a token, key, secret or password;
+`--password`, `--token` and `--api-key` flags; credentials inside a URL;
+`Authorization` headers; `curl -u user:pass`; vendor-shaped tokens; and long
+high-entropy words.
+
+This is not a complete defence and is not claimed to be. A secret typed as a bare
+argument to an unusual program, or piped in from `echo`, looks like ordinary text.
+See [SECURITY.md](SECURITY.md).
 
 ## Resizing panes and the sidebar
 

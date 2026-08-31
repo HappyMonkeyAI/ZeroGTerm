@@ -34,6 +34,7 @@ import {
 } from './speech-models';
 import type { BackdropDismissHandlers } from './backdrop-dismiss';
 import { isLoopbackEndpoint, isSupportedEndpoint, sendsKeyInClear } from './speech-server';
+import { INTEGRATION_SHELLS, integrationFile, integrationSnippet, type IntegrationShell } from './shell-integration';
 
 export type SettingsPage = SettingsSection;
 
@@ -80,6 +81,10 @@ export type SettingsPanelProps = {
   speechKey: SpeechKeyState;
   onSpeechKeySave: (key: string) => void;
   onSpeechKeyClear: () => void;
+  /** How the command history is doing, for the section that switches it on. */
+  commandHistory: CommandHistoryState;
+  onCopySnippet: (snippet: string) => void;
+  onClearCommandHistory: () => void;
   /** The AI endpoint key, in the same shape as the speech one. */
   aiKey: SpeechKeyState;
   onAiKeySave: (key: string) => void;
@@ -89,6 +94,18 @@ export type SettingsPanelProps = {
   onAiModelsRefresh: () => void;
   aiTest: AiTestState;
   onAiTest: () => void;
+};
+
+/**
+ * What the panel knows about command recording.
+ *
+ * `panesReporting` answers the question someone actually has after pasting a
+ * snippet — did it work — without asking them to run something and guess.
+ */
+export type CommandHistoryState = {
+  entries: number;
+  panesReporting: number;
+  panesOpen: number;
 };
 
 /** What the panel reports about a run of the endpoint test. */
@@ -211,6 +228,79 @@ function ServerApiKeyField({
       {!state.error && state.notice ? <small className="settings-key-notice">{state.notice}</small> : null}
     </Field>
   );
+}
+
+/**
+ * Command recording, and the snippet that makes it work.
+ *
+ * The toggle and the snippet sit together because neither is much use alone:
+ * turning recording on without shell integration records nothing, and pasting
+ * the snippet without turning recording on records nothing either. Saying so is
+ * cheaper than letting someone discover it.
+ */
+function CommandHistorySection({
+  enabled,
+  state,
+  onToggle,
+  onCopySnippet,
+  onClear
+}: {
+  enabled: boolean;
+  state: CommandHistoryState;
+  onToggle: (enabled: boolean) => void;
+  onCopySnippet: (snippet: string) => void;
+  onClear: () => void;
+}) {
+  const [shell, setShell] = useState<IntegrationShell>('bash');
+  const snippet = integrationSnippet(shell);
+
+  return (
+    <>
+      <Toggle
+        label="Remember commands for the history palette"
+        hint={
+          enabled
+            ? 'Commands you run are stored on this machine, with their directory and exit status, so Ctrl+Shift+R can rank them. Anything that looks like it carries a secret is refused rather than stored.'
+            : 'Off. Nothing about what you type is written anywhere. Turning this on stores commands on this machine so the history palette has something to search.'
+        }
+        checked={enabled}
+        onChange={onToggle}
+      />
+
+      {enabled ? (
+        <>
+          <div className="settings-note">
+            {state.panesOpen === 0
+              ? 'No panes open, so nothing is reporting yet.'
+              : state.panesReporting === 0
+                ? `None of your ${state.panesOpen} open pane${state.panesOpen === 1 ? '' : 's'} is reporting prompt marks. Add the snippet below to that shell — including on a remote host, where it has to be installed there.`
+                : `${state.panesReporting} of ${state.panesOpen} open pane${state.panesOpen === 1 ? '' : 's'} reporting prompt marks. ${state.entries} command${state.entries === 1 ? '' : 's'} remembered.`}
+          </div>
+
+          <Field
+            label="Shell integration"
+            hint={`Paste this into ${integrationFile(shell)} on whichever machine the shell runs on. It emits the standard OSC 133 marks — if you already have shell integration from VS Code, kitty or an oh-my-zsh plugin, you need none of this.`}
+          >
+            <div className="settings-key-row">
+              <select value={shell} onChange={(event) => setShell(event.target.value as IntegrationShell)}>
+                {INTEGRATION_SHELLS.map((entry) => (
+                  <option key={entry.id} value={entry.id}>{entry.label}</option>
+                ))}
+              </select>
+              <button type="button" onClick={() => onCopySnippet(snippet)}>Copy snippet</button>
+            </div>
+          </Field>
+          <pre className="settings-snippet">{snippet}</pre>
+
+          <div className="settings-test">
+            <button type="button" onClick={onClear}>Forget all remembered commands</button>
+            <small className="settings-hint">Removes the stored history and the file it lives in.</small>
+          </div>
+        </>
+      ) : null}
+    </>
+  )
+
 }
 
 /**
@@ -412,6 +502,9 @@ export function SettingsPanel({
   speechKey,
   onSpeechKeySave,
   onSpeechKeyClear,
+  commandHistory,
+  onCopySnippet,
+  onClearCommandHistory,
   aiKey,
   onAiKeySave,
   onAiKeyClear,
@@ -693,6 +786,14 @@ export function SettingsPanel({
                     onChange={(event) => onChange('ai', { proceedPhrase: event.target.value })}
                   />
                 </Field>
+
+                <CommandHistorySection
+                  enabled={settings.ai.recordCommands}
+                  state={commandHistory}
+                  onToggle={(recordCommands) => onChange('ai', { recordCommands })}
+                  onCopySnippet={onCopySnippet}
+                  onClear={onClearCommandHistory}
+                />
               </>
             )}
 

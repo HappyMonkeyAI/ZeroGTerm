@@ -188,6 +188,42 @@ export interface StoredWorkspaceFile {
 }
 
 /**
+ * One command, in one directory, with what is known about how it went.
+ *
+ * Keyed by command *and* directory rather than command alone: running
+ * `npm test` in two projects is two facts, and keeping them apart is what lets
+ * the palette put the one from here first. The palette collapses them back
+ * together for display.
+ */
+export interface CommandHistoryEntry {
+  id: string;
+  command: string;
+  cwd?: string;
+  host?: string;
+  kind?: SessionKind;
+  /** Of the most recent run. Absent when the shell reported none. */
+  exitCode?: number;
+  lastRun: string;
+  runs: number;
+  /** Times this was chosen from the palette, which is what makes it improve. */
+  picks: number;
+}
+
+export interface StoredCommandHistoryFile {
+  version: number;
+  entries: CommandHistoryEntry[];
+}
+
+/** A command as the renderer reports it, before the store gives it an identity. */
+export interface CommandRecord {
+  command: string;
+  cwd?: string;
+  host?: string;
+  kind?: SessionKind;
+  exitCode?: number;
+}
+ 
+/**
  * What the model is told about where the developer is working.
  *
  * `output` is the untrusted part: a bounded tail of the pane, included only when
@@ -288,6 +324,18 @@ export interface TerminalApi {
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
   removeHistory(entryId: string): Promise<boolean>;
+  /**
+   * The command history, and the three things done to it.
+   *
+   * Held in the main process like the other durable state. `recordCommand` is
+   * called only for text that passed command-redaction, and only while the
+   * setting is on; `pickCommand` notes a deliberate choice, which is what makes
+   * the ranking improve with use.
+   */
+  listCommandHistory(): Promise<CommandHistoryEntry[]>;
+  recordCommand(record: CommandRecord): Promise<CommandHistoryEntry | null>;
+  pickCommand(id: string): Promise<void>;
+  clearCommandHistory(): Promise<void>;
   /**
    * The stored workspace layout, and a way to replace it.
    *
