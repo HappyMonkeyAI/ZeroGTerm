@@ -29,6 +29,7 @@ import {
   updateView,
   workspaceDotState,
   workspacePaneCount,
+  paneEntries,
   type Workspace,
   type WorkspaceView
 } from './workspace-view';
@@ -205,6 +206,7 @@ const PTY_RESIZE_SETTLE_MS = 120;
 function TerminalView({
   sessionId,
   focused,
+  dormant = false,
   onStatus,
   appearance,
   terminalSettings,
@@ -212,6 +214,8 @@ function TerminalView({
 }: {
   sessionId?: string;
   focused?: boolean;
+  /** This pane's workspace is not on screen: mounted and live, but unpainted. */
+  dormant?: boolean;
   onStatus: (message: string) => void;
   appearance: AppearanceSettings;
   terminalSettings: TerminalSettings;
@@ -429,6 +433,29 @@ function TerminalView({
     };
   }, [sessionId]);
 
+  /**
+   * Repaint a pane that has just come back on screen.
+   *
+   * A dormant pane is `display: none`, so it has no box and xterm's renderer has
+   * had nothing to draw into. Refitting alone does not fix that: if the pane
+   * returns at the size it left, xterm's own resize is a no-op and the renderer
+   * is never asked to paint, which is why a returning workspace showed empty
+   * panes until something changed their size. refresh() marks every row dirty
+   * and is the only thing that reliably puts the existing buffer back on screen.
+   */
+  useEffect(() => {
+    if (dormant) return;
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    refitRef.current?.();
+    // After the browser has given the pane a box again, or there is still
+    // nothing to measure against.
+    const frame = requestAnimationFrame(() => {
+      if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [dormant]);
+
   // Appearance and terminal behaviour are mutable xterm options. Rebuilding the
   // Terminal to apply them would dispose the renderer and drop the pane's
   // scrollback — the same content loss the layout code deliberately avoids.
@@ -591,6 +618,7 @@ function App() {
   // Nothing may be saved until the stored file has been read, or the empty
   // starting state would be written over it on the first render.
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  const [visitedWorkspaces, setVisitedWorkspaces] = useState<string[]>([]);
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
   const [sshTarget, setSshTarget] = useState('');
@@ -943,6 +971,11 @@ function App() {
   }, [workspaces, activeWorkspaceId, sessions, workspacesLoaded, sessionsLoading]);
 
   useEffect(() => {
+    if (!activeWorkspaceId) return;
+    setVisitedWorkspaces((current) => (current.includes(activeWorkspaceId) ? current : [...current, activeWorkspaceId]));
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
     if (!active && workspaceSessions.length) {
       setActive(workspaceSessions[0]);
     }
@@ -1105,9 +1138,37 @@ function App() {
   const transferTarget = sftpTargetForSession(active);
   const transfer = transferAvailability(active);
   const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
+
+  /**
+   * Workspaces whose panes are mounted.
+   *
+   * A workspace is not mounted until it has been shown once, because mounting a
+   * pane attaches its session: rendering every workspace up front would start
+   * every shell in every workspace on launch. Once visited it stays mounted, so
+   * switching away no longer disposes its terminals. The active workspace is
+   * always included, so the first frame after a switch already has its panes.
+   */
+  const mountedWorkspaceIds = useMemo(
+    () => new Set([...visitedWorkspaces, activeWorkspaceId]),
+    [visitedWorkspaces, activeWorkspaceId]
+  );
+
+  const allPanes = useMemo(
+    () => paneEntries(workspaces.filter((workspace) => mountedWorkspaceIds.has(workspace.id)), sessions, activeWorkspaceId),
+    [workspaces, sessions, activeWorkspaceId, mountedWorkspaceIds]
+  );
+
   // Keep every workspace terminal mounted while changing layouts. Hiding a
   // pane must not dispose its xterm renderer and lose its scrollback/content.
-  const paneSessions = workspaceSessions.slice(0, 4);
+  //
+  // Taken from allPanes rather than filtered again, so that pane order and the
+  // index the visibility rule counts against are the same list the grid renders.
+  // Claim order is also the right order: it is the order panes were added, where
+  // the session list's order is whatever the main process last reported.
+  const paneSessions = useMemo(
+    () => allPanes.filter((entry) => entry.workspaceId === activeWorkspaceId).map((entry) => entry.session),
+    [allPanes, activeWorkspaceId]
+  );
   const renderedPaneCount = Math.max(paneCount, paneSessions.length);
   // A pane maximized in another workspace has no match here, and the grid would
   // then hide every pane including placeholders. Derive the effective id so that
@@ -2379,15 +2440,11 @@ function App() {
                 onReset={() => resetSplit('row')}
               />
             )}
-            {Array.from({ length: renderedPaneCount }, (_, index) => {
-              const paneSession = paneSessions[index];
-              if (!paneSession) {
-                return <PanePlaceholder key={index} index={index + 1} onCreate={openNewLocalTerminal} />;
-              }
+            {allPanes.map(({ session: paneSession, index, dormant }) => {
               const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
               return (
                 <article
-                  className={`pane terminal-pane ${focusedSessionId === paneSession.id ? 'focused' : ''} ${maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
+                  className={`pane terminal-pane ${dormant ? 'dormant-pane' : ''} ${!dormant && focusedSessionId === paneSession.id ? 'focused' : ''} ${!dormant && maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${dormant || isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
                   key={paneSession.id}
                   onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
@@ -2436,7 +2493,8 @@ function App() {
                   </div>
                   <TerminalView
                     sessionId={paneSession.id}
-                    focused={focusedSessionId === paneSession.id}
+                    focused={!dormant && focusedSessionId === paneSession.id}
+                    dormant={dormant}
                     onStatus={setStatus}
                     appearance={settings.appearance}
                     terminalSettings={settings.terminal}
@@ -2445,6 +2503,15 @@ function App() {
                 </article>
               );
             })}
+            {/* Empty slots of the active workspace. After the panes, so grid
+                auto-placement fills them from the end. */}
+            {Array.from({ length: Math.max(0, renderedPaneCount - paneSessions.length) }, (_, index) => (
+              <PanePlaceholder
+                key={`placeholder-${index}`}
+                index={paneSessions.length + index + 1}
+                onCreate={openNewLocalTerminal}
+              />
+            ))}
           </div>
 
           <footer className="status-bar">

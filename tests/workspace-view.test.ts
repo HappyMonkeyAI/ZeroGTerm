@@ -7,6 +7,8 @@ import {
   fromStoredFile,
   isWorkspaceName,
   layoutForSessionCount,
+  MAX_PANES,
+  paneEntries,
   makeView,
   nextWorkspaceName,
   reconcileView,
@@ -381,6 +383,58 @@ describe('reconcileWorkspaces', () => {
       workspace('a', 'Workspace', [], { activeSessionId: 'local:api' }, [member('local:api', { screenName: 'api' })])
     ];
     expect(reconcileWorkspaces(workspaces, [])[0].view.activeSessionId).toBe('local:api');
+  });
+});
+
+describe('paneEntries', () => {
+  const live = [session('local:one', 'connected'), session('local:two', 'connected'), session('local:three', 'detached')];
+
+  it('renders every workspace, marking the inactive ones dormant', () => {
+    // A pane that stops being rendered has its terminal disposed, and
+    // re-attaching hands it the live pty rather than a replay — so it would come
+    // back blank. Every workspace's panes stay mounted.
+    const workspaces = [workspace('a', 'Workspace', ['local:one']), workspace('b', 'Workspace 2', ['local:two'])];
+    const entries = paneEntries(workspaces, live, 'b');
+    expect(entries.map((entry) => [entry.session.id, entry.dormant])).toEqual([
+      ['local:one', true],
+      ['local:two', false]
+    ]);
+  });
+
+  it('follows claim order, not the order the session list happens to be in', () => {
+    const workspaces = [workspace('a', 'Workspace', ['local:three', 'local:one'])];
+    expect(paneEntries(workspaces, live, 'a').map((entry) => entry.session.id)).toEqual(['local:three', 'local:one']);
+  });
+
+  it('numbers each workspace from zero', () => {
+    const workspaces = [workspace('a', 'Workspace', ['local:one']), workspace('b', 'Workspace 2', ['local:two', 'local:three'])];
+    const entries = paneEntries(workspaces, live, 'a');
+    expect(entries.map((entry) => entry.index)).toEqual([0, 0, 1]);
+  });
+
+  it('leaves no gap in the indices when a session has gone', () => {
+    // A gap pushes a later pane past the pane count, and the layout hides a pane
+    // that should be on screen.
+    const workspaces = [workspace('a', 'Workspace', ['local:gone', 'local:one', 'local:two'])];
+    const entries = paneEntries(workspaces, live, 'a');
+    expect(entries.map((entry) => [entry.session.id, entry.index])).toEqual([
+      ['local:one', 0],
+      ['local:two', 1]
+    ]);
+  });
+
+  it('caps a workspace at four panes, counting only sessions that exist', () => {
+    const many = Array.from({ length: 6 }, (_, index) => session(`local:${index}`, 'detached'));
+    const ids = ['local:missing', ...many.map((item) => item.id)];
+    const entries = paneEntries([workspace('a', 'Workspace', ids)], many, 'a');
+    expect(entries).toHaveLength(MAX_PANES);
+    expect(entries.map((entry) => entry.session.id)).toEqual(['local:0', 'local:1', 'local:2', 'local:3']);
+  });
+
+  it('ignores panes still waiting to be reconnected', () => {
+    // A remembered pane has no session to render yet; it shows as a sidebar row.
+    const workspaces = [workspace('a', 'Workspace', ['local:one'], {}, [member('ssh:old', { kind: 'ssh' })])];
+    expect(paneEntries(workspaces, live, 'a')).toHaveLength(1);
   });
 });
 
