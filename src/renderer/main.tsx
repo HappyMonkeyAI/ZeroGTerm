@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -34,6 +34,17 @@ import {
   type WorkspaceView
 } from './workspace-view';
 import { planSessionRestore, type RestoreAction, type SessionDescriptor } from './session-restore';
+import {
+  applyForwardStatus,
+  forwardConflict,
+  forwardDotState,
+  forwardLabel,
+  fromStoredForwards,
+  groupForwards,
+  isWidelyBound,
+  listenerLabel,
+  toStoredForwards
+} from './port-forwards';
 import { Icon } from './icons';
 import { CWD_BUFFER_CHARS, readCwd } from './cwd-tracker';
 import { SftpPanel } from './sftp-panel';
@@ -85,6 +96,20 @@ const PROMPT_BUFFER_CHARS = 512;
  */
 const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
 
+/**
+ * The message a main-process error actually carries.
+ *
+ * Electron wraps a rejected ipcMain handler as "Error invoking remote method
+ * 'channel': Error: …", which buries a sentence written for the user behind two
+ * layers of plumbing they have no use for. The main process takes trouble over
+ * those sentences — "Port 3000 is already shared from build.example.com" — and
+ * they are worth showing as written.
+ */
+function ipcMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:Error|TypeError):\s*/, '');
+}
+
 /** A stored pane as the restore planner wants it. */
 function memberDescriptor(member: StoredWorkspaceMember): SessionDescriptor {
   return {
@@ -100,8 +125,10 @@ function memberDescriptor(member: StoredWorkspaceMember): SessionDescriptor {
 
 type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 
-type ModalKind = 'workspace' | 'local' | 'ssh' | null;
+type ModalKind = 'workspace' | 'local' | 'ssh' | 'forward' | null;
 type SidebarTab = 'terminals' | 'screens' | 'connections';
+/** Which thing the sidebar is a list of. Ports are their own view, not a tab. */
+type SidebarView = 'sessions' | 'ports';
 
 const api = () => window.zerog;
 
@@ -607,6 +634,17 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
+  const [sidebarView, setSidebarView] = useState<SidebarView>('sessions');
+  const [forwards, setForwards] = useState<PortForwardInfo[]>([]);
+  const [forwardsLoaded, setForwardsLoaded] = useState(false);
+  const [forwardPrompt, setForwardPrompt] = useState<{ forwardId: string; kind: string; text: string } | null>(null);
+  const [forwardTarget, setForwardTarget] = useState('');
+  const [forwardDirection, setForwardDirection] = useState<ForwardDirection>('local');
+  const [forwardBind, setForwardBind] = useState<ForwardBind>('loopback');
+  const [forwardListenPort, setForwardListenPort] = useState('');
+  const [forwardDestinationPort, setForwardDestinationPort] = useState('');
+  const [forwardDestinationHost, setForwardDestinationHost] = useState('');
+  const [forwardAdvanced, setForwardAdvanced] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
@@ -951,6 +989,79 @@ function App() {
       })
     );
   }, [sessions, sessionsLoading, workspacesLoaded, knownConnections]);
+
+  /**
+   * Follow tunnels the main process is reporting on.
+   *
+   * A tunnel can change without this window asking — a host drops the
+   * connection, sshd refuses a forward, the client wants a password — so the
+   * list is driven by events rather than by what the open call returned.
+   */
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.onForwardEvent) return;
+    return currentApi.onForwardEvent((event) => {
+      if (event.type === 'status') {
+        setForwards((current) => applyForwardStatus(current, event.forward));
+        return;
+      }
+      if (event.type === 'prompt') {
+        setForwardPrompt({ forwardId: event.forwardId, kind: event.prompt.kind, text: event.prompt.text });
+        return;
+      }
+      // Closed: leave the row in place if it is carrying an error, so the reason
+      // survives long enough to be read.
+      setForwards((current) =>
+        current.map((forward) =>
+          forward.id === event.forwardId && forward.status !== 'error'
+            ? { ...forward, status: 'idle' as const }
+            : forward
+        )
+      );
+    });
+  }, []);
+
+  /**
+   * Read remembered ports back, and adopt any tunnel already running.
+   *
+   * Nothing is reopened here. A restored row is idle until clicked, for the same
+   * reason a restored SSH pane is: launching the app must not dial out to a host
+   * on its own. Tunnels the main process already holds — this window was
+   * reloaded, not restarted — are merged in with their real status.
+   */
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.loadForwards) {
+      setForwardsLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    Promise.all([currentApi.loadForwards(), currentApi.listForwards?.() ?? []])
+      .then(([file, live]) => {
+        if (cancelled) return;
+        const restored = fromStoredForwards(file);
+        setForwards(live.reduce(applyForwardStatus, restored));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setForwardsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!forwardsLoaded) return;
+    const currentApi = api();
+    if (!currentApi?.saveForwards) return;
+    const timer = setTimeout(() => {
+      currentApi.saveForwards(toStoredForwards(forwards)).catch(() => {
+        // Remembering a port must never interrupt the terminals.
+      });
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [forwards, forwardsLoaded]);
 
   /**
    * Save the layout after it settles.
@@ -1458,6 +1569,100 @@ function App() {
     });
   });
 
+  /**
+   * The hosts a port could be shared through.
+   *
+   * Saved connections plus the hosts of live SSH sessions: a tunnel is its own
+   * `ssh` process, so it does not need a terminal open to the host first — but
+   * if one is open, that is almost certainly the host meant.
+   */
+  const forwardHosts = useMemo(() => {
+    const hosts = new Set<string>();
+    for (const session of sessions) {
+      if (session.kind === 'ssh' && session.host) hosts.add(session.host);
+    }
+    for (const connection of knownConnections) hosts.add(connection.hostName ?? connection.alias);
+    return [...hosts];
+  }, [sessions, knownConnections]);
+
+  const openSharePortDialog = () => {
+    setForwardTarget((current) => current || (active?.kind === 'ssh' ? active.host : forwardHosts[0]) || '');
+    setForwardAdvanced(false);
+    setModal('forward');
+  };
+
+  /**
+   * Open a tunnel, or say why it cannot be opened.
+   *
+   * The row appears before the client has connected and follows itself through
+   * `connecting` to `open` on the event stream, so a slow host looks like a slow
+   * host rather than a dead button.
+   */
+  const shareForward = async (request: Omit<PortForwardInfo, 'status'>) => {
+    const currentApi = api();
+    if (!currentApi?.openForward) return;
+    const conflict = forwardConflict(request, forwards);
+    if (conflict) {
+      setStatus(conflict);
+      return;
+    }
+    setSidebarView('ports');
+    setForwards((current) => applyForwardStatus(current, { ...request, status: 'connecting' }));
+    try {
+      const opened = await currentApi.openForward(request);
+      setForwards((current) => applyForwardStatus(current, opened));
+      setStatus(`Sharing ${forwardLabel(opened)}`);
+    } catch (error) {
+      const message = ipcMessage(error);
+      // Kept in the list as an error rather than removed: the user asked for it,
+      // and a row that says why beats a row that silently never appeared.
+      setForwards((current) => applyForwardStatus(current, { ...request, status: 'error', message }));
+      setStatus(message);
+    }
+  };
+
+  const createForward = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const listenPort = Number(forwardListenPort);
+    // The far side defaults to the same number, which is what is wanted almost
+    // every time and saves typing it twice.
+    const destinationPort = Number(forwardDestinationPort || forwardListenPort);
+    // Checked here, not left to the client: a number the range rejects is a
+    // typo, and the dialog staying open with the message beats closing it and
+    // leaving a row that only says what was already typed. The service checks
+    // again regardless — it cannot trust this side.
+    const unusable = [listenPort, destinationPort].some(
+      (port) => !Number.isInteger(port) || port < 1 || port > 65535
+    );
+    if (unusable) {
+      setStatus('A port must be a whole number between 1 and 65535.');
+      return;
+    }
+    setModal(null);
+    await shareForward({
+      id: `forward:${crypto.randomUUID()}`,
+      target: forwardTarget.trim(),
+      direction: forwardDirection,
+      bind: forwardBind,
+      listenPort,
+      destinationPort,
+      ...(forwardDestinationHost.trim() ? { destinationHost: forwardDestinationHost.trim() } : {})
+    });
+  };
+
+  const closeForward = async (forward: PortForwardInfo) => {
+    const currentApi = api();
+    // Dropped from the list whatever the main process says: the user asked for it
+    // to stop, and a row that lingers after the cross looks broken.
+    setForwards((current) => current.filter((item) => item.id !== forward.id));
+    setStatus(`Stopped sharing ${listenerLabel(forward)}`);
+    try {
+      await currentApi?.closeForward?.(forward.id);
+    } catch {
+      /* already gone */
+    }
+  };
+
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
     setModal('workspace');
@@ -1543,6 +1748,73 @@ function App() {
   };
 
   const openNewLocalTerminal = () => openSessionDialog('local');
+
+  /**
+   * The Ports view: tunnels grouped by the host they run through.
+   *
+   * Grouped by host rather than listed flat because a port number means nothing
+   * without knowing which machine it reaches, and because the same number can be
+   * shared to two hosts at once.
+   */
+  const renderPortsView = () => {
+    if (!forwards.length) {
+      return (
+        <div className="session-list">
+          <div className="session-empty">
+            <b>No shared ports</b>
+            <small>Share a port to reach a service on a remote host from this machine, or the other way round.</small>
+            <button type="button" onClick={openSharePortDialog}>Share a port</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="session-list">
+        {groupForwards(forwards).map((group) => (
+          <React.Fragment key={group.host}>
+            <div className="session-group-label">{group.host}</div>
+            {group.forwards.map((forward) => (
+              <div className={`session-row forward-row ${forward.status === 'idle' ? 'session-ghosted' : ''}`} key={forward.id}>
+                <span className={`status-dot ${forwardDotState(forward)}`} />
+                <button
+                  type="button"
+                  className="forward-open"
+                  // An idle row is a remembered one: clicking it is what asks for
+                  // the tunnel, the same gesture as a restored SSH pane.
+                  onClick={() => (forward.status === 'idle' || forward.status === 'error'
+                    ? void shareForward(forward)
+                    : undefined)}
+                  title={forward.status === 'idle' || forward.status === 'error' ? `Reconnect ${listenerLabel(forward)}` : forwardLabel(forward)}
+                >
+                  <span className="session-copy">
+                    <b>{listenerLabel(forward)}</b>
+                    <small>
+                      {forward.direction === 'local' ? '←' : '→'} {forward.destinationHost || 'localhost'}:{forward.destinationPort}
+                      {forward.status === 'connecting' ? ' · connecting…' : ''}
+                      {forward.status === 'idle' ? ' · not connected' : ''}
+                      {forward.status === 'error' ? ` · ${forward.message ?? 'failed'}` : ''}
+                    </small>
+                  </span>
+                </button>
+                {/* Said plainly rather than left to be worked out: a wide bind
+                    re-exports someone else's service onto this network. */}
+                {isWidelyBound(forward) && <span className="forward-badge" title="Reachable from your network, not just this machine">LAN</span>}
+                <button
+                  type="button"
+                  className="forward-close"
+                  onClick={() => void closeForward(forward)}
+                  title={`Stop sharing ${listenerLabel(forward)}`}
+                  aria-label={`Stop sharing ${listenerLabel(forward)}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  };
 
   const renderScreensTab = () => {
     const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
@@ -2133,13 +2405,36 @@ function App() {
           >
             <Icon name={drawerCollapsed ? 'panel-left-open' : 'panel-left'} />
           </button>
-          <button type="button" className={`rail-button ${!drawerCollapsed ? 'active' : ''}`} title="Sessions" onClick={() => setDrawerCollapsed(false)}>
+          <button
+            type="button"
+            className={`rail-button ${!drawerCollapsed && sidebarView === 'sessions' ? 'active' : ''}`}
+            title="Sessions"
+            onClick={() => { setSidebarView('sessions'); setDrawerCollapsed(false); }}
+          >
             <Icon name="sessions" />
           </button>
           <button type="button" className="rail-button" onClick={() => setOverview(true)} title="Overview">
             <Icon name="grid" />
           </button>
+          <button
+            type="button"
+            className={`rail-button ${!drawerCollapsed && sidebarView === 'ports' ? 'active' : ''}`}
+            title="Shared ports"
+            aria-label="Shared ports"
+            onClick={() => { setSidebarView('ports'); setDrawerCollapsed(false); }}
+          >
+            <Icon name="ports" />
+          </button>
           <span className="rail-spacer" />
+          <button
+            type="button"
+            className="rail-button"
+            onClick={openSharePortDialog}
+            title="Share a port over SSH"
+            aria-label="Share a port"
+          >
+            <Icon name="port-plus" />
+          </button>
           <button
             type="button"
             className="rail-button"
@@ -2168,8 +2463,10 @@ function App() {
           <aside className="session-drawer" ref={sidebarRef} style={{ width: settings.sessions.sidebarWidth }}>
             <div className="drawer-head">
               <div className="drawer-head-name">
-                <span className="eyebrow">WORKSPACE</span>
-                {renamingWorkspace && activeWorkspace ? (
+                <span className="eyebrow">{sidebarView === 'ports' ? 'SHARED PORTS' : 'WORKSPACE'}</span>
+                {sidebarView === 'ports' ? (
+                  <h1>Ports</h1>
+                ) : renamingWorkspace && activeWorkspace ? (
                   <input
                     className="workspace-rename"
                     autoFocus
@@ -2234,90 +2531,97 @@ function App() {
               </div>
             </div>
 
-            <div className="drawer-tools" role="tablist" aria-label="Session inventory">
-              {(['terminals', 'screens', 'connections'] as const).map((tab) => {
-                const labels: Record<SidebarTab, string> = { terminals: 'Terminals', screens: 'Screens', connections: 'Connections' };
-                const count = tab === 'terminals'
-                  ? workspaceSessions.length
-                  : tab === 'screens'
-                    ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length + remoteScreenEntries.length
-                    : sessions.filter((session) => session.kind === 'ssh').length;
-                return (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={sidebarTab === tab}
-                    className={`drawer-tool ${sidebarTab === tab ? 'active' : ''}`}
-                    key={tab}
-                    onClick={() => setSidebarTab(tab)}
-                  >
-                    {labels[tab]} <span>{count}</span>
-                  </button>
-                );
-              })}
-            </div>
+            {sidebarView === 'ports' ? renderPortsView() : (
+              <>
+              <div className="drawer-tools" role="tablist" aria-label="Session inventory">
+                {(['terminals', 'screens', 'connections'] as const).map((tab) => {
+                  const labels: Record<SidebarTab, string> = { terminals: 'Terminals', screens: 'Screens', connections: 'Connections' };
+                  const count = tab === 'terminals'
+                    ? workspaceSessions.length
+                    : tab === 'screens'
+                      ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length + remoteScreenEntries.length
+                      : sessions.filter((session) => session.kind === 'ssh').length;
+                  return (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={sidebarTab === tab}
+                      className={`drawer-tool ${sidebarTab === tab ? 'active' : ''}`}
+                      key={tab}
+                      onClick={() => setSidebarTab(tab)}
+                    >
+                      {labels[tab]} <span>{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
 
-            <div className="session-list" role="tabpanel">
-              {sessionsLoading ? (
-                <div className="session-empty"><b>Loading sessions…</b><small>Checking available terminals and durable sessions.</small></div>
-              ) : sessionsError ? (
-                <div className="session-empty session-error"><b>Session inventory unavailable</b><small>{sessionsError}</small><button type="button" onClick={() => void refresh()}>Retry</button></div>
-              ) : sidebarTab === 'terminals' ? (
-                workspaceSessions.length || pendingPanes.length ? (
-                  <>
-                    {workspaceSessions.map((session) => (
-                      <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
-                    ))}
-                    {/* Panes this workspace remembers but has not reconnected.
-                        Ghosted like a discovered screen, because that is what
-                        they are to the user: something known to belong here that
-                        is not running in front of them yet. */}
-                    {pendingPanes.map((member) => (
-                      <PendingPaneRow key={member.sessionId} member={member} onClick={() => void restorePendingPane(member)} />
-                    ))}
-                  </>
-                ) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
-              ) : sidebarTab === 'screens' ? (
-                  renderScreensTab()
-                ) : sidebarTab === 'connections' ? (
-                knownConnections.length ? knownConnections.map((connection) => (
-                  <ConnectionRow
-                    key={connection.alias}
-                    connection={connection}
-                    onConfigure={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}
-                    onConnect={() => connectKnownConnection(connection)}
-                  />
-                )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
-              ) : (
-                sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').length ? sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    ghosted
-                    onClick={async () => {
-                      setStatus(`Attaching remote screen ${session.name}…`);
-                      const currentApi = api();
-                      if (!currentApi) return;
-                      try {
-                        const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name);
-                        const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host;
-                        const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
-                        setSessions((current) => current.map((item) => item.id === session.id ? ssh : item));
-                        // Claim the session that now exists, not the discovered
-                        // row it replaced: the two have different ids, and the
-                        // workspace would otherwise hold one that is gone.
-                        claimSession(ssh);
-                        await attach(ssh);
-                      } catch (error) {
-                        setStatus(error instanceof Error ? error.message : String(error));
-                      }
-                    }}
-                  />
-                )) : <div className="session-empty"><b>No remote screens</b><small>Remote screen sessions will appear here after discovery.</small></div>
-              )}
-            </div>
+              <div className="session-list" role="tabpanel">
+                {sessionsLoading ? (
+                  <div className="session-empty"><b>Loading sessions…</b><small>Checking available terminals and durable sessions.</small></div>
+                ) : sessionsError ? (
+                  <div className="session-empty session-error"><b>Session inventory unavailable</b><small>{sessionsError}</small><button type="button" onClick={() => void refresh()}>Retry</button></div>
+                ) : sidebarTab === 'terminals' ? (
+                  workspaceSessions.length || pendingPanes.length ? (
+                    <>
+                      {workspaceSessions.map((session) => (
+                        <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
+                      ))}
+                      {/* Panes this workspace remembers but has not reconnected.
+                          Ghosted like a discovered screen, because that is what
+                          they are to the user: something known to belong here that
+                          is not running in front of them yet. */}
+                      {pendingPanes.map((member) => (
+                        <PendingPaneRow key={member.sessionId} member={member} onClick={() => void restorePendingPane(member)} />
+                      ))}
+                    </>
+                  ) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
+                ) : sidebarTab === 'screens' ? (
+                    renderScreensTab()
+                  ) : sidebarTab === 'connections' ? (
+                  knownConnections.length ? knownConnections.map((connection) => (
+                    <ConnectionRow
+                      key={connection.alias}
+                      connection={connection}
+                      onConfigure={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}
+                      onConnect={() => connectKnownConnection(connection)}
+                    />
+                  )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
+                ) : (
+                  sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').length ? sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').map((session) => (
+                    <SessionRow
+                      key={session.id}
+                      session={session}
+                      ghosted
+                      onClick={async () => {
+                        setStatus(`Attaching remote screen ${session.name}…`);
+                        const currentApi = api();
+                        if (!currentApi) return;
+                        try {
+                          const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name);
+                          const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host;
+                          const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+                          setSessions((current) => current.map((item) => item.id === session.id ? ssh : item));
+                          // Claim the session that now exists, not the discovered
+                          // row it replaced: the two have different ids, and the
+                          // workspace would otherwise hold one that is gone.
+                          claimSession(ssh);
+                          await attach(ssh);
+                        } catch (error) {
+                          setStatus(error instanceof Error ? error.message : String(error));
+                        }
+                      }}
+                    />
+                  )) : <div className="session-empty"><b>No remote screens</b><small>Remote screen sessions will appear here after discovery.</small></div>
+                )}
+              </div>
+              </>
+            )}
 
             <div className="drawer-bottom">
+              <button type="button" className="drawer-action" onClick={openSharePortDialog}>
+                <Icon name="port-plus" /> Share port
+              </button>
               <button type="button" className="drawer-action" onClick={openNewLocalTerminal}>
                 <Icon name="plus" /> Local terminal <kbd>⌘⇧T</kbd>
               </button>
@@ -2614,7 +2918,7 @@ function App() {
         <div className="modal-layer" role="presentation" {...dismissModal}>
           <form
             className="modal-card"
-            onSubmit={modal === 'workspace' ? createWorkspace : modal === 'local' ? createLocal : createSsh}
+            onSubmit={modal === 'workspace' ? createWorkspace : modal === 'forward' ? createForward : modal === 'local' ? createLocal : createSsh}
           >
             <div className="modal-head">
               <div>
@@ -2670,6 +2974,86 @@ function App() {
                     required
                   />
                 </label>
+              </>
+            )}
+
+            {modal === 'forward' && (
+              <>
+                <p>Reach a port on a remote host from this machine, over SSH. The tunnel is its own connection, so the host does not need a terminal open.</p>
+                <label>
+                  SSH host
+                  <input
+                    autoFocus
+                    list="forward-hosts"
+                    value={forwardTarget}
+                    onChange={(event) => setForwardTarget(event.target.value)}
+                    placeholder="user@server"
+                    required
+                  />
+                  <datalist id="forward-hosts">
+                    {forwardHosts.map((host) => <option key={host} value={host} />)}
+                  </datalist>
+                </label>
+                <label>
+                  Port
+                  <input
+                    value={forwardListenPort}
+                    onChange={(event) => setForwardListenPort(event.target.value)}
+                    inputMode="numeric"
+                    pattern="[0-9]{1,5}"
+                    placeholder="3000"
+                    required
+                  />
+                </label>
+                {/* The uncommon choices, folded away: almost every forward is a
+                    remote port reached here on the same number, bound to
+                    loopback. */}
+                <button type="button" className="dialog-disclosure" onClick={() => setForwardAdvanced((value) => !value)} aria-expanded={forwardAdvanced}>
+                  {forwardAdvanced ? 'Fewer options' : 'More options'}
+                </button>
+                {forwardAdvanced && (
+                  <>
+                    <label>
+                      Direction
+                      <select value={forwardDirection} onChange={(event) => setForwardDirection(event.target.value as ForwardDirection)}>
+                        <option value="local">Remote port, reachable here</option>
+                        <option value="remote">Port here, reachable on the remote</option>
+                      </select>
+                    </label>
+                    <label>
+                      Forward to <span className="muted-text">optional</span>
+                      <input
+                        value={forwardDestinationHost}
+                        onChange={(event) => setForwardDestinationHost(event.target.value)}
+                        placeholder="localhost"
+                      />
+                    </label>
+                    <label>
+                      Port on that side <span className="muted-text">defaults to the same</span>
+                      <input
+                        value={forwardDestinationPort}
+                        onChange={(event) => setForwardDestinationPort(event.target.value)}
+                        inputMode="numeric"
+                        pattern="[0-9]{1,5}"
+                        placeholder={forwardListenPort || '3000'}
+                      />
+                    </label>
+                    <label className="dialog-check">
+                      <input
+                        type="checkbox"
+                        checked={forwardBind === 'all'}
+                        onChange={(event) => setForwardBind(event.target.checked ? 'all' : 'loopback')}
+                      />
+                      Share on my network, not just this machine
+                    </label>
+                    {forwardBind === 'all' && (
+                      <p className="dialog-warning">
+                        Anything on the network this machine is attached to will be able to reach
+                        {forwardDirection === 'local' ? ' the remote service' : ' the service running here'}.
+                      </p>
+                    )}
+                  </>
+                )}
               </>
             )}
 
@@ -2792,6 +3176,60 @@ function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* What the SSH client wants before a tunnel can open. ZeroG never answers
+          a host-key question on the user's behalf, and the fingerprint is shown
+          with the question — the same rule the transfer panel follows, because
+          it is the same client asking. Nothing typed here is stored. */}
+      {forwardPrompt && (
+        <div className="modal-layer" role="presentation">
+          <form
+            className="modal-card approval-card"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const answer = new FormData(event.currentTarget).get('answer');
+              const currentApi = api();
+              setForwardPrompt(null);
+              void currentApi?.answerForwardPrompt?.(forwardPrompt.forwardId, String(answer ?? '')).catch((error: unknown) => {
+                setStatus(ipcMessage(error));
+              });
+            }}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow">SHARED PORT</span>
+                <h2>{forwardPrompt.kind === 'confirm' ? 'Accept this host key?' : 'The host is asking'}</h2>
+              </div>
+            </div>
+            <code>{forwardPrompt.text}</code>
+            <label>
+              {forwardPrompt.kind === 'confirm' ? 'Type yes, no, or the fingerprint' : 'Answer'}
+              <input
+                autoFocus
+                name="answer"
+                type={forwardPrompt.kind === 'confirm' ? 'text' : 'password'}
+                autoComplete="off"
+              />
+            </label>
+            <div className="modal-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  // Cancelling has to end the attempt, not leave a client sitting
+                  // at a prompt nobody is going to answer.
+                  const id = forwardPrompt.forwardId;
+                  setForwardPrompt(null);
+                  void api()?.closeForward?.(id).catch(() => undefined);
+                  setForwards((current) => current.map((item) => (item.id === id ? { ...item, status: 'idle' as const } : item)));
+                }}
+              >
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">Send</button>
+            </div>
+          </form>
         </div>
       )}
 
