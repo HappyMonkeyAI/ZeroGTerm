@@ -4,11 +4,35 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, TerminalApi } from '../shared/types';
+import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
 import { useBackdropDismiss } from './backdrop-dismiss';
+import { useRowActivation } from './row-activation';
+import {
+  WORKSPACE_NAME_PATTERN,
+  adoptLiveSessions,
+  claimInto,
+  closeWorkspace,
+  dropPending,
+  fromStoredFile,
+  isWorkspaceName,
+  layoutForSessionCount,
+  makeView,
+  makeWorkspace,
+  nextWorkspaceName,
+  reconcileWorkspaces,
+  releaseSession,
+  renameWorkspace,
+  toStoredFile,
+  updateView,
+  workspaceDotState,
+  workspacePaneCount,
+  type Workspace,
+  type WorkspaceView
+} from './workspace-view';
+import { planSessionRestore, type RestoreAction, type SessionDescriptor } from './session-restore';
 import { Icon } from './icons';
 import { CWD_BUFFER_CHARS, readCwd } from './cwd-tracker';
 import { SftpPanel } from './sftp-panel';
@@ -42,8 +66,7 @@ import {
   splitButtonAction,
   splitButtonTitle,
   type PaneAction,
-  type PaneView,
-  type SplitLayout
+  type PaneView
 } from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
 
@@ -53,17 +76,31 @@ const PROMPT_QUIET_MS = 150;
 const PROMPT_WAIT_CAP_MS = 3000;
 /** Enough tail to hold a prompt spanning several chunks, without growing forever. */
 const PROMPT_BUFFER_CHARS = 512;
+/**
+ * How long the workspace layout must hold still before it is written to disk.
+ *
+ * Long enough to swallow a burst of pane switches or a divider drag, short
+ * enough that quitting straight after a change still saves it.
+ */
+const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
+
+/** A stored pane as the restore planner wants it. */
+function memberDescriptor(member: StoredWorkspaceMember): SessionDescriptor {
+  return {
+    id: member.sessionId,
+    name: member.name,
+    kind: member.kind,
+    host: member.host,
+    screenName: member.screenName,
+    sshTarget: member.sshTarget,
+    backend: member.backend
+  };
+}
 
 type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 
 type ModalKind = 'workspace' | 'local' | 'ssh' | null;
 type SidebarTab = 'terminals' | 'screens' | 'connections';
-
-type Workspace = {
-  id: string;
-  name: string;
-  sessionIds: string[];
-};
 
 const api = () => window.zerog;
 
@@ -96,6 +133,56 @@ function SessionRow({ session, active = false, ghosted = false, onClick }: { ses
       <span className={`status-dot ${session.status}`} />
       <span className="session-copy"><b>{session.name}</b><small>{backend}</small></span>
       <span className="session-state">{ghosted ? '↗' : session.status === 'connected' ? '●' : '○'}</span>
+    </button>
+  );
+}
+
+/**
+ * A pane a workspace remembers from a previous launch but has not reopened.
+ *
+ * Reads as a session row so it keeps its place in the workspace's list, and is
+ * ghosted so it is never mistaken for a running terminal. Clicking it is the
+ * consent to reconnect — an SSH pane must not dial out to a host on startup.
+ */
+function PendingPaneRow({ member, onClick }: { member: StoredWorkspaceMember; onClick: () => void }) {
+  const detail = member.kind === 'ssh'
+    ? `SSH · ${member.host ?? member.sshTarget ?? 'saved host'}`
+    : member.screenName
+      ? `screen · ${member.screenName}`
+      : 'local';
+  return (
+    <button type="button" className="session-row session-ghosted" title={`Reconnect ${member.name}`} onClick={onClick}>
+      <span className="status-dot" />
+      <span className="session-copy"><b>{member.name}</b><small>{detail} · not connected</small></span>
+      <span className="session-state">↻</span>
+    </button>
+  );
+}
+
+/**
+ * A saved SSH connection in the sidebar's Connections tab.
+ *
+ * Click opens the connect dialog with the host filled in, for when the target
+ * or the pane's label wants editing. Double-click skips the dialog and puts the
+ * host straight into a new pane — the common case for a connection whose
+ * ~/.ssh/config entry already says everything ssh needs.
+ */
+function ConnectionRow({ connection, onConfigure, onConnect }: { connection: KnownConnection; onConfigure: () => void; onConnect: () => void }) {
+  const activation = useRowActivation(onConfigure, onConnect);
+  const detail = connection.hostName
+    ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}`
+    : 'Saved SSH connection';
+  return (
+    <button
+      type="button"
+      className="session-row"
+      title={`Double-click to connect ${connection.alias} in a new pane`}
+      onClick={activation.onClick}
+      onDoubleClick={activation.onDoubleClick}
+    >
+      <span className="status-dot" />
+      <span className="session-copy"><b>{connection.alias}</b><small>{detail}</small></span>
+      <span className="session-state">→</span>
     </button>
   );
 }
@@ -479,26 +566,16 @@ function PanePlaceholder({ index, onCreate }: { index: number; onCreate: () => v
   );
 }
 
-function makeWorkspace(name: string, sessionIds: string[] = []): Workspace {
-  return {
-    id: `ws-${crypto.randomUUID()}`,
-    name,
-    sessionIds
-  };
-}
-
 function App() {
   // Read once, synchronously, so the first paint already uses the stored theme
   // and font instead of flashing the defaults.
   const [settings, setSettings] = useState<Settings>(() => loadSettings(browserStorage()));
   const theme: Theme = settings.appearance.theme;
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
-    const initial = makeWorkspace('Workspace');
-    return [initial];
-  });
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => [
+    makeWorkspace('Workspace', settings.sessions.defaultLayout)
+  ]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
-  const [active, setActive] = useState<SessionInfo | null>(null);
   const [status, setStatus] = useState('Ready');
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
@@ -508,17 +585,12 @@ function App() {
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [overview, setOverview] = useState(false);
-  const [layout, setLayout] = useState<Layout>(settings.sessions.defaultLayout);
-  // The split the single-pane view folds out of. A ref, not state: the
-  // keyboard handler reads it from a closure that does not re-subscribe on
-  // every layout change, and a stale split there would send Ctrl+Shift+L back
-  // to the wrong one.
-  const lastSplitLayout = useRef<SplitLayout>(
-    settings.sessions.defaultLayout === 'stack' ? 'split-v' : settings.sessions.defaultLayout
-  );
-  const [focusedSessionId, setFocusedSessionId] = useState<string>();
-  const [maximizedSessionId, setMaximizedSessionId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState('Workspace');
+  const [renamingWorkspace, setRenamingWorkspace] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  // Nothing may be saved until the stored file has been read, or the empty
+  // starting state would be written over it on the first render.
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
   const [sshTarget, setSshTarget] = useState('');
@@ -619,19 +691,72 @@ function App() {
     [workspaces, activeWorkspaceId]
   );
 
+  // Layout, selection, focus, and maximize belong to the workspace, not to the
+  // app: switching away and back has to find the arrangement you left. They are
+  // read out here and written through the small setters below so that the rest
+  // of this component still reads as though they were plain state.
+  const view: WorkspaceView = activeWorkspace?.view ?? makeView(settings.sessions.defaultLayout);
+  const layout = view.layout;
+  const focusedSessionId = view.focusedSessionId;
+  const maximizedSessionId = view.maximizedSessionId ?? null;
+
+  /**
+   * The selected session, looked up rather than stored.
+   *
+   * Holding the whole SessionInfo in state meant every status, cwd, or
+   * persistence change had to be copied into it as well, and anything read off
+   * the copy — the status bar, the transfer panel's target — could be a step
+   * behind the sidebar.
+   */
+  const active = useMemo(
+    () => (view.activeSessionId ? sessions.find((item) => item.id === view.activeSessionId) ?? null : null),
+    [view.activeSessionId, sessions]
+  );
+
+  const patchView = useCallback(
+    (patch: Partial<WorkspaceView> | ((current: WorkspaceView) => Partial<WorkspaceView>), workspaceId?: string) => {
+      setWorkspaces((current) => updateView(current, workspaceId ?? activeWorkspaceId, patch));
+    },
+    [activeWorkspaceId]
+  );
+
+  const setActive = useCallback(
+    (session: SessionInfo | null) => patchView({ activeSessionId: session?.id }),
+    [patchView]
+  );
+  const setLayout = useCallback(
+    (value: Layout | ((current: Layout) => Layout)) =>
+      patchView((current) => ({ layout: typeof value === 'function' ? value(current.layout) : value })),
+    [patchView]
+  );
+  const setFocusedSessionId = useCallback(
+    (sessionId?: string) => patchView({ focusedSessionId: sessionId }),
+    [patchView]
+  );
+  const setMaximizedSessionId = useCallback(
+    (sessionId: string | null) => patchView({ maximizedSessionId: sessionId }),
+    [patchView]
+  );
+
+  /**
+   * The sessions this workspace holds — only the ones it actually claimed.
+   *
+   * A discovered `screen` session or a known SSH connection is global
+   * inventory, not a member of whichever workspace happens to be open when it
+   * is found; attaching one is what claims it. The first workspace used to
+   * absorb everything unassigned, which made its Terminals tab a dumping ground
+   * for other projects' shells and could push it past the four-pane cap on its
+   * own. Unclaimed screens now stay in the Screens tab, whose filter already
+   * excludes workspace members, so nothing becomes unreachable.
+   */
   const workspaceSessions = useMemo(() => {
     if (!activeWorkspace) return sessions;
     const known = new Set(activeWorkspace.sessionIds);
-    const owned = sessions.filter((session) => known.has(session.id));
-    // Keep unassigned sessions visible in the first workspace until claimed.
-    if (activeWorkspace.id === workspaces[0]?.id) {
-      const assigned = new Set(workspaces.flatMap((item) => item.sessionIds));
-      const orphans = sessions.filter((session) => !assigned.has(session.id));
-      const byId = new Map([...owned, ...orphans].map((session) => [session.id, session]));
-      return [...byId.values()];
-    }
-    return owned;
-  }, [activeWorkspace, sessions, workspaces]);
+    return sessions.filter((session) => known.has(session.id));
+  }, [activeWorkspace, sessions]);
+
+  /** Panes this workspace remembers from a previous launch, still to reconnect. */
+  const pendingPanes = activeWorkspace?.pending ?? [];
 
   const refresh = useCallback(async () => {
     const currentApi = api();
@@ -733,11 +858,95 @@ function App() {
       .catch(() => undefined);
   }, []);
 
+  /**
+   * Drop session ids the workspaces still name but that no longer exist.
+   *
+   * A `screen` session killed from another terminal, or one closed while a
+   * different workspace was on screen, leaves a dangling id behind. Left there
+   * it counts towards the four-pane cap and makes the tab dot claim a workspace
+   * has contents it cannot show. reconcileWorkspaces returns the same array
+   * when there is nothing to drop, so this settles in one pass.
+   */
+  useEffect(() => {
+    if (sessionsLoading || !workspacesLoaded) return;
+    setWorkspaces((current) => reconcileWorkspaces(current, sessions));
+  }, [sessions, sessionsLoading, workspacesLoaded]);
+
+  /**
+   * Read the stored workspaces back, once, before anything can overwrite them.
+   *
+   * A failure here is not fatal: the app keeps the default single workspace and
+   * carries on, and the save effect below is held off until this has finished so
+   * an empty starting state cannot be written over a good file.
+   */
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.loadWorkspaces) {
+      setWorkspacesLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    currentApi
+      .loadWorkspaces()
+      .then((file) => {
+        if (cancelled) return;
+        const restored = fromStoredFile(file, settings.sessions.defaultLayout);
+        if (restored.workspaces.length) {
+          setWorkspaces(restored.workspaces);
+          if (restored.activeWorkspaceId) setActiveWorkspaceId(restored.activeWorkspaceId);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setWorkspacesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Take over remembered panes whose sessions turn out to be running.
+   *
+   * Runs on every session-list change, not just at startup: a remote screen
+   * discovered a few seconds in should be adopted by the workspace that was
+   * waiting for it, rather than sitting as a ghost row beside the live session.
+   * Only `attach` counts — anything that would have to dial out to a host waits
+   * for the user to click.
+   */
+  useEffect(() => {
+    if (sessionsLoading || !workspacesLoaded) return;
+    setWorkspaces((current) =>
+      adoptLiveSessions(current, (member) => {
+        const action = planSessionRestore(memberDescriptor(member), sessions, knownConnections);
+        return action.kind === 'attach' ? action.sessionId : undefined;
+      })
+    );
+  }, [sessions, sessionsLoading, workspacesLoaded, knownConnections]);
+
+  /**
+   * Save the layout after it settles.
+   *
+   * Debounced because the things it watches move in bursts — dragging a divider
+   * or switching panes — and each save is a file write in the main process.
+   */
+  useEffect(() => {
+    if (!workspacesLoaded || sessionsLoading) return;
+    const currentApi = api();
+    if (!currentApi?.saveWorkspaces) return;
+    const timer = setTimeout(() => {
+      currentApi.saveWorkspaces(toStoredFile(workspaces, activeWorkspaceId, sessions)).catch(() => {
+        // Layout memory must never interrupt the terminals.
+      });
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [workspaces, activeWorkspaceId, sessions, workspacesLoaded, sessionsLoading]);
+
   useEffect(() => {
     if (!active && workspaceSessions.length) {
       setActive(workspaceSessions[0]);
     }
-  }, [active, workspaceSessions]);
+  }, [active, workspaceSessions, setActive]);
 
   /**
    * Follow each session's working directory by reading its output.
@@ -772,7 +981,8 @@ function App() {
         if (!existing || existing.cwd === reading.path) return current;
         return current.map((item) => (item.id === sessionId ? { ...item, cwd: reading.path } : item));
       });
-      setActive((current) => (current && current.id === sessionId && current.cwd !== reading.path ? { ...current, cwd: reading.path } : current));
+      // The selected session is looked up from `sessions`, so updating the list
+      // is the whole job — there is no second copy to keep in step.
     });
   }, []);
 
@@ -834,6 +1044,11 @@ function App() {
       }
 
       if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
+      // App chrome, not the shell: a shortcut must not fire while the user is
+      // typing into one of our own fields, such as the inline workspace rename.
+      // xterm's input is a textarea, so a focused terminal is deliberately
+      // still covered by these.
+      if (event.target instanceof HTMLInputElement) return;
       const key = event.key.toLowerCase();
       if (key === 'o') {
         event.preventDefault();
@@ -851,8 +1066,10 @@ function App() {
       if (key === 'l') {
         event.preventDefault();
         // Match the layout buttons: a maximized pane would otherwise mask the change.
-        setMaximizedSessionId(null);
-        setLayout((value) => (value === 'stack' ? lastSplitLayout.current : 'stack'));
+        patchView((current) => ({
+          maximizedSessionId: null,
+          layout: current.layout === 'stack' ? current.lastSplit : 'stack'
+        }));
       }
       if (key === 'b') {
         event.preventDefault();
@@ -864,10 +1081,21 @@ function App() {
         event.preventDefault();
         setSettingsOpen((value) => !value);
       }
+      // Same reason as the comma above: Shift+1 reports as '!', so the digit
+      // only survives in event.code.
+      const digit = /^Digit([1-9])$/.exec(event.code);
+      if (digit) {
+        event.preventDefault();
+        const target = workspaces[Number(digit[1]) - 1];
+        if (target) switchWorkspace(target.id);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overview, approval, modal, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspace, workspaceSessions]);
+    // `sessions` is listed because the workspace-switch shortcut reads it to
+    // pick the terminal to focus. It costs nothing: workspaceSessions already
+    // changes with it, and setSessions returns the same array when nothing moved.
+  }, [overview, approval, modal, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -901,9 +1129,11 @@ function App() {
 
   useEffect(() => {
     // Recorded from the layout rather than at each button, so a split reached
-    // by any route is the one the single-pane view folds back out to.
-    if (layout !== 'stack') lastSplitLayout.current = layout;
-  }, [layout]);
+    // by any route is the one the single-pane view folds back out to. Per
+    // workspace, so each one folds back to its own split.
+    if (layout === 'stack' || view.lastSplit === layout) return;
+    patchView({ lastSplit: layout });
+  }, [layout, view.lastSplit, patchView]);
 
   const attach = async (session: SessionInfo) => {
     setActive(session);
@@ -928,24 +1158,13 @@ function App() {
   };
 
   const claimSession = (session: SessionInfo, workspaceId = activeWorkspaceId) => {
-    setWorkspaces((current) =>
-      current.map((workspace) => {
-        if (workspace.id !== workspaceId) {
-          return {
-            ...workspace,
-            sessionIds: workspace.sessionIds.filter((id) => id !== session.id)
-          };
-        }
-        if (workspace.sessionIds.includes(session.id)) return workspace;
-        return { ...workspace, sessionIds: [...workspace.sessionIds, session.id] };
-      })
-    );
+    setWorkspaces((current) => claimInto(current, workspaceId, session.id));
   };
 
   const createWorkspace = async (event: React.FormEvent) => {
     event.preventDefault();
     const name = workspaceName.trim() || nextWorkspaceName(workspaces);
-    const workspace = makeWorkspace(name);
+    const workspace = makeWorkspace(name, settings.sessions.defaultLayout);
     setWorkspaces((current) => [...current, workspace]);
     setActiveWorkspaceId(workspace.id);
     setActive(null);
@@ -957,7 +1176,7 @@ function App() {
     event.preventDefault();
     const currentApi = api();
     if (!currentApi) return;
-    if (workspaceSessions.length >= 4) {
+    if ((activeWorkspace ? workspacePaneCount(activeWorkspace) : workspaceSessions.length) >= 4) {
       setStatus('This workspace supports up to 4 sessions.');
       setModal(null);
       return;
@@ -979,43 +1198,152 @@ function App() {
     }
   };
 
-  const createSsh = async (event: React.FormEvent) => {
-    event.preventDefault();
+  /**
+   * Open an SSH session on `target` in a new pane of the active workspace.
+   *
+   * Shared by the connect dialog and the connections list: both need the same
+   * four-pane cap, the same layout bump, and the same attach, and differ only
+   * in where the target came from. The setModal(null) matters on the dialog
+   * path and is a no-op on the other.
+   */
+  const connectSsh = async (
+    target: string,
+    name?: string,
+    options?: {
+      /**
+       * Filling a pane the workspace already counts — a remembered one being
+       * reconnected — rather than adding a new one. The cap must not refuse to
+       * restore the fourth pane of a workspace that legitimately has four.
+       */
+      replacingPane?: boolean;
+    }
+  ): Promise<SessionInfo | null> => {
     const currentApi = api();
-    if (!currentApi) return;
-    if (workspaceSessions.length >= 4) {
+    if (!currentApi) return null;
+    // The dialog's submit button is disabled while busy, but a sidebar row is
+    // always clickable: two connects in flight would each read the pane count
+    // from before the other, and between them could put five panes in a
+    // workspace that holds four.
+    if (busy) return null;
+    const panes = activeWorkspace ? workspacePaneCount(activeWorkspace) : workspaceSessions.length;
+    if (!options?.replacingPane && panes >= 4) {
       setStatus('This workspace supports up to 4 sessions.');
       setModal(null);
-      return;
+      return null;
     }
     setBusy(true);
     try {
-      const session = await currentApi.createSshSession({ name: sshName || undefined, target: sshTarget });
+      const session = await currentApi.createSshSession({ name: name || undefined, target });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
       setFocusedSessionId(session.id);
       setMaximizedSessionId(null);
-      setLayout(layoutForSessionCount(workspaceSessions.length + 1));
+      setLayout(layoutForSessionCount(options?.replacingPane ? Math.max(panes, 1) : panes + 1));
       setModal(null);
       await attach(session);
+      return session;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+      return null;
     } finally {
       setBusy(false);
     }
   };
 
-  const attachRemoteScreen = async (session: SessionInfo, connection: KnownConnection) => {
+  const createSsh = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await connectSsh(sshTarget, sshName);
+  };
+
+  /**
+   * Carry out what the restore planner decided.
+   *
+   * The history popover and a workspace's remembered panes both come through
+   * here, so the two cannot drift into reconnecting the same shell differently.
+   */
+  const runRestoreAction = async (action: RestoreAction, options?: { replacingPane?: boolean }): Promise<SessionInfo | null> => {
+    const currentApi = api();
+    if (!currentApi) return null;
+
+    if (action.kind === 'unavailable') {
+      setStatus(action.reason);
+      return null;
+    }
+
+    if (action.kind === 'attach') {
+      const session = sessions.find((item) => item.id === action.sessionId);
+      if (!session) return null;
+      claimSession(session);
+      await attach(session);
+      return session;
+    }
+
+    if (action.kind === 'attach-remote-screen') {
+      return attachRemoteScreen(action.name, action.screenName, action.connection);
+    }
+
+    const session = await connectSsh(action.target, action.name, options);
+    if (!session || !action.screenCommand) return session;
+    // The shell has to be ready before `screen -x` goes down the pipe, or the
+    // command lands in a login banner and is lost.
+    await currentApi.attachSession(session.id);
+    await waitForShellPrompt(currentApi, session.id);
+    currentApi.write(session.id, `${action.screenCommand}\r`);
+    return session;
+  };
+
+  /**
+   * Reconnect a pane the active workspace remembered from a previous launch.
+   *
+   * The remembered entry is dropped only once something came back, so a failed
+   * reconnect — host down, key refused — leaves the ghost row in place to try
+   * again rather than quietly shrinking the workspace.
+   */
+  const restorePendingPane = async (member: StoredWorkspaceMember) => {
+    const action = planSessionRestore(memberDescriptor(member), sessions, knownConnections);
+    if (action.kind === 'unavailable') {
+      // Nothing to reconnect to: stop offering it, and say why.
+      setWorkspaces((current) => dropPending(current, activeWorkspaceId, member.sessionId));
+      setStatus(action.reason);
+      return;
+    }
+    setStatus(`Reconnecting ${member.name}…`);
+    const session = await runRestoreAction(action, { replacingPane: true });
+    if (!session) return;
+    setWorkspaces((current) => dropPending(current, activeWorkspaceId, member.sessionId));
+  };
+
+  /**
+   * Connect a saved connection without going through the dialog.
+   *
+   * The target matches what the dialog would have been pre-filled with, so a
+   * double-click and a click-then-confirm reach the same host. The alias makes
+   * a better pane label than the derived hostname, but session names cap
+   * shorter than SSH aliases do — both allow the same characters, so trimming
+   * an over-long alias is enough to keep it a valid name.
+   */
+  const connectKnownConnection = (connection: KnownConnection) => {
+    setStatus(`Connecting to ${connection.alias}…`);
+    void connectSsh(connection.hostName ?? connection.alias, connection.alias.slice(0, 48));
+  };
+
+  /**
+   * Open an SSH session and re-enter a `screen` on the far side.
+   *
+   * Takes the two names it actually needs rather than a SessionInfo: callers
+   * reconnecting from history or from a stored workspace have a description,
+   * not a session, and one of them used to fake the object with a cast.
+   */
+  const attachRemoteScreen = async (name: string, screenName: string, connection: KnownConnection): Promise<SessionInfo | null> => {
     try {
       const currentApi = api();
-      if (!currentApi) return;
-      setStatus(`Attaching to ${session.name} on ${connection.alias}…`);
-      const result = await currentApi.buildRemoteScreenAttach?.(connection, session.screenName ?? session.name);
+      if (!currentApi) return null;
+      setStatus(`Attaching to ${name} on ${connection.alias}…`);
+      const result = await currentApi.buildRemoteScreenAttach?.(connection, screenName);
       const args = result?.args;
       const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
       const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
-      const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
-      const screenName = session.screenName ?? session.name;
+      const ssh = await currentApi.createSshSession({ target: destination, name });
       const attached = { ...ssh, screenName, persistence: 'screen' as const, backend: 'screen' as const };
       setSessions((current) => {
         const exists = current.some((item) => item.id === attached.id);
@@ -1028,9 +1356,11 @@ function App() {
       await waitForShellPrompt(currentApi, attached.id);
       currentApi.write(attached.id, `${screenCommand}\r`);
       await refresh();
-      setStatus(`Connected to ${session.name} on ${connection.alias}`);
+      setStatus(`Connected to ${name} on ${connection.alias}`);
+      return attached;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+      return null;
     }
   };
 
@@ -1070,6 +1400,69 @@ function App() {
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
     setModal('workspace');
+  };
+
+  /**
+   * Make a workspace the active one.
+   *
+   * Only the id moves. Layout, selection, focus, and maximize come along
+   * because they live on the workspace being switched to — the arrangement it
+   * had when it was last on screen is the arrangement it comes back with.
+   */
+  const switchWorkspace = (workspaceId: string) => {
+    if (workspaceId === activeWorkspaceId) return;
+    const target = workspaces.find((workspace) => workspace.id === workspaceId);
+    if (!target) return;
+    setRenamingWorkspace(false);
+    setActiveWorkspaceId(workspaceId);
+    setStatus(`Workspace “${target.name}”`);
+  };
+
+  /**
+   * Close a workspace, leaving its shells alone.
+   *
+   * Only the grouping goes away: a `screen` session it held keeps running and
+   * goes back to being unclaimed inventory under Screens, which is the same
+   * promise the app makes when the whole window closes.
+   */
+  const closeWorkspaceTab = (workspaceId: string) => {
+    const target = workspaces.find((workspace) => workspace.id === workspaceId);
+    const result = closeWorkspace(workspaces, workspaceId, activeWorkspaceId);
+    if (result.workspaces === workspaces) return;
+    setRenamingWorkspace(false);
+    setWorkspaces(result.workspaces);
+    setActiveWorkspaceId(result.activeWorkspaceId);
+    // Nothing needs re-pointing: the selection and focus that named those
+    // sessions went with the view of the workspace that held them.
+    const count = result.releasedSessionIds.length;
+    setStatus(
+      count
+        ? `Closed workspace “${target?.name}” · ${count} session${count === 1 ? '' : 's'} still running`
+        : `Closed workspace “${target?.name}”`
+    );
+  };
+
+  const startRenameWorkspace = () => {
+    if (!activeWorkspace) return;
+    setRenameDraft(activeWorkspace.name);
+    setRenamingWorkspace(true);
+  };
+
+  /**
+   * Commit an inline rename, or abandon it.
+   *
+   * Called on blur as well as Enter, so an invalid or empty draft has to be
+   * refused rather than clamped — moving focus away must not be able to
+   * overwrite a good name with a half-typed one. renameWorkspace returns the
+   * list unchanged in that case.
+   */
+  const commitRenameWorkspace = () => {
+    setRenamingWorkspace(false);
+    if (!activeWorkspace) return;
+    const value = renameDraft.trim();
+    if (!isWorkspaceName(value) || value === activeWorkspace.name) return;
+    setWorkspaces((current) => renameWorkspace(current, activeWorkspace.id, value));
+    setStatus(`Workspace renamed to “${value}”`);
   };
 
   /**
@@ -1222,7 +1615,7 @@ function App() {
     columnRatio,
     rowRatio,
     sessionCount: workspaceSessions.length,
-    lastSplit: lastSplitLayout.current
+    lastSplit: view.lastSplit
   };
 
   const sidebarRef = useRef<HTMLElement>(null);
@@ -1233,8 +1626,10 @@ function App() {
   };
 
   const toggleMaximize = (sessionId: string) => {
-    setFocusedSessionId(sessionId);
-    setMaximizedSessionId((current) => current === sessionId ? null : sessionId);
+    patchView((current) => ({
+      focusedSessionId: sessionId,
+      maximizedSessionId: current.maximizedSessionId === sessionId ? null : sessionId
+    }));
   };
 
   /** Carry out what the layout rules decided a click should do. */
@@ -1540,16 +1935,17 @@ function App() {
   const closePane = async (session: SessionInfo) => {
     if (voice.sessionId === session.id) cancelVoice();
     const remaining = workspaceSessions.filter((item) => item.id !== session.id);
-    setWorkspaces((current) =>
-      current.map((workspace) => ({
-        ...workspace,
-        sessionIds: workspace.sessionIds.filter((id) => id !== session.id)
-      }))
-    );
-    if (active?.id === session.id) setActive(remaining[0] ?? null);
-    if (focusedSessionId === session.id) setFocusedSessionId(remaining[0]?.id);
-    if (maximizedSessionId === session.id) setMaximizedSessionId(null);
-    setLayout(layoutForSessionCount(remaining.length));
+    setWorkspaces((current) => {
+      // releaseSession has already cleared any view field that named the pane
+      // being closed, so the `??` here only fires for those — selection and
+      // focus land on a surviving terminal instead of on nothing.
+      const released = releaseSession(current, session.id);
+      return updateView(released, activeWorkspaceId, (current) => ({
+        activeSessionId: current.activeSessionId ?? remaining[0]?.id,
+        focusedSessionId: current.focusedSessionId ?? remaining[0]?.id,
+        layout: layoutForSessionCount(remaining.length)
+      }));
+    });
 
     const currentApi = api();
     if (currentApi) {
@@ -1578,24 +1974,37 @@ function App() {
           <span className="brand-name">ZeroG</span>
         </div>
         <div className="workspace-tabs">
-          {workspaces.map((workspace) => (
-            <button
-              key={workspace.id}
-              type="button"
-              className={`workspace-tab ${workspace.id === activeWorkspace?.id ? 'active' : ''}`}
-              onClick={() => {
-                setActiveWorkspaceId(workspace.id);
-                const first = sessions.find((session) => workspace.sessionIds.includes(session.id));
-                setActive(first ?? null);
-                // Do not leave focus pointing at a terminal in the workspace we just left.
-                setFocusedSessionId(first?.id);
-              }}
-            >
-              <span className="tab-dot" />
-              {workspace.name}
-              <span className="tab-meta">{workspace.sessionIds.length || (workspace.id === workspaces[0]?.id ? workspaceSessions.length : 0)}</span>
-            </button>
-          ))}
+          {workspaces.map((workspace, index) => {
+            // The last workspace cannot be closed: there would be nowhere for the
+            // panes, the sidebar header, or this strip to point.
+            const closable = workspaces.length > 1;
+            const dot = workspaceDotState(workspace, sessions);
+            return (
+              <span className={`workspace-tab-slot ${closable ? 'closable' : ''}`} key={workspace.id}>
+                <button
+                  type="button"
+                  className={`workspace-tab ${workspace.id === activeWorkspace?.id ? 'active' : ''}`}
+                  title={`Switch to ${workspace.name}${index < 9 ? ` (Ctrl+Shift+${index + 1})` : ''}`}
+                  onClick={() => switchWorkspace(workspace.id)}
+                >
+                  <span className={`status-dot ${dot === 'empty' ? '' : dot}`} />
+                  {workspace.name}
+                  <span className="tab-meta">{workspacePaneCount(workspace)}</span>
+                </button>
+                {closable && (
+                  <button
+                    type="button"
+                    className="workspace-tab-close"
+                    title={`Close ${workspace.name} · its terminals keep running`}
+                    aria-label={`Close workspace ${workspace.name}`}
+                    onClick={() => closeWorkspaceTab(workspace.id)}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            );
+          })}
         </div>
         <div className="window-actions">
           <button
@@ -1614,7 +2023,7 @@ function App() {
             title="New workspace (Ctrl+Shift+N)"
           >
             <Icon name="plus" />
-            <span>New</span>
+            <span>Workspace</span>
           </button>
           <button
             type="button"
@@ -1697,9 +2106,41 @@ function App() {
         {!drawerCollapsed && (
           <aside className="session-drawer" ref={sidebarRef} style={{ width: settings.sessions.sidebarWidth }}>
             <div className="drawer-head">
-              <div>
+              <div className="drawer-head-name">
                 <span className="eyebrow">WORKSPACE</span>
-                <h1>{activeWorkspace?.name ?? 'Sessions'}</h1>
+                {renamingWorkspace && activeWorkspace ? (
+                  <input
+                    className="workspace-rename"
+                    autoFocus
+                    aria-label="Workspace name"
+                    value={renameDraft}
+                    pattern={WORKSPACE_NAME_PATTERN}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onBlur={commitRenameWorkspace}
+                    onKeyDown={(event) => {
+                      // Kept off the window handler: Escape there hunts for an
+                      // overlay to close, and Enter has no business leaving a
+                      // field the user is still typing in.
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        commitRenameWorkspace();
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setRenamingWorkspace(false);
+                      }
+                    }}
+                  />
+                ) : (
+                  <h1
+                    onDoubleClick={startRenameWorkspace}
+                    title={activeWorkspace ? 'Double-click to rename this workspace' : undefined}
+                  >
+                    {activeWorkspace?.name ?? 'Sessions'}
+                  </h1>
+                )}
               </div>
               <div className="drawer-head-actions">
                 <button
@@ -1723,9 +2164,9 @@ function App() {
                 <button
                   type="button"
                   className="square-button"
-                  onClick={openNewLocalTerminal}
-                  title="New local terminal"
-                  aria-label="New local terminal"
+                  onClick={openNewWorkspace}
+                  title="New workspace (Ctrl+Shift+N)"
+                  aria-label="New workspace"
                 >
                   <Icon name="plus" />
                 </button>
@@ -1761,22 +2202,56 @@ function App() {
               ) : sessionsError ? (
                 <div className="session-empty session-error"><b>Session inventory unavailable</b><small>{sessionsError}</small><button type="button" onClick={() => void refresh()}>Retry</button></div>
               ) : sidebarTab === 'terminals' ? (
-                workspaceSessions.length ? workspaceSessions.map((session) => (
-                  <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
-                )) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
+                workspaceSessions.length || pendingPanes.length ? (
+                  <>
+                    {workspaceSessions.map((session) => (
+                      <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
+                    ))}
+                    {/* Panes this workspace remembers but has not reconnected.
+                        Ghosted like a discovered screen, because that is what
+                        they are to the user: something known to belong here that
+                        is not running in front of them yet. */}
+                    {pendingPanes.map((member) => (
+                      <PendingPaneRow key={member.sessionId} member={member} onClick={() => void restorePendingPane(member)} />
+                    ))}
+                  </>
+                ) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
               ) : sidebarTab === 'screens' ? (
                   renderScreensTab()
                 ) : sidebarTab === 'connections' ? (
                 knownConnections.length ? knownConnections.map((connection) => (
-                  <button type="button" className="session-row" key={connection.alias} onClick={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}>
-                    <span className="status-dot" />
-                    <span className="session-copy"><b>{connection.alias}</b><small>{connection.hostName ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}` : 'Saved SSH connection'}</small></span>
-                    <span className="session-state">→</span>
-                  </button>
+                  <ConnectionRow
+                    key={connection.alias}
+                    connection={connection}
+                    onConfigure={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}
+                    onConnect={() => connectKnownConnection(connection)}
+                  />
                 )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
               ) : (
                 sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').length ? sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').map((session) => (
-                  <SessionRow key={session.id} session={session} ghosted onClick={async () => { claimSession(session); setStatus(`Attaching remote screen ${session.name}…`); const currentApi = api(); if (!currentApi) return; try { const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name); const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host; const ssh = await currentApi.createSshSession({ target: destination, name: session.name }); setSessions((current) => current.map((item) => item.id === session.id ? ssh : item)); await attach(ssh); } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); } }} />
+                  <SessionRow
+                    key={session.id}
+                    session={session}
+                    ghosted
+                    onClick={async () => {
+                      setStatus(`Attaching remote screen ${session.name}…`);
+                      const currentApi = api();
+                      if (!currentApi) return;
+                      try {
+                        const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name);
+                        const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host;
+                        const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+                        setSessions((current) => current.map((item) => item.id === session.id ? ssh : item));
+                        // Claim the session that now exists, not the discovered
+                        // row it replaced: the two have different ids, and the
+                        // workspace would otherwise hold one that is gone.
+                        claimSession(ssh);
+                        await attach(ssh);
+                      } catch (error) {
+                        setStatus(error instanceof Error ? error.message : String(error));
+                      }
+                    }}
+                  />
                 )) : <div className="session-empty"><b>No remote screens</b><small>Remote screen sessions will appear here after discovery.</small></div>
               )}
             </div>
@@ -2047,76 +2522,14 @@ function App() {
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
             <button type="button" className="history-item" key={entry.id} onClick={async () => {
               setHistoryOpen(false);
-              const hasScreen = !!entry.session.screenName;
-              const isPlainSsh = entry.session.kind === 'ssh' && !hasScreen;
-              if (hasScreen || entry.session.backend === 'screen') {
-                setSidebarTab('screens');
-                const screenSource = entry.session.screenName || entry.session.name;
-                const remoteMatch = sessions.find((s) => s.kind === 'ssh' && s.screenName === screenSource);
-                const localMatch = sessions.find((s) => s.screenName === screenSource && s.kind === 'local');
-                if (remoteMatch) {
-                  claimSession(remoteMatch);
-                  await attach(remoteMatch);
-                  setStatus(`Reconnecting to ${remoteMatch.name}…`);
-                  return;
-                }
-                if (localMatch) {
-                  claimSession(localMatch);
-                  await attach(localMatch);
-                  setStatus(`Reconnecting to ${localMatch.name}…`);
-                  return;
-                }
-                const currentApi = api();
-                if (!currentApi) return;
-                const known = knownConnections.find((c) => (entry.session.host || '').includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(entry.session.host || ''));
-                if (known) {
-                  await attachRemoteScreen({ ...entry.session, screenName: screenSource, host: known.hostName || known.alias } as any, known);
-                  return;
-                }
-                if (entry.session.host) {
-                  const target = entry.session.host;
-                  const newSession = await currentApi.createSshSession({ target, name: entry.session.name });
-                  setSessions((current) => [...current, newSession]);
-                  claimSession(newSession);
-                  setFocusedSessionId(newSession.id);
-                  setMaximizedSessionId(null);
-                  setLayout(layoutForSessionCount(workspaceSessions.length + 1));
-                  await attach(newSession);
-                  const screenSource = entry.session.screenName || entry.session.name;
-                  currentApi.write(newSession.id, `screen -x ${screenSource}\r`);
-                  setStatus(`Connected to ${newSession.name}`);
-                }
-                return;
-              }
-              if (isPlainSsh) {
-                const target = entry.session.host || entry.session.sshTarget || '';
-                const defaultName = target.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 40);
-                setSshTarget(target);
-                setSshName(entry.session.name && entry.session.name !== defaultName ? entry.session.name : '');
-                const currentApi = api();
-                if (!currentApi) return;
-                const connection = knownConnections.find((c) => (target.includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(target)));
-                const fallbackName = entry.session.name || defaultName;
-                const ssh = await currentApi.createSshSession({ target, name: fallbackName });
-                setSessions((current) => [...current, ssh]);
-                claimSession(ssh);
-                await attach(ssh);
-                setStatus(`Connected to ${ssh.name}`);
-                if (currentApi.discoverRemoteScreens && connection) {
-                  try {
-                    const remote = await currentApi.discoverRemoteScreens(connection);
-                    if (remote.length) {
-                      const screen = remote.find((s) => s.status === 'detached') ?? remote[0];
-                      await attachRemoteScreen(screen, connection);
-                      return;
-                    }
-                  } catch {
-                    // keep the SSH session even if remote screen discovery fails.
-                  }
-                }
-                return;
-              }
-              setSidebarTab('terminals');
+              // Same planner the workspaces use, so a shell reconnected from
+              // here and one reconnected by a restored workspace end up in the
+              // same place. The tab switch is the one thing that is only
+              // meaningful from history: it says where to look for the result.
+              const action = planSessionRestore(entry.session, sessions, knownConnections);
+              setSidebarTab(entry.session.screenName || entry.session.backend === 'screen' ? 'screens' : 'terminals');
+              const session = await runRestoreAction(action);
+              if (session) setStatus(`Reconnected ${session.name}`);
             }}>
               <span className="history-main">
                 <span className="history-kind">{entry.event.toUpperCase()}</span>
@@ -2186,7 +2599,7 @@ function App() {
                     autoFocus
                     value={workspaceName}
                     onChange={(event) => setWorkspaceName(event.target.value)}
-                    pattern="[A-Za-z0-9](?:[A-Za-z0-9_.]|-| ){0,48}"
+                    pattern={WORKSPACE_NAME_PATTERN}
                     required
                   />
                 </label>
@@ -2373,13 +2786,6 @@ function terminalTheme(theme: Theme) {
       };
 }
 
-function nextWorkspaceName(workspaces: Workspace[]): string {
-  let index = workspaces.length + 1;
-  const names = new Set(workspaces.map((item) => item.name.toLowerCase()));
-  while (names.has(`workspace ${index}`)) index += 1;
-  return `Workspace ${index}`;
-}
-
 function nextTerminalName(workspaceName: string, sessions: SessionInfo[]): string {
   const base = workspaceName
     .toLowerCase()
@@ -2391,12 +2797,6 @@ function nextTerminalName(workspaceName: string, sessions: SessionInfo[]): strin
   let index = 2;
   while (names.has(`${base}-${index}`)) index += 1;
   return `${base}-${index}`;
-}
-
-function layoutForSessionCount(count: number): Layout {
-  if (count <= 1) return 'stack';
-  if (count === 2) return 'split-v';
-  return 'grid';
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

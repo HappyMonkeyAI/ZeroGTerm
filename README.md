@@ -13,12 +13,12 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Maximize a focused pane and cycle between sessions without losing the other panes.
 - Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable.
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
-- SSH configuration discovery from known connections, including remote `screen` session discovery.
+- SSH configuration discovery from known connections, including remote `screen` session discovery. In the sidebar's Connections tab, clicking a saved connection opens the connect dialog with the host filled in, and double-clicking it skips the dialog and opens the host in a new pane.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
 - Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
-- Workspaces for grouping sessions and quickly switching between projects or tasks.
+- Workspaces for grouping sessions and quickly switching between projects or tasks. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
 - Voice input, either with Whisper ONNX inside the app through Transformers.js or through an OpenAI-compatible transcription server you point it at — on this machine, on the LAN, or hosted; transcribed text is typed into the selected terminal without automatic execution.
@@ -44,6 +44,7 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+V` — paste into the active terminal
 - `Ctrl+C` remains the interrupt signal (not copy)
 - `Ctrl+Shift+N` — new workspace
+- `Ctrl+Shift+1` … `Ctrl+Shift+9` — switch to a workspace by position
 - `Ctrl+Shift+T` — new local terminal in the current workspace
 - `Ctrl+Shift+O` — session overview
 - `Ctrl+Shift+B` — toggle sessions sidebar

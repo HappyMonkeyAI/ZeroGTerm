@@ -147,10 +147,59 @@ export interface SpeechApiKeyStatus {
   encryptionAvailable: boolean;
 }
 
+/**
+ * A session a workspace held, described well enough to find it again.
+ *
+ * The id alone is not enough. A local `screen` session's id is derived from its
+ * name and comes back identical after a relaunch, but an SSH session's is a
+ * fresh uuid each launch, so the durable keys travel alongside it. Never
+ * carries cwd, command arguments, or credentials.
+ */
+export interface StoredWorkspaceMember {
+  sessionId: string;
+  kind: SessionKind;
+  name: string;
+  host?: string;
+  screenName?: string;
+  sshTarget?: string;
+  backend?: string;
+}
+
+/** How a workspace was arranged, as stored. Validated on load, so loosely typed. */
+export interface StoredWorkspaceView {
+  layout: string;
+  lastSplit: string;
+  activeSessionId?: string;
+  focusedSessionId?: string;
+  maximizedSessionId?: string | null;
+}
+
+export interface StoredWorkspace {
+  id: string;
+  name: string;
+  view: StoredWorkspaceView;
+  members: StoredWorkspaceMember[];
+}
+
+export interface StoredWorkspaceFile {
+  version: number;
+  activeWorkspaceId?: string;
+  workspaces: StoredWorkspace[];
+}
+
 export interface TerminalApi {
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
   removeHistory(entryId: string): Promise<boolean>;
+  /**
+   * The stored workspace layout, and a way to replace it.
+   *
+   * Held in the main process rather than localStorage because it is durable
+   * session metadata, validated on both sides of the boundary; `saveWorkspaces`
+   * rejects a file it cannot make sense of and returns what it actually stored.
+   */
+  loadWorkspaces(): Promise<StoredWorkspaceFile>;
+  saveWorkspaces(file: StoredWorkspaceFile): Promise<StoredWorkspaceFile>;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;
   createLocalSession(request: CreateLocalRequest): Promise<SessionInfo>;
