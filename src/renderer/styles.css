@@ -672,6 +672,14 @@ input:focus-visible {
   display: none;
 }
 
+/* Panes belonging to a workspace that is not on screen. They stay in the DOM so
+   their terminals keep their scrollback — re-attaching would hand them the live
+   pty, not a replay of what it has already printed — and `display: none` takes
+   them out of the grid's flow so they occupy no slots. */
+.pane.dormant-pane {
+  display: none;
+}
+
 .pane {
   min-width: 0;
   min-height: 0;

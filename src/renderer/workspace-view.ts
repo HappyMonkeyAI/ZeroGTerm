@@ -51,6 +51,55 @@ export function workspacePaneCount(workspace: Workspace): number {
   return workspace.sessionIds.length + workspace.pending.length;
 }
 
+/** How many panes one workspace can show at once. */
+export const MAX_PANES = 4;
+
+export type PaneEntry = {
+  session: SessionInfo;
+  workspaceId: string;
+  /** Slot within its own workspace, which the layout counts visibility against. */
+  index: number;
+  /** Its workspace is not on screen: mounted and live, but not laid out. */
+  dormant: boolean;
+};
+
+/**
+ * Every pane of every workspace, in the order they should be rendered.
+ *
+ * All of them, not just the active workspace's, because a pane that stops being
+ * rendered is a pane whose terminal is disposed — and re-attaching does not
+ * bring its content back, since the main process hands a returning pane the live
+ * pty rather than a replay of what it has already printed. Keeping them all in
+ * one keyed list lets switching workspaces restyle panes instead of remounting
+ * them.
+ *
+ * Ordered by workspace, then by claim order — the order panes were added, which
+ * is stable, unlike the session list's order, which is whatever the main
+ * process last reported. Sessions are resolved and capped before an index is
+ * handed out so the indices of one workspace are always contiguous from zero:
+ * a gap left by a session that has gone would push a later pane past the pane
+ * count and hide one that should be on screen.
+ */
+export function paneEntries(
+  workspaces: Workspace[],
+  sessions: SessionInfo[],
+  activeWorkspaceId: string
+): PaneEntry[] {
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  return workspaces.flatMap((workspace) =>
+    workspace.sessionIds
+      .map((id) => byId.get(id))
+      .filter((session): session is SessionInfo => session !== undefined)
+      .slice(0, MAX_PANES)
+      .map((session, index) => ({
+        session,
+        workspaceId: workspace.id,
+        index,
+        dormant: workspace.id !== activeWorkspaceId
+      }))
+  );
+}
+
 export function makeView(layout: Layout): WorkspaceView {
   return {
     layout,
