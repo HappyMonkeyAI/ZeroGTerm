@@ -187,6 +187,64 @@ export interface StoredWorkspaceFile {
   workspaces: StoredWorkspace[];
 }
 
+/**
+ * Which way a tunnel runs.
+ *
+ * `local` makes a port on the remote reachable here — the common case, and what
+ * a remote dev server needs. `remote` makes a port on this machine reachable
+ * from the remote, for a webhook or an agent calling back.
+ */
+export type ForwardDirection = 'local' | 'remote';
+
+/**
+ * How widely the listening port is exposed.
+ *
+ * `loopback` is the default everywhere: the port answers only on the machine
+ * doing the listening. `all` re-exports someone else's service onto whatever
+ * network that machine is attached to, so it is never implied — only chosen.
+ */
+export type ForwardBind = 'loopback' | 'all';
+
+export type ForwardStatus = 'idle' | 'connecting' | 'open' | 'error';
+
+/**
+ * A tunnel to open.
+ *
+ * Deliberately symmetric: `listenPort`/`bind` describe the side that listens and
+ * `destinationHost`/`destinationPort` the side that receives, whichever machine
+ * each of those is. `direction` is the only thing that says which is which.
+ */
+export interface PortForwardRequest {
+  target: string;
+  direction: ForwardDirection;
+  listenPort: number;
+  destinationPort: number;
+  /** Resolved on the receiving side. Defaults to localhost there. */
+  destinationHost?: string;
+  bind: ForwardBind;
+  /** Reuses an id when reconnecting a remembered forward. */
+  id?: string;
+}
+
+export interface PortForwardInfo extends PortForwardRequest {
+  id: string;
+  status: ForwardStatus;
+  /** Why it is not open, when it is not. */
+  message?: string;
+}
+
+export type PortForwardEvent =
+  | { type: 'status'; forward: PortForwardInfo }
+  // The same three questions an SSH client can ask, so the renderer answers a
+  // tunnel's password prompt with the control it already has for a transfer's.
+  | { type: 'prompt'; forwardId: string; prompt: Pick<SftpPrompt, 'kind' | 'text'> }
+  | { type: 'closed'; forwardId: string; message: string };
+
+export interface StoredPortForwardFile {
+  version: number;
+  forwards: Array<Omit<PortForwardInfo, 'status' | 'message'>>;
+}
+
 export interface TerminalApi {
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
