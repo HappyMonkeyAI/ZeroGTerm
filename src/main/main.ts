@@ -5,6 +5,7 @@ import { writeClipboardText } from './clipboard.js';
 import { ScreenService, parseWslDistributions, type PtySize } from './session-service.js';
 import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
+import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
@@ -14,6 +15,7 @@ import type { FileEntry, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
+const workspaceStore = new WorkspaceStore({ filePath: defaultWorkspacePath(app.getPath('userData')) });
 const service = new ScreenService({ onEvent: (event, session, available) => { void history.record(event, session, available); } });
 let win: BrowserWindow | undefined;
 // Transfer connections outlive any single panel opening, so the panel can be
@@ -141,6 +143,9 @@ ipcMain.handle('links:openExternal', (_event, url: unknown) => {
 ipcMain.handle('sessions:list', () => service.list());
 ipcMain.handle('sessions:history', () => history.list());
 ipcMain.handle('sessions:historyRemove', (_event, entryId: string) => history.remove(entryId));
+
+ipcMain.handle('workspaces:load', () => workspaceStore.load());
+ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
 
 ipcMain.handle('sessions:backends', () => discoverShellBackends());
 ipcMain.handle('sessions:wslDistributions', async () => {

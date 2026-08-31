@@ -172,7 +172,14 @@ Voice control uses an adapter interface. Talon, local speech recognition, or ano
 4. Which AI agent protocols/adapters are required first?
 5. What Talon functionality is available and practical on this Fedora setup?
 6. Should remote sessions use `screen` directly, or support tmux as a later backend?
-7. What persistence store should hold workspace metadata: JSON first or SQLite from the beginning?
+7. ~~What persistence store should hold workspace metadata: JSON first or SQLite from the beginning?~~
+   Answered: JSON in the main process, one file per concern, written to a
+   temporary file and atomically renamed. `session-history.json` holds the
+   session lifecycle and `workspaces.json` holds workspace membership and
+   layout (`src/main/workspace-store.ts`). Both validate on load, treat the
+   file as user-editable, and swallow every failure so persistence can never
+   stop a terminal from working. SQLite stays open for later, if the volume
+   or the query shape ever justifies it.
 
 ## Definition of a credible first milestone
 

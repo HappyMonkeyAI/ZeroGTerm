@@ -98,7 +98,67 @@ input:focus-visible {
   color: #d8dee9;
 }
 
-.tab-dot,
+/* The tab's close button sits over the pill's right edge rather than inside it:
+   a button nested in a button is invalid, and keeping the pill a single control
+   leaves every .workspace-tab rule, light theme included, working as it is. */
+.workspace-tab-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.workspace-tab-slot.closable .workspace-tab {
+  padding-right: 26px;
+}
+
+.workspace-tab-close {
+  position: absolute;
+  right: 5px;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #697386;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+}
+
+/* Revealed on hover so the strip stays quiet, but never hidden from the
+   keyboard: an action reachable only by pointer is not reachable. */
+.workspace-tab-slot:hover .workspace-tab-close,
+.workspace-tab-close:focus-visible {
+  opacity: 1;
+}
+
+.workspace-tab-close:hover {
+  background: #303b4b;
+  color: #d8dee9;
+}
+
+.workspace-rename {
+  margin: 3px 0 0;
+  width: 100%;
+  min-width: 0;
+  padding: 1px 5px;
+  border: 1px solid #303b4b;
+  border-radius: 4px;
+  background: #0d1117;
+  color: #d8dee9;
+  font: 600 16px inherit;
+  letter-spacing: -.01em;
+}
+
+.drawer-head-name {
+  min-width: 0;
+  flex: 1;
+}
+
 .connection-dot,
 .pane-live {
   width: 6px;
@@ -1346,9 +1406,23 @@ input:focus-visible {
 
 :root[data-theme='light'] .thumbnail-preview,
 :root[data-theme='light'] .approval-card code,
+:root[data-theme='light'] .workspace-rename,
 :root[data-theme='light'] .modal-card input {
   background: #f7f9fc;
   border-color: #dbe2ec;
+}
+
+:root[data-theme='light'] .workspace-rename {
+  color: #253044;
+}
+
+:root[data-theme='light'] .workspace-tab-close {
+  color: #5c687b;
+}
+
+:root[data-theme='light'] .workspace-tab-close:hover {
+  background: #c7d5e8;
+  color: #253044;
 }
 
 :root[data-theme='light'] .modal-layer,
