@@ -5,16 +5,21 @@ import { writeClipboardText } from './clipboard.js';
 import { ScreenService, parseWslDistributions, type PtySize } from './session-service.js';
 import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
+import { CommandHistoryStore, defaultCommandHistoryPath } from './command-history-store.js';
 import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
 import { SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
-import type { FileEntry, SpeechApiKeyStatus } from '../shared/types.js';
+import type { CommandRecord, FileEntry, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
+// The only store holding what the user typed. Nothing reaches it that has not
+// been through command-redaction in the renderer, and it holds nothing at all
+// until the setting is turned on.
+const commands = new CommandHistoryStore({ filePath: defaultCommandHistoryPath(app.getPath('userData')) });
 const workspaceStore = new WorkspaceStore({ filePath: defaultWorkspacePath(app.getPath('userData')) });
 const service = new ScreenService({ onEvent: (event, session, available) => { void history.record(event, session, available); } });
 let win: BrowserWindow | undefined;
@@ -144,6 +149,11 @@ ipcMain.handle('sessions:list', () => service.list());
 ipcMain.handle('sessions:history', () => history.list());
 ipcMain.handle('sessions:historyRemove', (_event, entryId: string) => history.remove(entryId));
 
+ipcMain.handle('commands:list', () => commands.list());
+ipcMain.handle('commands:record', (_event, record: unknown) => commands.record(requireCommandRecord(record)));
+ipcMain.handle('commands:pick', (_event, id: unknown) => commands.pick(requireString(id, 'A command')));
+ipcMain.handle('commands:clear', () => commands.clear());
+
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
 
@@ -234,6 +244,25 @@ ipcMain.handle('clipboard:readText', () => clipboard.readText());
 function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value) throw new Error(`${field} is required.`);
   return value;
+}
+
+/**
+ * A captured command, shaped.
+ *
+ * Only the shape is checked here. Whether the text is safe to store was decided
+ * in the renderer by command-redaction, next to the capture that produced it —
+ * that is where the rules and their tests live.
+ */
+function requireCommandRecord(value: unknown): CommandRecord {
+  if (!isRecord(value)) throw new Error('A command is required.');
+  const text = (field: unknown): string | undefined => (typeof field === 'string' && field ? field : undefined);
+  return {
+    command: requireString(value.command, 'A command'),
+    ...(text(value.cwd) ? { cwd: String(value.cwd) } : {}),
+    ...(text(value.host) ? { host: String(value.host) } : {}),
+    ...(value.kind === 'ssh' || value.kind === 'local' ? { kind: value.kind } : {}),
+    ...(typeof value.exitCode === 'number' ? { exitCode: value.exitCode } : {})
+  };
 }
 
 function requireEntryKind(value: unknown): FileEntry['kind'] {
