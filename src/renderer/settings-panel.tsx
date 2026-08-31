@@ -85,6 +85,15 @@ export type SettingsPanelProps = {
   commandHistory: CommandHistoryState;
   onCopySnippet: (snippet: string) => void;
   onClearCommandHistory: () => void;
+  /** The AI endpoint key, in the same shape as the speech one. */
+  aiKey: SpeechKeyState;
+  onAiKeySave: (key: string) => void;
+  onAiKeyClear: () => void;
+  /** Models the endpoint reports, so a name does not have to be remembered. */
+  aiModels: string[];
+  onAiModelsRefresh: () => void;
+  aiTest: AiTestState;
+  onAiTest: () => void;
 };
 
 /**
@@ -97,6 +106,13 @@ export type CommandHistoryState = {
   entries: number;
   panesReporting: number;
   panesOpen: number;
+};
+
+/** What the panel reports about a run of the endpoint test. */
+export type AiTestState = {
+  status: 'idle' | 'testing';
+  ok?: boolean | null;
+  message?: string | null;
 };
 
 const PAGES: Array<{ id: SettingsPage; label: string; hint: string; blurb: string }> = [
@@ -123,6 +139,20 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
  * Any http(s) host is allowed, so the hint carries the part the user cannot see
  * from the URL alone: whether the recording is about to leave this machine.
  */
+/**
+ * What to say beside the AI endpoint field.
+ *
+ * The shape is worth stating because one field serves every provider: naming
+ * chat/completions is what tells someone the base URL should end at /v1 rather
+ * than at the full path.
+ */
+function aiEndpointHint(url: string): string {
+  const shape = 'OpenAI-compatible: POST to {base}/chat/completions. Ollama, LM Studio, llama.cpp, vLLM and OpenRouter all serve this.';
+  if (!isSupportedEndpoint(url)) return `Any http:// or https:// address ending in /v1. ${shape}`;
+  if (isLoopbackEndpoint(url)) return `On this machine, so nothing leaves it. ${shape}`;
+  return `Off this machine. ${shape}`;
+}
+
 function speechServerUrlHint(url: string): string {
   const shape = 'OpenAI-compatible: POST multipart audio to /v1/audio/transcriptions.';
   if (!isSupportedEndpoint(url)) return `Any http:// or https:// address. ${shape}`;
@@ -139,11 +169,13 @@ function speechServerUrlHint(url: string): string {
  * stored.
  */
 function ServerApiKeyField({
+  label = 'Server API key',
   state,
   url,
   onSave,
   onClear
 }: {
+  label?: string;
   state: SpeechKeyState;
   url: string;
   onSave: (key: string) => void;
@@ -160,7 +192,7 @@ function ServerApiKeyField({
       : 'Sent as a Bearer token. Stored encrypted by this system, never in the settings file.';
 
   return (
-    <Field label="Server API key" hint={hint}>
+    <Field label={label} hint={hint}>
       <div className="settings-key-row">
         <input
           type="password"
@@ -267,6 +299,28 @@ function CommandHistorySection({
         </>
       ) : null}
     </>
+  )
+
+}
+
+/**
+ * Ask the endpoint for one token and report what came back.
+ *
+ * A real completion rather than a reachability check: a server can accept a
+ * connection and still refuse to run the model that is configured, and that is
+ * the failure worth finding here rather than mid-task.
+ */
+function AiTest({ state, onRun }: { state: AiTestState; onRun: () => void }) {
+  const testing = state.status === 'testing';
+  return (
+    <div className="settings-test">
+      <button type="button" className="primary-button" disabled={testing} onClick={onRun}>
+        {testing ? 'Testing…' : 'Test connection'}
+      </button>
+      {state.message ? (
+        <small className={state.ok ? 'settings-key-notice' : 'settings-key-error'}>{state.message}</small>
+      ) : null}
+    </div>
   );
 }
 
@@ -335,16 +389,25 @@ function Toggle({
   label,
   hint,
   checked,
+  disabled = false,
   onChange
 }: {
   label: string;
   hint?: string;
   checked: boolean;
+  /** Shown as fixed rather than hidden, so the hint can say why. */
+  disabled?: boolean;
+  checkedHint?: string;
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="settings-toggle">
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <label className={`settings-toggle ${disabled ? 'settings-toggle-fixed' : ''}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
       <span>
         <b>{label}</b>
         {hint ? <small>{hint}</small> : null}
@@ -441,7 +504,14 @@ export function SettingsPanel({
   onSpeechKeyClear,
   commandHistory,
   onCopySnippet,
-  onClearCommandHistory
+  onClearCommandHistory,
+  aiKey,
+  onAiKeySave,
+  onAiKeyClear,
+  aiModels,
+  onAiModelsRefresh,
+  aiTest,
+  onAiTest
 }: SettingsPanelProps) {
   const [page, setPage] = useState<SettingsPage>('appearance');
   const active = PAGES.find((entry) => entry.id === page) ?? PAGES[0];
@@ -622,10 +692,78 @@ export function SettingsPanel({
 
             {page === 'ai' && (
               <>
+                <Field
+                  label="Endpoint"
+                  hint={aiEndpointHint(settings.ai.baseUrl)}
+                >
+                  <input
+                    value={settings.ai.baseUrl}
+                    placeholder={DEFAULT_SETTINGS.ai.baseUrl}
+                    spellCheck={false}
+                    onChange={(event) => onChange('ai', { baseUrl: event.target.value })}
+                  />
+                </Field>
+                <Field
+                  label="Model"
+                  hint="Any model the endpoint serves. Refresh lists what it reports having."
+                >
+                  <div className="settings-key-row">
+                    <input
+                      value={settings.ai.model}
+                      list="ai-models"
+                      placeholder="qwen2.5-coder"
+                      spellCheck={false}
+                      onChange={(event) => onChange('ai', { model: event.target.value })}
+                    />
+                    <datalist id="ai-models">
+                      {aiModels.map((model) => <option key={model} value={model} />)}
+                    </datalist>
+                    <button type="button" onClick={onAiModelsRefresh}>Refresh</button>
+                  </div>
+                </Field>
+                <ServerApiKeyField
+                  label="Endpoint API key"
+                  state={aiKey}
+                  url={settings.ai.baseUrl}
+                  onSave={onAiKeySave}
+                  onClear={onAiKeyClear}
+                />
+                <AiTest state={aiTest} onRun={onAiTest} />
+
+                <Toggle
+                  label="Send recent terminal output"
+                  hint={
+                    settings.ai.includeOutput
+                      ? isLoopbackEndpoint(settings.ai.baseUrl)
+                        ? 'Sent to an endpoint on this machine, so the output does not leave it. Suggestions can read the error you are looking at.'
+                        : 'The output of the focused pane is sent to this endpoint, which is not on this machine. Anything on screen goes with it.'
+                      : 'Off, so only the shell, directory and host are sent. Suggestions cannot see the error you are looking at.'
+                  }
+                  checked={settings.ai.includeOutput}
+                  onChange={(includeOutput) => onChange('ai', { includeOutput })}
+                />
+                {settings.ai.includeOutput ? (
+                  <RangeField
+                    label="How much output"
+                    hint="The tail of the pane, on whole lines. Enough for a stack trace is usually enough."
+                    value={settings.ai.outputChars}
+                    min={SETTING_LIMITS.outputChars.min}
+                    max={SETTING_LIMITS.outputChars.max}
+                    step={200}
+                    format={(value) => `${value} characters`}
+                    onChange={(outputChars) => onChange('ai', { outputChars })}
+                  />
+                ) : null}
+
                 <Toggle
                   label="Ask before running an AI suggestion"
-                  hint="Off means a suggested command is sent to the terminal as soon as it arrives."
-                  checked={settings.ai.requireApproval}
+                  hint={
+                    settings.ai.includeOutput
+                      ? 'Always on while terminal output is being sent: output can come from a remote host, and a command chosen from it must not run unseen.'
+                      : 'Off means a suggested command is sent to the terminal as soon as it arrives.'
+                  }
+                  checked={settings.ai.includeOutput || settings.ai.requireApproval}
+                  disabled={settings.ai.includeOutput}
                   onChange={(requireApproval) => onChange('ai', { requireApproval })}
                 />
                 <SelectField<VoiceInsert>

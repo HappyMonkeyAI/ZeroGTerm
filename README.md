@@ -16,6 +16,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - SSH configuration discovery from known connections, including remote `screen` session discovery. In the sidebar's Connections tab, clicking a saved connection opens the connect dialog with the host filled in, and double-clicking it skips the dialog and opens the host in a new pane.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
 - Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
+- Shared ports over SSH, in a Ports view opened from the rail: forward a port on a remote host so it answers on this machine, or a port here so it answers on the remote. Each tunnel is its own SSH connection, so a host needs no terminal open first. Ports bind to loopback unless you widen them, and are remembered between launches.
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
 - A ranked command palette on `Ctrl+Shift+R`, in the spirit of [McFly](https://github.com/cantino/mcfly): commands you have run, ranked by directory, host, recency, frequency, whether they worked, and whether you picked them before. Off by default — it is the one feature that stores what you typed — and it refuses anything that looks like it carries a credential.
@@ -25,7 +26,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Voice input, either with Whisper ONNX inside the app through Transformers.js or through an OpenAI-compatible transcription server you point it at — on this machine, on the LAN, or hosted; transcribed text is typed into the selected terminal without automatic execution.
 - A per-pane proceed button that sends a configurable phrase — `OK, proceed` by default — for waving an agent on without typing the same reply again.
 - A settings panel for appearance, terminal behaviour, session defaults, and speech recognition, including a built-in recognition test.
-- AI command suggestion and approval UI, keeping command execution explicit.
+- AI command suggestions from any OpenAI-compatible endpoint — Ollama, LM Studio, llama.cpp, vLLM, OpenRouter, or OpenAI itself — configured with a base URL, a model and an optional key in Settings. Ask what you want, get one command with an explanation, and approve it before it runs.
 - Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
 - Safe argument-array handling and validation around SSH and `screen` session operations.
 
@@ -131,6 +132,65 @@ The dividers take keyboard focus as well: the arrow keys nudge one two percent a
 a time, and Enter or a double-click puts it back in the middle. One divider
 position is shared by every layout, so a split you set up in the vertical split
 is the same split you get in the four-pane grid.
+
+## Sharing ports over SSH
+
+The Ports button in the rail opens a list of shared ports, grouped by the host
+each one runs through. "Share port" asks for a host and a port, and the port is
+then reachable as though the service were running here.
+
+Two directions are available under "More options". The default sends a port on
+the remote to this machine, which is what a remote dev server, database, or
+debugger needs. The other sends a port here to the remote, for a webhook or an
+agent on that host calling back. A row always names the side that listens first,
+so which way a tunnel runs is never left to be inferred.
+
+A shared port answers only on the machine that binds it, unless you tick "Share
+on my network" — which re-exports the service to whatever network that machine is
+attached to, and is marked `LAN` on the row so it cannot be forgotten about. A
+port sent to the remote is bound on loopback there by default; widening it also
+needs `GatewayPorts` enabled in that host's `sshd_config`, and the row says so
+when the server refuses.
+
+Each tunnel is a separate `ssh` process, which is what makes closing one exact:
+the cross stops that tunnel and nothing else. It also means a host that
+authenticates with a password asks once per tunnel, in the panel, and nothing
+typed there is stored. Hosts using a key or an agent are not asked at all.
+
+Shared ports are remembered between launches and come back listed but not
+connected. Clicking one reconnects it — the app never opens a connection to a
+host on its own at startup.
+
+## AI command suggestions
+
+Set an endpoint in Settings under "AI & voice": a base URL ending in `/v1`, a
+model, and a key if the endpoint wants one. One field serves every provider,
+because `chat/completions` is the request shape they all implement — a local
+Ollama at `http://127.0.0.1:11434/v1` needs no key at all. "Test connection"
+asks the model for a token and reports what came back, and "Refresh" lists the
+models the endpoint says it has. A key is stored encrypted by the operating
+system, never in the settings file, and is only ever read in the main process:
+it is not held in the window.
+
+Suggest asks what you want, then returns a single command with an explanation.
+Only one command, ever — a reply naming several, or answering in prose rather
+than the structure asked for, produces no command to run and says so. The
+command is written to the pane you asked from, not to whichever pane is focused
+when the answer arrives.
+
+By default the model is told only your shell, directory and host. Turning on
+"Send recent terminal output" also sends the tail of the focused pane, which is
+what lets a suggestion read the error you are actually looking at — and means
+terminal content goes to whatever endpoint you configured. The panel says which
+of those is happening.
+
+While output is being sent, approval cannot be turned off. Terminal output can
+come from a remote host, and a host can print text shaped like an instruction;
+a command chosen downstream of that must be read before it runs. The output is
+sent as clearly delimited data with the delimiter stripped out of it, and the
+answer is only believed if it arrives in the exact structure requested — but
+neither of those is trusted to hold on its own, which is why the approval step
+is not optional in that configuration.
 
 ## Transferring files over SFTP
 

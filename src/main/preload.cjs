@@ -8,6 +8,17 @@ const api = {
   recordCommand: (record) => ipcRenderer.invoke('commands:record', record),
   pickCommand: (id) => ipcRenderer.invoke('commands:pick', id),
   clearCommandHistory: () => ipcRenderer.invoke('commands:clear'),
+  listForwards: () => ipcRenderer.invoke('forwards:list'),
+  openForward: (request) => ipcRenderer.invoke('forwards:open', request),
+  closeForward: (id) => ipcRenderer.invoke('forwards:close', id),
+  answerForwardPrompt: (id, answer) => ipcRenderer.invoke('forwards:answerPrompt', id, answer),
+  loadForwards: () => ipcRenderer.invoke('forwards:load'),
+  saveForwards: (file) => ipcRenderer.invoke('forwards:save', file),
+  onForwardEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('forwards:event', listener);
+    return () => ipcRenderer.removeListener('forwards:event', listener);
+  },
   loadWorkspaces: () => ipcRenderer.invoke('workspaces:load'),
   saveWorkspaces: (file) => ipcRenderer.invoke('workspaces:save', file),
   listBackends: () => ipcRenderer.invoke('sessions:backends'),
@@ -33,7 +44,13 @@ const api = {
     ipcRenderer.on('terminal:status', listener);
     return () => ipcRenderer.removeListener('terminal:status', listener);
   },
-  requestAiCommand: () => ipcRenderer.invoke('ai:suggest'),
+  requestAiCommand: (config, request) => ipcRenderer.invoke('ai:suggest', config, request),
+  listAiModels: (baseUrl) => ipcRenderer.invoke('ai:models', baseUrl),
+  testAiEndpoint: (config) => ipcRenderer.invoke('ai:test', config),
+  cancelAiRequest: () => ipcRenderer.invoke('ai:cancel'),
+  aiApiKeyStatus: () => ipcRenderer.invoke('aiKey:status'),
+  saveAiApiKey: (key) => ipcRenderer.invoke('aiKey:save', key),
+  clearAiApiKey: () => ipcRenderer.invoke('aiKey:clear'),
   listLocalDirectory: (path) => ipcRenderer.invoke('fs:listLocal', path),
   localHome: () => ipcRenderer.invoke('fs:localHome'),
   createLocalDirectory: (path) => ipcRenderer.invoke('fs:mkdirLocal', path),

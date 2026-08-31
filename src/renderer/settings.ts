@@ -86,7 +86,13 @@ export type SessionSettings = {
 };
 
 export type AiSettings = {
-  /** Show the approval dialog before an AI suggestion reaches a terminal. */
+  /**
+   * Show the approval dialog before an AI suggestion reaches a terminal.
+   *
+   * Ignored, and shown as ignored, whenever terminal output was part of the
+   * prompt: that is the combination where a remote host's output could pick a
+   * command and have it run unseen. See canAutoRun in ai-suggest.ts.
+   */
   requireApproval: boolean;
   voiceInsert: VoiceInsert;
   /**
@@ -103,6 +109,24 @@ export type AiSettings = {
    * marks, and nothing at all that command-redaction refuses.
    */
   recordCommands: boolean;
+   /**
+   * An OpenAI-compatible base URL, ending in the version segment.
+   *
+   * One field serves OpenAI, Ollama, LM Studio, llama.cpp, vLLM and OpenRouter,
+   * because chat/completions is the one request shape they all implement.
+   */
+  baseUrl: string;
+  model: string;
+  /**
+   * Send a bounded tail of the focused pane with the request.
+   *
+   * Off by default. On, the model can read the error actually being asked
+   * about — and terminal content leaves the machine for whatever endpoint is
+   * configured, which is why the panel says so and auto-run stops applying.
+   */
+  includeOutput: boolean;
+  /** How much of that output, in characters. */
+  outputChars: number;
 };
 
 export type SpeechSettings = {
@@ -161,7 +185,13 @@ export const DEFAULT_SETTINGS: Settings = {
     requireApproval: true,
     voiceInsert: 'type',
     proceedPhrase: 'OK, proceed',
-    recordCommands: false
+    recordCommands: false,
+    // Ollama's default, because a local model is the case with no key to set up
+    // and nothing leaving the machine.
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    model: '',
+    includeOutput: false,
+    outputChars: 2000
   },
   speech: {
     engine: 'builtin',
@@ -188,6 +218,9 @@ export const SETTING_LIMITS = {
   letterSpacing: { min: -2, max: 4 },
   scrollback: { min: 200, max: 200000 },
   maxUtteranceSeconds: { min: 5, max: 120 },
+  // Enough for a stack trace, capped well below a context window. ai-protocol
+  // enforces its own hard ceiling regardless of what is stored here.
+  outputChars: { min: 200, max: 8000 },
   silenceThreshold: { min: 0.0005, max: 0.05 },
   // Wide enough for a session name and a path, narrow enough to leave a usable
   // terminal beside it. The drawer also carries a max-width in vw, so a small
@@ -344,7 +377,11 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
       voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert),
       proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase),
-      recordCommands: pickBoolean(ai.recordCommands, DEFAULT_SETTINGS.ai.recordCommands)
+      recordCommands: pickBoolean(ai.recordCommands, DEFAULT_SETTINGS.ai.recordCommands),
+      baseUrl: pickString(ai.baseUrl, DEFAULT_SETTINGS.ai.baseUrl, 512),
+      model: pickString(ai.model, DEFAULT_SETTINGS.ai.model, 200),
+      includeOutput: pickBoolean(ai.includeOutput, DEFAULT_SETTINGS.ai.includeOutput),
+      outputChars: Math.round(pickNumber(ai.outputChars, SETTING_LIMITS.outputChars, DEFAULT_SETTINGS.ai.outputChars))
     },
     speech: {
       engine,

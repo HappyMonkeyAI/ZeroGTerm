@@ -165,6 +165,8 @@ The terminal is the highest-priority surface. Do not place persistent AI chrome 
 
 Keep the model explicit: workspace/project → window/tab → pane. Each pane has a stable ID, connection metadata, title, working directory, geometry, focus state, and activity state. Renderer layout state is separate from PTY/session state so resizing or rearranging a pane does not recreate its terminal process.
 
+A shared port sits outside that hierarchy, attached to a host rather than to a workspace or a pane. A bound port is a fact about the machine, not about the view: scoping one to a workspace would let two workspaces each believe they owned `localhost:3000`. Forwards are therefore listed in their own sidebar view, grouped by host, and survive switching or closing the workspace whose terminals prompted them.
+
 ### Pane layouts and groups
 
 Provide opinionated presets—stack, main-left, main-top, even-horizontal, even-vertical, and tiled—plus recursive horizontal/vertical splits. Pane focus, maximize/restore, equalize, rotate, swap, and directional resize must be keyboard-accessible. Broadcast/synchronized input is scoped to an explicit pane group, visibly active, and confirmed before destructive or multi-host commands.
