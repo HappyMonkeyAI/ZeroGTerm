@@ -1197,6 +1197,160 @@ input:focus-visible {
 .session-error b { color: #f7768e; }
 .session-empty button { align-self: flex-start; padding: 5px 8px; border: 1px solid #2a3340; border-radius: 4px; background: #151a22; color: #8b93a3; font-size: 10px; }
 .history-empty button:hover { border-color: #7aa2f7; color: #d8dee9; }
+/* The command palette. Centred near the top rather than anchored to a control,
+   because it is reached by keyboard and the eye should not have to find it. */
+.palette-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background: #07090d99;
+}
+
+.palette {
+  position: fixed;
+  z-index: 30;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(720px, calc(100vw - 80px));
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  border: 1px solid #303b4b;
+  border-radius: 7px;
+  background: #11161e;
+  box-shadow: 0 18px 55px #0009;
+}
+
+.palette-query {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #303b4b;
+  border-radius: 5px;
+  background: #0d1117;
+  color: #d8dee9;
+}
+
+.palette-list {
+  margin-top: 8px;
+  max-height: min(420px, calc(100vh - 220px));
+  overflow: auto;
+}
+
+.palette-row {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  text-align: left;
+  background: transparent;
+  color: #8b93a3;
+}
+
+.palette-row.active {
+  background: #1c2531;
+  color: #d8dee9;
+  box-shadow: inset 2px 0 #7aa2f7;
+}
+
+.palette-command {
+  min-width: 0;
+  font: 12px JetBrains Mono, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* The matched characters. Shown because the search is a subsequence: without
+   this a row can look unrelated to what was typed. */
+.palette-command b {
+  color: #7aa2f7;
+  font-weight: 700;
+}
+
+.palette-meta {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 10px JetBrains Mono, monospace;
+  color: #697386;
+}
+
+.palette-cwd {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-failed {
+  padding: 1px 4px;
+  border: 1px solid #f7768e;
+  border-radius: 3px;
+  color: #f7768e;
+}
+
+.palette-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 18px 8px;
+  color: #697386;
+}
+
+.palette-empty b { color: #8b93a3; font-size: 12px; font-weight: 550; }
+.palette-empty small { font-size: 11px; line-height: 1.45; }
+
+:root[data-theme='light'] .palette-layer { background: #25304433; }
+:root[data-theme='light'] .palette-query,
+:root[data-theme='light'] .settings-snippet {
+  background: #f7f9fc;
+  border-color: #dbe2ec;
+  color: #253044;
+}
+:root[data-theme='light'] .palette-row.active { background: #dbe7f5; color: #253044; }
+:root[data-theme='light'] .palette-command b { color: #2459a6; }
+:root[data-theme='light'] .palette-failed { border-color: #b3213b; color: #b3213b; }
+:root[data-theme='light'] .settings-note { border-color: #dbe2ec; color: #536176; }
+
+.palette-note {
+  display: block;
+  padding: 9px 4px 2px;
+  color: #697386;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* A snippet meant to be read before it is pasted, so it wraps rather than
+   scrolling out of sight. */
+.settings-snippet {
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #202630;
+  border-radius: 5px;
+  background: #0d1117;
+  color: #9aa4b2;
+  font: 10px JetBrains Mono, monospace;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.settings-note {
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid #252d39;
+  border-radius: 5px;
+  color: #8b93a3;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .history-popover {
   position: fixed;
   z-index: 30;
@@ -1230,6 +1384,7 @@ input:focus-visible {
 .history-kind { min-width: 43px; color: #7aa2f7; font: 9px JetBrains Mono, monospace; }
 .history-empty { padding: 13px 5px; }
 .history-note { display: block; padding: 9px 4px 2px; line-height: 1.4; }
+:root[data-theme='light'] .palette,
 :root[data-theme='light'] .history-popover {
   background: #ffffff;
   border-color: #c7d2e1;

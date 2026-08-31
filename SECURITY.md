@@ -142,3 +142,45 @@ localStorage — a plain file. So the key is not kept there:
   break the ordinary case, but the field says plainly when it applies.
 
 These controls are not a guarantee of security. Please report bypasses or regressions privately.
+
+## The command history
+
+The command history palette is the only part of ZeroG that stores what the user
+typed. Everything else deliberately does not: `session-history.json` records
+lifecycle events and states that it "never stores cwd, args, or credentials", and
+`workspaces.json` and `port-forwards.json` hold only metadata. A command history
+cannot make that promise, because the command text is the whole point — so the
+question is answered here instead.
+
+- **Off until asked for.** Recording is a setting, off by default. With it off,
+  nothing about what is typed is written anywhere and `command-history.json` does
+  not exist. The palette says so rather than appearing empty.
+- **Only what a shell volunteers.** Commands come from the standard OSC 133
+  prompt marks. A pane whose shell emits none records nothing at all; ZeroG does
+  not reconstruct the input line from the screen, because a history that is
+  sometimes wrong is worse than a smaller one that is not. This is the same
+  bargain the working-directory tracking already makes for OSC 7.
+- **What is kept.** The command, the directory and host it ran in, its exit
+  status, when it last ran, how many times, and how often it was chosen from the
+  palette. Written to `command-history.json` in the app's data directory, 0600,
+  replaced atomically, capped at 5000 entries. Clearing removes the file rather
+  than leaving an empty one.
+- **What is refused.** A command matching a credential shape is dropped whole,
+  never stored with the value masked: a masked entry still records that a
+  particular secret was set in a particular directory at a particular time, and
+  invites a false sense that what remains is safe. The rules cover assignments to
+  anything named like a token, key, secret, password, passphrase or credential;
+  `--password`/`--token`/`--api-key`-style flags and `mysql -p<value>`;
+  credentials embedded in a URL; `Authorization` and `X-Api-Key` headers;
+  `curl -u user:pass`; `openssl -passin`; vendor-shaped tokens for GitHub,
+  GitLab, Slack, AWS, Google, npm and OpenAI-compatible keys, and JWTs; and long
+  mixed-case high-entropy words.
+- **The rules err towards refusing.** `SSH_AUTH_SOCK=/tmp/x` is not a secret and
+  is refused anyway, because it matches the shape. Losing a harmless entry is
+  invisible; storing a token is not.
+- **What it does not catch, and does not claim to.** A secret passed as a bare
+  argument to a program the rules do not know about, piped in from `echo`, or
+  read from a file whose path is the only thing on the line, looks exactly like
+  ordinary text. Anyone treating this as a guarantee that no credential can ever
+  reach the file would be wrong. The mitigation is that the feature is off by
+  default, the file is local and owner-only, and it can be cleared in one click.

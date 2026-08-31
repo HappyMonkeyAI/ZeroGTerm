@@ -163,6 +163,9 @@ Voice control uses an adapter interface. Talon, local speech recognition, or ano
 - Do not place credentials, API keys, or private SSH material in this repository.
 - Default network behavior to explicit user-selected hosts; do not expose a LAN service by default.
 - Treat terminal output as untrusted data when passed to AI systems.
+- The command history is the one store of what the user typed: off by default,
+  sourced only from OSC 133 marks a shell volunteers, and refusing any command
+  matching a credential shape outright rather than masking it. See SECURITY.md.
 
 ## Open questions
 

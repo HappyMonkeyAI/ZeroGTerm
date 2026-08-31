@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, HistoryEntry, KnownConnection, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -58,7 +58,7 @@ import {
   type TerminalSettings,
   type Theme
 } from './settings';
-import { SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { SettingsPanel, type CommandHistoryState, type SpeechKeyState, type SpeechTestState } from './settings-panel';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
   SPLIT_BUTTONS,
@@ -70,6 +70,9 @@ import {
   type PaneView
 } from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
+import { createCommandCapture, readBufferRange, type CapturedCommand, type CommandCapture } from './command-capture';
+import { redactionReason } from './command-redaction';
+import { rankCommands, type RankedCommand } from './command-ranking';
 
 /** Settle once output has been quiet this long — the primary readiness signal. */
 const PROMPT_QUIET_MS = 150;
@@ -210,7 +213,9 @@ function TerminalView({
   onStatus,
   appearance,
   terminalSettings,
-  registerFocus
+  registerFocus,
+  registerCapture,
+  onCommand
 }: {
   sessionId?: string;
   focused?: boolean;
@@ -221,6 +226,17 @@ function TerminalView({
   terminalSettings: TerminalSettings;
   /** Lets the app put the keyboard back in this pane after a control took it. */
   registerFocus?: (sessionId: string, focus: (() => void) | null) => void;
+  /**
+   * Hands the app this pane's OSC 133 reader, so it can ask whether the shell is
+   * reporting marks at all — which is the only honest answer to "did my snippet
+   * work".
+   */
+  registerCapture?: (sessionId: string, capture: CommandCapture | null) => void;
+  /**
+   * A command this pane ran. Whether to redact it, store it, or ignore it
+   * depends on settings this component has no business knowing.
+   */
+  onCommand?: (sessionId: string, command: CapturedCommand) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -234,6 +250,11 @@ function TerminalView({
   const terminalSettingsRef = useRef(terminalSettings);
   terminalSettingsRef.current = terminalSettings;
   const refitRef = useRef<(() => void) | null>(null);
+  // Read through a ref by the OSC handler: the setup effect is keyed on
+  // sessionId, and rebuilding the Terminal to pick up a new callback would drop
+  // the pane's scrollback.
+  const onCommandRef = useRef(onCommand);
+  onCommandRef.current = onCommand;
 
   useEffect(() => {
     if (!ref.current) return;
@@ -384,6 +405,27 @@ function TerminalView({
       isCopyOnSelectEnabled: () => terminalSettingsRef.current.copyOnSelect
     });
 
+    // OSC 133 through xterm's own parser rather than a regex over the stream:
+    // the parser is already a state machine that handles a sequence split across
+    // two reads. cwd-tracker.ts regexes raw data because it runs outside xterm
+    // and does not have that luxury.
+    const capture = createCommandCapture(
+      {
+        cursor: () => ({
+          row: terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+          col: terminal.buffer.active.cursorX
+        }),
+        read: (from, to) =>
+          readBufferRange((row) => terminal.buffer.active.getLine(row)?.translateToString(true), from, to),
+        now: () => Date.now()
+      },
+      (command) => {
+        if (sessionId) onCommandRef.current?.(sessionId, command);
+      }
+    );
+    const marks = terminal.parser.registerOscHandler(133, (data) => capture.handle(data));
+    if (sessionId) registerCapture?.(sessionId, capture);
+
     const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(host);
     window.addEventListener('resize', scheduleFit);
@@ -426,6 +468,8 @@ function TerminalView({
       removeData();
       removeStatus();
       observer.disconnect();
+      marks.dispose();
+      if (sessionId) registerCapture?.(sessionId, null);
       window.removeEventListener('resize', scheduleFit);
       refitRef.current = null;
       terminalRef.current = null;
@@ -608,6 +652,10 @@ function App() {
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const [paletteIndex, setPaletteIndex] = useState(0);
+  const [commandEntries, setCommandEntries] = useState<CommandHistoryEntry[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
@@ -661,6 +709,14 @@ function App() {
     if (focus) terminalFocusRef.current.set(sessionId, focus);
     else terminalFocusRef.current.delete(sessionId);
   }, []);
+  // Each pane's OSC 133 reader, so the settings panel can say how many shells
+  // are actually reporting marks rather than leaving the user to guess.
+  const captureRef = useRef(new Map<string, CommandCapture>());
+  const registerTerminalCapture = useCallback((sessionId: string, capture: CommandCapture | null) => {
+    if (capture) captureRef.current.set(sessionId, capture);
+    else captureRef.current.delete(sessionId);
+  }, []);
+
   /** Put the keyboard back in a pane, so the user can carry on typing. */
   const focusTerminal = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return;
@@ -676,6 +732,7 @@ function App() {
   const dismissApproval = useBackdropDismiss(() => setApproval(null));
   const dismissOverview = useBackdropDismiss(() => setOverview(false));
   const dismissHistory = useBackdropDismiss(() => setHistoryOpen(false));
+  const dismissPalette = useBackdropDismiss(() => setPaletteOpen(false));
   const dismissSettings = useBackdropDismiss(() => setSettingsOpen(false));
   const dismissVoiceReview = useBackdropDismiss(() => closeVoiceReview());
   const dismissTransfer = useBackdropDismiss(() => setTransferOpen(false));
@@ -878,6 +935,11 @@ function App() {
   // the renderer remembers: asked once here so the settings panel opens with
   // the truth rather than a guess.
   useEffect(() => {
+    if (!settings.ai.recordCommands) return;
+    void api()?.listCommandHistory?.().then(setCommandEntries).catch(() => undefined);
+  }, [settings.ai.recordCommands]);
+
+  useEffect(() => {
     const currentApi = api();
     if (!currentApi?.speechApiKeyStatus) return;
     currentApi
@@ -1069,6 +1131,11 @@ function App() {
           setModal(null);
           return;
         }
+        if (paletteOpen) {
+          event.preventDefault();
+          setPaletteOpen(false);
+          return;
+        }
         if (historyOpen) {
           event.preventDefault();
           setHistoryOpen(false);
@@ -1114,6 +1181,13 @@ function App() {
         event.preventDefault();
         setSettingsOpen((value) => !value);
       }
+      // Ctrl+Shift+R, never Ctrl+R: McFly can rebind ctrl-r because it *is* the
+      // shell. Swallowing it here would take reverse-search away from every
+      // shell in every pane, including remote ones this feature cannot see.
+      if (key === 'r') {
+        event.preventDefault();
+        openPalette();
+      }
       // Same reason as the comma above: Shift+1 reports as '!', so the digit
       // only survives in event.code.
       const digit = /^Digit([1-9])$/.exec(event.code);
@@ -1128,7 +1202,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, approval, modal, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, approval, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -1457,6 +1531,112 @@ function App() {
       quietTimer = setTimeout(finish, PROMPT_QUIET_MS);
     });
   });
+
+  /**
+   * A command a pane reported, on its way to the store — or not.
+   *
+   * Three gates, in this order: the setting, then redaction, then the store. The
+   * setting is checked here rather than in the pane so that turning it off stops
+   * recording immediately, without rebuilding a Terminal.
+   */
+  const recordCommand = useCallback(
+    (sessionId: string, captured: CapturedCommand) => {
+      if (!settings.ai.recordCommands) return;
+      const refused = redactionReason(captured.command);
+      if (refused) {
+        // Said out loud, without the command: silently dropping it would look
+        // like the feature was broken.
+        setStatus(`Command not remembered — it looks like it carries a credential (${refused}).`);
+        return;
+      }
+      const currentApi = api();
+      if (!currentApi?.recordCommand) return;
+      const session = sessions.find((item) => item.id === sessionId);
+      void currentApi
+        .recordCommand({
+          command: captured.command,
+          ...(session?.cwd ? { cwd: session.cwd } : {}),
+          ...(session?.host ? { host: session.host } : {}),
+          ...(session?.kind ? { kind: session.kind } : {}),
+          ...(captured.exitCode === undefined ? {} : { exitCode: captured.exitCode })
+        })
+        .then((entry) => {
+          if (entry) setCommandEntries((current) => [...current.filter((item) => item.id !== entry.id), entry]);
+        })
+        .catch(() => undefined);
+    },
+    [settings.ai.recordCommands, sessions]
+  );
+
+  /**
+   * What the settings panel says about recording.
+   *
+   * `panesReporting` is the answer to "did my snippet work" — counted from the
+   * panes that have actually emitted a mark, not from anything configured.
+   */
+  const commandHistoryState = useMemo<CommandHistoryState>(() => {
+    const captures = [...captureRef.current.values()];
+    return {
+      entries: commandEntries.length,
+      panesReporting: captures.filter((capture) => capture.hasMarks()).length,
+      panesOpen: captures.length
+    };
+  }, [commandEntries, settingsOpen, sessions]);
+
+  const openPalette = () => {
+    setPaletteQuery('');
+    setPaletteIndex(0);
+    setPaletteOpen(true);
+    // Refreshed on open rather than kept in step: the store is the truth, and
+    // this is the one moment it is about to be read.
+    void api()?.listCommandHistory?.().then(setCommandEntries).catch(() => undefined);
+  };
+
+  /**
+   * The ranked matches for what has been typed.
+   *
+   * Ranked against the focused pane's directory and host, because "in this
+   * directory" is the strongest signal the palette has and the focused pane is
+   * where the command is going.
+   */
+  const paletteMatches = useMemo<RankedCommand[]>(() => {
+    if (!paletteOpen) return [];
+    const target = sessions.find((item) => item.id === (focusedSessionId ?? active?.id));
+    return rankCommands(commandEntries, {
+      query: paletteQuery,
+      ...(target?.cwd ? { cwd: target.cwd } : {}),
+      ...(target?.host ? { host: target.host } : {}),
+      now: Date.now(),
+      limit: 40
+    });
+  }, [paletteOpen, commandEntries, paletteQuery, sessions, focusedSessionId, active?.id]);
+
+  /**
+   * Put a remembered command on the prompt, without running it.
+   *
+   * No trailing newline, deliberately. The command came out of a store rather
+   * than from the user's hands just now, so pressing Enter should be their
+   * decision — and it leaves room to edit the arguments, which is most of why
+   * anyone reaches for history in the first place.
+   */
+  const usePaletteCommand = (match: RankedCommand) => {
+    const target = focusedSessionId ?? active?.id;
+    setPaletteOpen(false);
+    if (!target) {
+      setStatus('No terminal selected for the command');
+      return;
+    }
+    api()?.write(target, match.entry.command);
+    void api()?.pickCommand?.(match.entry.id).catch(() => undefined);
+    setStatus(`On the prompt: ${match.entry.command}`);
+    focusTerminal(target);
+  };
+
+  const clearCommandHistory = async () => {
+    await api()?.clearCommandHistory?.().catch(() => undefined);
+    setCommandEntries([]);
+    setStatus('Remembered commands forgotten.');
+  };
 
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
@@ -2499,6 +2679,8 @@ function App() {
                     appearance={settings.appearance}
                     terminalSettings={settings.terminal}
                     registerFocus={registerTerminalFocus}
+                    registerCapture={registerTerminalCapture}
+                    onCommand={recordCommand}
                   />
                 </article>
               );
@@ -2582,6 +2764,94 @@ function App() {
           own. Closing only on a press that started on the backdrop removes the
           need for the popover to stop propagation, which was a click handler on
           a non-interactive dialog element. */}
+      {/* The ranked command palette. Ctrl+Shift+R, never Ctrl+R — the shell keeps
+          its own reverse-search. */}
+      {paletteOpen && (
+        <div className="palette-layer" role="presentation" {...dismissPalette}>
+          <div className="palette" role="dialog" aria-label="Command history">
+            <input
+              autoFocus
+              className="palette-query"
+              value={paletteQuery}
+              placeholder="Search commands you have run"
+              aria-label="Search commands you have run"
+              onChange={(event) => {
+                setPaletteQuery(event.target.value);
+                setPaletteIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setPaletteIndex((index) => Math.min(index + 1, Math.max(0, paletteMatches.length - 1)));
+                } else if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setPaletteIndex((index) => Math.max(0, index - 1));
+                } else if (event.key === 'Enter') {
+                  event.preventDefault();
+                  const match = paletteMatches[paletteIndex];
+                  if (match) usePaletteCommand(match);
+                }
+              }}
+            />
+
+            {!settings.ai.recordCommands ? (
+              <div className="palette-empty">
+                <b>Commands are not being remembered</b>
+                <small>
+                  Turn on &ldquo;Remember commands&rdquo; in Settings under AI &amp; voice. Nothing about what you
+                  type is stored until you do.
+                </small>
+                <button type="button" onClick={() => { setPaletteOpen(false); setSettingsOpen(true); }}>
+                  Open settings
+                </button>
+              </div>
+            ) : !commandEntries.length ? (
+              <div className="palette-empty">
+                <b>Nothing remembered yet</b>
+                <small>
+                  Commands are recorded from panes whose shell reports prompt marks. Settings has a snippet to
+                  paste into your shell &mdash; and onto a remote host, where it has to be installed there.
+                </small>
+                <button type="button" onClick={() => { setPaletteOpen(false); setSettingsOpen(true); }}>
+                  Open settings
+                </button>
+              </div>
+            ) : !paletteMatches.length ? (
+              <div className="palette-empty">
+                <b>No match</b>
+                <small>{commandEntries.length} commands remembered, none matching that.</small>
+              </div>
+            ) : (
+              <div className="palette-list">
+                {paletteMatches.map((match, index) => (
+                  <button
+                    type="button"
+                    key={match.entry.id}
+                    className={`palette-row ${index === paletteIndex ? 'active' : ''}`}
+                    onMouseEnter={() => setPaletteIndex(index)}
+                    onClick={() => usePaletteCommand(match)}
+                  >
+                    <span className="palette-command">{highlight(match.entry.command, match.matched)}</span>
+                    <span className="palette-meta">
+                      {/* Only a real failure is marked. An absent status means the
+                          shell did not say, which is not the same thing. */}
+                      {match.entry.exitCode !== undefined && match.entry.exitCode !== 0 ? (
+                        <span className="palette-failed" title={`Exited ${match.entry.exitCode}`}>failed</span>
+                      ) : null}
+                      {match.entry.cwd ? <span className="palette-cwd">{match.entry.cwd}</span> : null}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <small className="palette-note">
+              Enter puts the command on the prompt without running it. ↑↓ to choose, Esc to close.
+            </small>
+          </div>
+        </div>
+      )}
+
       {historyOpen && (
         <div className="history-layer" role="presentation" {...dismissHistory}>
           <div className="history-popover" role="dialog" aria-label="Session history">
@@ -2762,6 +3032,11 @@ function App() {
           speechKey={speechKey}
           onSpeechKeySave={(key) => void saveSpeechKey(key)}
           onSpeechKeyClear={() => void clearSpeechKey()}
+          commandHistory={commandHistoryState}
+          onCopySnippet={(snippet) => {
+            void api()?.copyText?.(snippet).then(() => setStatus('Shell integration snippet copied.')).catch(() => undefined);
+          }}
+          onClearCommandHistory={() => void clearCommandHistory()}
         />
       )}
 
@@ -2825,6 +3100,32 @@ function App() {
       )}
     </main>
   );
+}
+
+/**
+ * A command with the query's matched characters marked.
+ *
+ * Worth the trouble because the matching is a subsequence: without showing which
+ * characters matched, a row can look like it has nothing to do with what was
+ * typed, and the ranking looks broken when it is not.
+ */
+function highlight(command: string, matched: number[]): React.ReactNode {
+  if (!matched.length) return command;
+  const positions = new Set(matched);
+  const parts: React.ReactNode[] = [];
+  let run = '';
+  let runMatched = positions.has(0);
+  for (let index = 0; index < command.length; index += 1) {
+    const isMatch = positions.has(index);
+    if (isMatch !== runMatched && run) {
+      parts.push(runMatched ? <b key={index}>{run}</b> : run);
+      run = '';
+    }
+    runMatched = isMatch;
+    run += command.charAt(index);
+  }
+  if (run) parts.push(runMatched ? <b key="tail">{run}</b> : run);
+  return parts;
 }
 
 function terminalTheme(theme: Theme) {

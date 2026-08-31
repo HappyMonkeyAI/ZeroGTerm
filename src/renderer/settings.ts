@@ -95,6 +95,14 @@ export type AiSettings = {
    * instead of a fixed phrase.
    */
   proceedPhrase: string;
+  /**
+   * Record the commands run in each pane, for the history palette.
+   *
+   * Off by default, and the only setting in ZeroG that turns on storing what the
+   * user typed. Nothing is recorded from a pane whose shell emits no OSC 133
+   * marks, and nothing at all that command-redaction refuses.
+   */
+  recordCommands: boolean;
 };
 
 export type SpeechSettings = {
@@ -152,7 +160,8 @@ export const DEFAULT_SETTINGS: Settings = {
   ai: {
     requireApproval: true,
     voiceInsert: 'type',
-    proceedPhrase: 'OK, proceed'
+    proceedPhrase: 'OK, proceed',
+    recordCommands: false
   },
   speech: {
     engine: 'builtin',
@@ -334,7 +343,8 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
     ai: {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
       voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert),
-      proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase)
+      proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase),
+      recordCommands: pickBoolean(ai.recordCommands, DEFAULT_SETTINGS.ai.recordCommands)
     },
     speech: {
       engine,
