@@ -11,7 +11,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - A compact navigation rail for sessions, overview, settings, SSH connections, and opening a new local terminal, while keeping the sessions sidebar collapsible.
 - Layout controls that restore a split, even up its pane sizes, and maximize or restore a pane in a predictable sequence.
 - Maximize a focused pane and cycle between sessions without losing the other panes.
-- Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable.
+- Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable. A WSL pane starts in the distribution's own home directory rather than the Windows one seen through `/mnt/c`.
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
 - SSH configuration discovery from known connections, including remote `screen` session discovery. In the sidebar's Connections tab, clicking a saved connection opens the connect dialog with the host filled in, and double-clicking it skips the dialog and opens the host in a new pane.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
