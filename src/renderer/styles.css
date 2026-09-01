@@ -730,6 +730,179 @@ input:focus-visible {
   cursor: row-resize;
 }
 
+/*
+ * A pane's body: just the terminal, or the terminal beside its directory
+ * browser. Always present, so toggling the browser never moves the terminal in
+ * the DOM — which would unmount xterm and reattach the pty.
+ */
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* The containing block for the in-pane divider, as .pane-grid is for the
+     dividers between panes. */
+  position: relative;
+}
+
+.pane-body-split {
+  display: grid;
+  grid-template-rows: 1fr;
+  gap: 1px;
+  background: #202630;
+}
+
+.pane-browser-resizer {
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+/*
+ * The browser itself. A navigation surface, not the transfer panel: rows are
+ * directories to walk into, files are shown only so the place is recognisable.
+ */
+.pane-browser {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0b0e13;
+  font: 11px JetBrains Mono, monospace;
+  color: #8b93a3;
+}
+
+.pane-browser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  border-bottom: 1px solid #202630;
+}
+
+.pane-browser-path {
+  min-width: 0;
+  overflow: hidden;
+  /* The tail is the part that identifies the directory, so keep it. */
+  direction: rtl;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #c0c8d8;
+}
+
+.pane-browser-actions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.pane-browser-icon {
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #697386;
+  background: transparent;
+}
+
+.pane-browser-icon:hover:not(:disabled) {
+  color: #d8dee9;
+  background: #1a202a;
+  border-color: #2a3340;
+}
+
+.pane-browser-icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pane-browser-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.pane-browser-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: none;
+  background: transparent;
+  color: #c0c8d8;
+  text-align: left;
+  font: inherit;
+  /* Double-click is the action, so stop the second click selecting the label. */
+  user-select: none;
+}
+
+.pane-browser-row:hover:not(:disabled) {
+  background: #151b24;
+}
+
+.pane-browser-row:focus-visible {
+  outline: 1px solid #7aa2f7;
+  outline-offset: -1px;
+}
+
+.pane-browser-row.pane-browser-file {
+  color: #5d6675;
+  cursor: default;
+}
+
+.pane-browser-parent {
+  color: #7aa2f7;
+}
+
+.pane-browser-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pane-browser-kind {
+  margin-left: auto;
+  flex: none;
+  color: #5d6675;
+  font-size: 10px;
+}
+
+.pane-browser-note {
+  margin: 0;
+  padding: 8px;
+  color: #697386;
+  line-height: 1.5;
+}
+
+.pane-browser-error {
+  color: #f7768e;
+}
+
+.pane-browser-foot {
+  flex: none;
+  padding: 4px 8px;
+  border-top: 1px solid #202630;
+  color: #5d6675;
+  font-size: 10px;
+}
+
+.pane-browse.active {
+  color: #7aa2f7;
+  background: #151b24;
+  border-color: #2a3340;
+}
+
 /* A maximized pane covers the whole grid, so its dividers would move panes that
    are not on screen. */
 .pane-grid.maximized-pane-grid .pane-resizer {
@@ -806,6 +979,7 @@ input:focus-visible {
 .pane-maximize,
 .pane-close,
 .pane-proceed,
+.pane-browse,
 .pane-mic {
   width: 19px;
   height: 19px;
@@ -820,6 +994,7 @@ input:focus-visible {
 
 .pane-nav:hover,
 .pane-maximize:hover,
+.pane-browse:hover:not(:disabled),
 .pane-mic:hover {
   color: #d8dee9;
   background: #1a202a;
@@ -840,7 +1015,8 @@ input:focus-visible {
   border-color: rgba(158, 206, 106, 0.45);
 }
 
-.pane-mic:disabled {
+.pane-mic:disabled,
+.pane-browse:disabled {
   opacity: 0.4;
   cursor: default;
 }

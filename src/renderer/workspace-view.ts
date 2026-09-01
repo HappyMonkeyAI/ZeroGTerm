@@ -18,6 +18,24 @@ import type { SplitLayout } from './pane-layout';
  * globally, a split set up for one project followed the user into the next one,
  * and a maximized pane pointed at a terminal that was no longer on screen.
  */
+/**
+ * A pane's directory browser, as the workspace remembers it.
+ *
+ * Open state and divider position only. The path is deliberately absent: the
+ * browser shows wherever the shell is, and a path saved from a previous launch
+ * would name a directory the new shell is not in.
+ */
+export type PaneBrowserState = {
+  open: boolean;
+  /** The share of the pane's width the terminal keeps, as a percentage. */
+  ratio?: number;
+};
+
+/** The narrowest and widest the terminal side of a split pane may get. */
+export const MIN_BROWSER_RATIO = 25;
+export const MAX_BROWSER_RATIO = 85;
+export const DEFAULT_BROWSER_RATIO = 60;
+
 export type WorkspaceView = {
   layout: Layout;
   /** The split the single-pane view folds back out to, per workspace. */
@@ -27,6 +45,8 @@ export type WorkspaceView = {
   /** The session that has the keyboard. */
   focusedSessionId?: string;
   maximizedSessionId?: string | null;
+  /** Per-pane directory browser state, keyed by session id. */
+  browsers?: Record<string, PaneBrowserState>;
 };
 
 export type Workspace = {
@@ -188,10 +208,30 @@ export function reconcileView(view: WorkspaceView, memberIds: string[]): Workspa
   const active = view.activeSessionId && members.has(view.activeSessionId) ? view.activeSessionId : undefined;
   const focused = view.focusedSessionId && members.has(view.focusedSessionId) ? view.focusedSessionId : undefined;
   const maximized = view.maximizedSessionId && members.has(view.maximizedSessionId) ? view.maximizedSessionId : null;
-  if (active === view.activeSessionId && focused === view.focusedSessionId && maximized === (view.maximizedSessionId ?? null)) {
+  // A browser belongs to a pane. When the pane goes, so does the entry —
+  // otherwise a new session reusing that id would inherit a stranger's divider.
+  const browsers = pruneBrowsers(view.browsers, members);
+  if (
+    active === view.activeSessionId &&
+    focused === view.focusedSessionId &&
+    maximized === (view.maximizedSessionId ?? null) &&
+    browsers === view.browsers
+  ) {
     return view;
   }
-  return { ...view, activeSessionId: active, focusedSessionId: focused, maximizedSessionId: maximized };
+  return { ...view, activeSessionId: active, focusedSessionId: focused, maximizedSessionId: maximized, browsers };
+}
+
+/** The same map when every key is still a member, so callers can skip a render. */
+function pruneBrowsers(
+  browsers: Record<string, PaneBrowserState> | undefined,
+  members: Set<string>
+): Record<string, PaneBrowserState> | undefined {
+  if (!browsers) return browsers;
+  const keys = Object.keys(browsers);
+  const kept = keys.filter((id) => members.has(id));
+  if (kept.length === keys.length) return browsers;
+  return Object.fromEntries(kept.map((id) => [id, browsers[id]]));
 }
 
 /**
@@ -391,7 +431,8 @@ export function toStoredFile(
         lastSplit: workspace.view.lastSplit,
         activeSessionId: workspace.view.activeSessionId,
         focusedSessionId: workspace.view.focusedSessionId,
-        maximizedSessionId: workspace.view.maximizedSessionId ?? null
+        maximizedSessionId: workspace.view.maximizedSessionId ?? null,
+        browsers: workspace.view.browsers
       },
       members: [
         ...workspace.sessionIds
@@ -422,6 +463,33 @@ function describeMember(session: SessionInfo): StoredWorkspaceMember {
  * that through adoptLiveSessions once the session list has loaded, so the rule
  * for "the same shell" lives in one place.
  */
+/**
+ * Browser state out of the store, taking only what is well formed.
+ *
+ * The file is on disk and may have been edited or written by an older build, so
+ * a ratio outside the drag limits is dropped rather than clamped: dropping it
+ * shows the default split, which is what a pane with no remembered position
+ * shows anyway.
+ */
+function readBrowsers(value: unknown): Record<string, PaneBrowserState> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<string, PaneBrowserState> = {};
+  for (const [id, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!id || !raw || typeof raw !== 'object') continue;
+    const entry = raw as { open?: unknown; ratio?: unknown };
+    if (typeof entry.open !== 'boolean') continue;
+    const ratio =
+      typeof entry.ratio === 'number' &&
+      Number.isFinite(entry.ratio) &&
+      entry.ratio >= MIN_BROWSER_RATIO &&
+      entry.ratio <= MAX_BROWSER_RATIO
+        ? entry.ratio
+        : undefined;
+    out[id] = ratio === undefined ? { open: entry.open } : { open: entry.open, ratio };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 export function fromStoredFile(
   file: StoredWorkspaceFile,
   fallbackLayout: Layout
@@ -439,7 +507,8 @@ export function fromStoredFile(
         lastSplit: SPLITS.find((candidate) => candidate === stored.view?.lastSplit) ?? base.lastSplit,
         activeSessionId: stored.view?.activeSessionId,
         focusedSessionId: stored.view?.focusedSessionId,
-        maximizedSessionId: stored.view?.maximizedSessionId ?? null
+        maximizedSessionId: stored.view?.maximizedSessionId ?? null,
+        browsers: readBrowsers(stored.view?.browsers)
       }
     } satisfies Workspace;
   });

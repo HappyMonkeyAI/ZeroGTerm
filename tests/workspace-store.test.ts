@@ -121,6 +121,55 @@ describe('normalizeFile', () => {
     expect(result?.workspaces[0].members).toHaveLength(1);
   });
 
+  it('keeps browser state only for panes the workspace holds', () => {
+    // The same rule the view's pane references follow: a hand-edited file must
+    // not carry state for a session this workspace does not own.
+    const result = normalizeFile({
+      version: 1,
+      workspaces: [{
+        id: 'ws-1',
+        name: 'Workspace',
+        view: {
+          browsers: {
+            'local:api': { open: true, ratio: 55 },
+            'ssh:elsewhere': { open: true, ratio: 40 }
+          }
+        },
+        members: [{ sessionId: 'local:api', kind: 'local', name: 'api' }]
+      }]
+    });
+    expect(result?.workspaces[0].view.browsers).toEqual({ 'local:api': { open: true, ratio: 55 } });
+  });
+
+  it('drops malformed browser state rather than repairing it', () => {
+    const result = normalizeFile({
+      version: 1,
+      workspaces: [{
+        id: 'ws-1',
+        name: 'Workspace',
+        view: {
+          browsers: {
+            'local:a': { open: 'yes' },
+            'local:b': { open: true, ratio: 400 },
+            'local:c': { open: true, ratio: 'wide' },
+            'local:d': { open: false },
+            'local:e': 'not an object'
+          }
+        },
+        members: ['a', 'b', 'c', 'd', 'e'].map((id) => ({ sessionId: `local:${id}`, kind: 'local', name: id }))
+      }]
+    });
+    // Four members survive the pane cap, and of those only the well-formed
+    // entries remain: `open` must be a boolean, and a ratio outside the drag
+    // limits is dropped rather than clamped, leaving the pane on the default
+    // split as one with no entry at all would be.
+    expect(result?.workspaces[0].view.browsers).toEqual({
+      'local:b': { open: true },
+      'local:c': { open: true },
+      'local:d': { open: false }
+    });
+  });
+
   it('drops a duplicated workspace id', () => {
     const result = normalizeFile({
       version: 1,

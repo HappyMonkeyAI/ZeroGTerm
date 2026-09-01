@@ -53,6 +53,7 @@ const api = {
   clearAiApiKey: () => ipcRenderer.invoke('aiKey:clear'),
   listLocalDirectory: (path) => ipcRenderer.invoke('fs:listLocal', path),
   localHome: () => ipcRenderer.invoke('fs:localHome'),
+  wslHome: (distribution) => ipcRenderer.invoke('fs:wslHome', distribution),
   createLocalDirectory: (path) => ipcRenderer.invoke('fs:mkdirLocal', path),
   renameLocalEntry: (from, to) => ipcRenderer.invoke('fs:renameLocal', from, to),
   removeLocalEntry: (path, kind) => ipcRenderer.invoke('fs:removeLocal', path, kind),

@@ -172,6 +172,8 @@ export interface StoredWorkspaceView {
   activeSessionId?: string;
   focusedSessionId?: string;
   maximizedSessionId?: string | null;
+  /** Directory browser state per pane, keyed by session id. */
+  browsers?: Record<string, { open: boolean; ratio?: number }>;
 }
 
 export interface StoredWorkspace {
@@ -396,6 +398,13 @@ export interface TerminalApi {
   /** Local filesystem browsing for the transfer panel. Listing only; no reads. */
   listLocalDirectory(path?: string): Promise<DirectoryListing>;
   localHome(): Promise<string>;
+  /**
+   * Where "~" points inside a WSL distribution, or null if it cannot be asked.
+   *
+   * Needed because a WSL pane's shell reports `~` rather than a path, and the
+   * share path a listing uses cannot be built from a symbol.
+   */
+  wslHome(distribution: string): Promise<string | null>;
   createLocalDirectory(path: string): Promise<void>;
   renameLocalEntry(from: string, to: string): Promise<void>;
   removeLocalEntry(path: string, kind: FileEntry['kind']): Promise<void>;

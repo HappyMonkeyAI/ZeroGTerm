@@ -133,7 +133,35 @@ function normalizeView(value: unknown, memberIds: Set<string>): StoredView {
   const focused = member(item.focusedSessionId);
   if (active) view.activeSessionId = active;
   if (focused) view.focusedSessionId = focused;
+  const browsers = normalizeBrowsers(item.browsers, memberIds);
+  if (browsers) view.browsers = browsers;
   return view;
+}
+
+/**
+ * Directory browser state, keyed only by panes the workspace holds.
+ *
+ * The same rule the pane references above follow: a hand-edited file may not
+ * carry state for a session this workspace does not own. A malformed entry is
+ * dropped rather than repaired — a pane with no entry shows no browser, which is
+ * the safe reading of a file we cannot trust.
+ */
+function normalizeBrowsers(
+  value: unknown,
+  memberIds: Set<string>
+): Record<string, { open: boolean; ratio?: number }> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out: Record<string, { open: boolean; ratio?: number }> = {};
+  for (const [id, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!memberIds.has(id) || !raw || typeof raw !== 'object') continue;
+    const entry = raw as { open?: unknown; ratio?: unknown };
+    if (typeof entry.open !== 'boolean') continue;
+    const ratio = typeof entry.ratio === 'number' && Number.isFinite(entry.ratio) && entry.ratio > 0 && entry.ratio < 100
+      ? entry.ratio
+      : undefined;
+    out[id] = ratio === undefined ? { open: entry.open } : { open: entry.open, ratio };
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function normalizeWorkspace(value: unknown): StoredWorkspace | undefined {

