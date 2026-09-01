@@ -21,7 +21,11 @@ export type PaneBrowserProps = {
   /** Where to list. Null while the shell has not said anywhere usable. */
   path: string | null;
   pathKind: PathKind;
-  /** What the shell reports, so the header can say when the two differ. */
+  /**
+   * The same place as `path`, named the way this pane's shell would name it —
+   * a distro path rather than the `\\wsl.localhost\` share it is listed
+   * through. Shown in the header, because that is the name the user would type.
+   */
   shellPath: string | null;
   list: (path: string) => Promise<DirectoryListing>;
   /** Chosen by a double-click. The caller decides whether the shell can move. */

@@ -2189,7 +2189,13 @@ function App() {
     // other case: the user double-clicked asking for exactly this, and seeing
     // the `cd` appear in the scrollback is honest about what happened.
     currentApi.write(session.id, built.command + '\r');
-    setBrowserPaths((current) => ({ ...current, [session.id]: '' }));
+    // Take the browser there rather than waiting to be told. We know exactly
+    // where the shell was sent, and cwd tracking may never report it: a prompt
+    // reading `~/my project` is not a path the prompt parser can extract, so
+    // relying on the report left the browser a directory behind — observed
+    // against a real WSL shell. The follow effect clears this override the
+    // moment the shell does report somewhere new.
+    setBrowserPaths((current) => ({ ...current, [session.id]: listingPath }));
     setStatus(`${session.name}: ${built.command}`);
     focusTerminal(session.id);
   };
@@ -3359,6 +3365,7 @@ function App() {
               // reason is more use than a missing control.
               const browsePathKind = pathKindFor(paneSession);
               const browserOpen = Boolean(browsePathKind) && browserOpenFor(paneSession.id);
+              const browserPath = browserOpen ? browserPathFor(paneSession) : null;
               return (
                 <article
                   className={`pane terminal-pane ${dormant ? 'dormant-pane' : ''} ${!dormant && focusedSessionId === paneSession.id ? 'focused' : ''} ${!dormant && maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${dormant || isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
@@ -3433,9 +3440,13 @@ function App() {
                       browsePathKind ? (
                         <PaneBrowser
                           session={paneSession}
-                          path={browserPathFor(paneSession)}
+                          path={browserPath}
                           pathKind={browsePathKind}
-                          shellPath={paneSession.cwd ?? null}
+                          // Where the browser is, said the way this shell would
+                          // say it — not the shell's own reported directory,
+                          // which lags behind and left the header naming a
+                          // place the listing was no longer showing.
+                          shellPath={browserPath ? shellPathFor(paneSession, browserPath) : null}
                           list={listerFor(paneSession)}
                           onOpen={(path) => openDirectory(paneSession, path)}
                           onBrowse={(path) => setBrowserPaths((current) => ({ ...current, [paneSession.id]: path }))}
