@@ -50,10 +50,24 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+1` … `Ctrl+Shift+9` — switch to a workspace by position
 - `Ctrl+Shift+T` — new local terminal in the current workspace
 - `Ctrl+Shift+R` — ranked command history palette
+- `Ctrl+Shift+A` — ask the AI endpoint for a command
+- `Ctrl+Shift+L` — fold to a single pane, or back to the last split
 - `Ctrl+Shift+O` — session overview
 - `Ctrl+Shift+B` — toggle sessions sidebar
 - `Ctrl+Shift+,` — settings
 - `Esc` — close overview / dialogs, cancel voice recording
+
+Only the `Ctrl+Shift` variants are claimed, so a shell keeps its own bindings:
+`Ctrl+C` interrupts, `Ctrl+R` is still readline's reverse search, `Ctrl+L` still
+clears the screen, and `Ctrl+A` still reaches `screen` or `tmux`. None of these
+shortcuts reaches the shell in the pane that has focus — verified by asking bash
+to report the control characters it receives.
+
+The Ports view, the SFTP transfer panel and a pane's directory browser have no
+shortcut of their own; they open from the rail, the ⇅ button above the panes, and
+the folder button in a pane's title bar. `Esc` deliberately does not close the
+directory browser: it is part of the pane rather than an overlay, and `Esc` has
+to keep reaching the shell for `vi` to be usable.
 
 Clicking a link in a pane opens it in your own browser rather than in a window
 of ZeroG. Hovering one first shows where it actually goes in the status bar,
