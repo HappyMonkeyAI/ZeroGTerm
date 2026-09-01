@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep as SEP } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { changeDirectoryCommand } from '../src/renderer/pane-directory';
 
@@ -52,6 +52,19 @@ const NAMES = [
   'newline-free!'
 ];
 
+/**
+ * The temp directory, with separators a POSIX shell understands.
+ *
+ * Only the separators: a blanket backslash replacement would rewrite the
+ * directory *named* `back` + a backslash + `slash`, which a Linux filesystem is
+ * perfectly happy to hold, into a path that does not exist. That is what broke
+ * this test on CI while it passed on Windows, where the name cannot be created
+ * at all.
+ */
+function posix(path: string): string {
+  return path.split(SEP).join('/');
+}
+
 describeShell('a POSIX shell reads the generated cd as one command', () => {
   it('lands in the directory, whatever it is called', () => {
     const root = mkdtempSync(join(tmpdir(), 'zerog-cd-'));
@@ -69,13 +82,13 @@ describeShell('a POSIX shell reads the generated cd as one command', () => {
         }
         attempted += 1;
 
-        const built = changeDirectoryCommand('posix', target.replace(/\\/g, '/'));
+        const built = changeDirectoryCommand('posix', `${posix(root)}/${name}`);
         expect('command' in built, `refused: ${name}`).toBe(true);
         if (!('command' in built)) continue;
 
         // `pwd -P` so a symlinked temp directory does not read as a mismatch.
         const output = execFileSync(sh as string, ['-c', `${built.command} && pwd -P`], { encoding: 'utf8' }).trim();
-        expect(output.endsWith(name.replace(/\\/g, '/')) || output.endsWith(name), `${name} -> ${output}`).toBe(true);
+        expect(output.endsWith(name), `${name} -> ${output}`).toBe(true);
       }
       // A silent zero would mean the loop proved nothing.
       expect(attempted).toBeGreaterThan(5);
@@ -97,7 +110,7 @@ describeShell('a POSIX shell reads the generated cd as one command', () => {
         } catch {
           continue;
         }
-        const built = changeDirectoryCommand('posix', join(root, name).replace(/\\/g, '/'));
+        const built = changeDirectoryCommand('posix', `${posix(root)}/${name}`);
         if (!('command' in built)) continue;
         execFileSync(sh as string, ['-c', `${built.command} && pwd -P`], { encoding: 'utf8' });
       }
