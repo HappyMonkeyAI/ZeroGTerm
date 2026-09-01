@@ -81,6 +81,7 @@ import {
   type PaneView
 } from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
+import { matchShortcut, topDismissTarget } from './shortcuts';
 import { createCommandCapture, readBufferRange, type CapturedCommand, type CommandCapture } from './command-capture';
 import { redactionReason } from './command-redaction';
 import { rankCommands, type RankedCommand } from './command-ranking';
@@ -1260,120 +1261,82 @@ function App() {
   // the shell. The pane holds the keyboard during a recording — that is the
   // point, so typing carries on working — and xterm would otherwise consume the
   // key first and send it to the pty.
-  useEffect(() => {
-    if (voice.status !== 'listening') return;
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      cancelVoice();
-      setStatus('Voice cancelled');
-    };
-    window.addEventListener('keydown', onEscape, true);
-    return () => window.removeEventListener('keydown', onEscape, true);
-  }, [voice.status]);
-
+  // One keydown listener, and the deciding is not done here: matchShortcut and
+  // topDismissTarget say what a keypress means, so the bindings can be
+  // enumerated by a test. This block only carries them out.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (transferOpen) {
-          event.preventDefault();
-          setTransferOpen(false);
-          return;
-        }
-        if (settingsOpen) {
-          event.preventDefault();
-          setSettingsOpen(false);
-          return;
-        }
-        if (voiceReview) {
-          event.preventDefault();
-          closeVoiceReview();
-          return;
-        }
-        if (overview) {
-          event.preventDefault();
-          setOverview(false);
-          return;
-        }
-        if (suggest) {
-          event.preventDefault();
+        const target = topDismissTarget({
+          transfer: transferOpen,
+          settings: settingsOpen,
+          voiceReview: Boolean(voiceReview),
+          overview,
+          suggest: Boolean(suggest),
+          modal: Boolean(modal),
+          palette: paletteOpen,
+          history: historyOpen
+        });
+        if (!target) return;
+        event.preventDefault();
+        if (target === 'transfer') setTransferOpen(false);
+        if (target === 'settings') setSettingsOpen(false);
+        if (target === 'voiceReview') closeVoiceReview();
+        if (target === 'overview') setOverview(false);
+        if (target === 'suggest') {
           // Abandon whatever is in flight: its answer would arrive against a
           // dialog that has gone.
           void api()?.cancelAiRequest?.();
           setSuggest(null);
-          return;
         }
-        if (modal) {
-          event.preventDefault();
-          setModal(null);
-          return;
-        }
-        if (paletteOpen) {
-          event.preventDefault();
-          setPaletteOpen(false);
-          return;
-        }
-        if (historyOpen) {
-          event.preventDefault();
-          setHistoryOpen(false);
-          return;
-        }
+        if (target === 'modal') setModal(null);
+        if (target === 'palette') setPaletteOpen(false);
+        if (target === 'history') setHistoryOpen(false);
+        return;
       }
 
-      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
-      // App chrome, not the shell: a shortcut must not fire while the user is
-      // typing into one of our own fields, such as the inline workspace rename.
-      // xterm's input is a textarea, so a focused terminal is deliberately
-      // still covered by these.
-      if (event.target instanceof HTMLInputElement) return;
-      const key = event.key.toLowerCase();
-      if (key === 'o') {
-        event.preventDefault();
-        setOverview((value) => !value);
+      const shortcut = matchShortcut({
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        // App chrome, not the shell: a shortcut must not fire while the user is
+        // typing into one of our own fields, such as the inline workspace
+        // rename. xterm's input is a textarea, so a focused terminal is
+        // deliberately still covered by these.
+        inTextField: event.target instanceof HTMLInputElement
+      });
+      if (!shortcut) return;
+      event.preventDefault();
+
+      if (shortcut.action === 'switch-workspace') {
+        const target = workspaces[shortcut.position - 1];
+        if (target) switchWorkspace(target.id);
+        return;
       }
-      if (key === 'n') {
-        event.preventDefault();
+      if (shortcut.action === 'toggle-overview') setOverview((value) => !value);
+      if (shortcut.action === 'new-workspace') {
         setWorkspaceName(nextWorkspaceName(workspaces));
         setModal('workspace');
       }
-      if (key === 't') {
-        event.preventDefault();
-        openSessionDialog('local');
-      }
-      if (key === 'l') {
-        event.preventDefault();
+      if (shortcut.action === 'new-terminal') openSessionDialog('local');
+      // openSuggest, not setSuggest: with no endpoint configured it opens
+      // Settings and says so, exactly as the button does.
+      if (shortcut.action === 'ask-ai') openSuggest();
+      if (shortcut.action === 'toggle-layout') {
         // Match the layout buttons: a maximized pane would otherwise mask the change.
         patchView((current) => ({
           maximizedSessionId: null,
           layout: current.layout === 'stack' ? current.lastSplit : 'stack'
         }));
       }
-      if (key === 'b') {
-        event.preventDefault();
-        setDrawerCollapsed((value) => !value);
-      }
-      // Matched on code, not key: with Shift held, a comma reports as '<' on
-      // most layouts, so event.key would never equal ','.
-      if (event.code === 'Comma') {
-        event.preventDefault();
-        setSettingsOpen((value) => !value);
-      }
+      if (shortcut.action === 'toggle-sidebar') setDrawerCollapsed((value) => !value);
+      if (shortcut.action === 'toggle-settings') setSettingsOpen((value) => !value);
       // Ctrl+Shift+R, never Ctrl+R: McFly can rebind ctrl-r because it *is* the
       // shell. Swallowing it here would take reverse-search away from every
       // shell in every pane, including remote ones this feature cannot see.
-      if (key === 'r') {
-        event.preventDefault();
-        openPalette();
-      }
-      // Same reason as the comma above: Shift+1 reports as '!', so the digit
-      // only survives in event.code.
-      const digit = /^Digit([1-9])$/.exec(event.code);
-      if (digit) {
-        event.preventDefault();
-        const target = workspaces[Number(digit[1]) - 1];
-        if (target) switchWorkspace(target.id);
-      }
+      if (shortcut.action === 'history-palette') openPalette();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
