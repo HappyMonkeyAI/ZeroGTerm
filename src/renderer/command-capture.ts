@@ -45,6 +45,16 @@ export type CommandCapture = {
   handle(payload: string): boolean;
   /** Whether this pane's shell has ever emitted a mark. */
   hasMarks(): boolean;
+  /**
+   * Is the shell waiting for input right now?
+   *
+   * True between `B` and `C`: input has started and no command is running. That
+   * is the only moment it is safe to type something into a pane on the user's
+   * behalf — a `cd` sent while vim or an agent holds the terminal goes to that
+   * program instead. Only meaningful when hasMarks() is true; a shell that
+   * reports nothing cannot be asked.
+   */
+  atPrompt(): boolean;
   /** Forget a half-finished command, for when the pane is reattached. */
   reset(): void;
 };
@@ -101,6 +111,10 @@ export function createCommandCapture(io: CaptureIo, onCommand: (command: Capture
 
     hasMarks(): boolean {
       return sawMark;
+    },
+
+    atPrompt(): boolean {
+      return inputStart !== null && pending === null;
     },
 
     reset(): void {

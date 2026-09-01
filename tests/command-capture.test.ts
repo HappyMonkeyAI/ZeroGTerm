@@ -218,3 +218,46 @@ describe('readBufferRange', () => {
     expect(readBufferRange((row) => ['$ ls -la          '][row], { row: 0, col: 2 }, { row: 0, col: 18 })).toBe('ls -la');
   });
 });
+
+describe('atPrompt', () => {
+  it('is false before the shell has said anything', () => {
+    expect(pane().capture.atPrompt()).toBe(false);
+  });
+
+  it('is true between input starting and a command running', () => {
+    const p = pane();
+    p.capture.handle('A');
+    expect(p.capture.atPrompt()).toBe(false);
+    p.capture.handle('B');
+    expect(p.capture.atPrompt()).toBe(true);
+  });
+
+  it('is false while a command is running', () => {
+    // The case this exists for: a cd typed here would reach the running program
+    // rather than the shell.
+    const p = pane();
+    p.capture.handle('B');
+    p.type('vi notes.txt');
+    p.capture.handle('C');
+    expect(p.capture.atPrompt()).toBe(false);
+  });
+
+  it('is true again once the command finishes', () => {
+    const p = pane();
+    p.capture.handle('B');
+    p.type('ls');
+    p.capture.handle('C');
+    p.capture.handle('D;0');
+    expect(p.capture.atPrompt()).toBe(false);
+    p.capture.handle('A');
+    p.capture.handle('B');
+    expect(p.capture.atPrompt()).toBe(true);
+  });
+
+  it('is false after a reset, which forgets where the shell was', () => {
+    const p = pane();
+    p.capture.handle('B');
+    p.capture.reset();
+    expect(p.capture.atPrompt()).toBe(false);
+  });
+});
