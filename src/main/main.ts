@@ -11,6 +11,7 @@ import { PortForwardService } from './port-forward-service.js';
 import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
+import { wslHomeDirectory } from './wsl-home.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
 import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
@@ -341,6 +342,17 @@ function requireEntryKind(value: unknown): FileEntry['kind'] {
 }
 
 ipcMain.handle('fs:localHome', () => localHome());
+// Cached on success only, so a distribution that was not running when it was
+// first asked can answer later.
+const wslHomes = new Map<string, string>();
+ipcMain.handle('fs:wslHome', async (_event, distribution: unknown) => {
+  const name = typeof distribution === 'string' ? distribution : '';
+  const known = wslHomes.get(name);
+  if (known) return known;
+  const home = await wslHomeDirectory(name);
+  if (home) wslHomes.set(name, home);
+  return home;
+});
 ipcMain.handle('fs:listLocal', (_event, path: unknown) => listLocalDirectory(typeof path === 'string' && path ? path : undefined));
 ipcMain.handle('fs:mkdirLocal', (_event, path: unknown) => createLocalDirectory(requireString(path, 'A folder path')));
 ipcMain.handle('fs:renameLocal', (_event, from: unknown, to: unknown) => renameLocalEntry(requireString(from, 'The current path'), requireString(to, 'The new path')));

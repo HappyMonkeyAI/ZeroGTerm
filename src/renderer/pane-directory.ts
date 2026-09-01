@@ -234,3 +234,18 @@ export function changeDirectoryCommand(family: ShellFamily, path: string): Direc
   }
   return { command: `cd /d "${path}"` };
 }
+
+/**
+ * A child path, in whichever separator this pane's paths use.
+ *
+ * Kept here rather than using node:path, which the renderer does not have and
+ * which would in any case answer for the wrong platform: a WSL pane's paths are
+ * UNC while the app may be running anywhere.
+ */
+export function joinPath(parent: string, name: string, kind: PathKind): string {
+  if (kind === 'posix') return parent === '/' ? `/${name}` : `${parent.replace(/\/+$/, '')}/${name}`;
+  // Windows and UNC both use backslashes, and a share root carries a trailing
+  // `\.` that a child replaces rather than extends.
+  const base = parent.replace(/\\\.$/, '').replace(/[\\/]+$/, '');
+  return `${base}\\${name}`;
+}

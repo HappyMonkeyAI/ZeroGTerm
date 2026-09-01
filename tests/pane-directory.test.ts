@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   changeDirectoryCommand,
   isWslSession,
+  joinPath,
   listingPathFor,
   parentOf,
   pathKindFor,
@@ -9,7 +10,8 @@ import {
   shellFamily,
   shellPathFor,
   wslPosixPath,
-  wslUncPath
+  wslUncPath,
+  type PathKind
 } from '../src/renderer/pane-directory';
 import type { SessionInfo } from '../src/shared/types';
 
@@ -295,6 +297,43 @@ describe('changeDirectoryCommand', () => {
       // number of quote characters is always odd-free: pairs plus the outer two.
       const unescaped = posix.command.slice(4, -1).split(String.raw`'\''`).join('');
       expect(unescaped).not.toContain("'");
+    }
+  });
+});
+
+describe('joinPath', () => {
+  it('joins a POSIX path without doubling the separator at the root', () => {
+    expect(joinPath('/srv/app', 'src', 'posix')).toBe('/srv/app/src');
+    expect(joinPath('/', 'srv', 'posix')).toBe('/srv');
+    expect(joinPath('/srv/', 'app', 'posix')).toBe('/srv/app');
+  });
+
+  it('joins a Windows path with backslashes', () => {
+    expect(joinPath(String.raw`C:\Users\dev`, 'src', 'windows')).toBe(String.raw`C:\Users\dev\src`);
+    expect(joinPath('C:\\', 'Users', 'windows')).toBe(String.raw`C:\Users`);
+  });
+
+  it('replaces the share root marker rather than extending it', () => {
+    // wslUncPath renders `/` as `…\.` because readdir needs something after the
+    // share, so a child of that must not become `…\.\home`.
+    expect(joinPath(String.raw`\\wsl.localhost\Ubuntu-22.04\.`, 'home', 'unc'))
+      .toBe(String.raw`\\wsl.localhost\Ubuntu-22.04\home`);
+    expect(joinPath(String.raw`\\wsl.localhost\Ubuntu-22.04\home`, 'stephen', 'unc'))
+      .toBe(String.raw`\\wsl.localhost\Ubuntu-22.04\home\stephen`);
+  });
+
+  it('keeps a name with a space or a quote intact, which quoting deals with later', () => {
+    expect(joinPath('/tmp', "it's here", 'posix')).toBe("/tmp/it's here");
+  });
+
+  it('round-trips against parentOf', () => {
+    const cases: Array<[string, PathKind]> = [
+      ['/srv/app', 'posix'],
+      [String.raw`C:\Users\dev`, 'windows'],
+      [String.raw`\\wsl.localhost\D\home`, 'unc']
+    ];
+    for (const [parent, kind] of cases) {
+      expect(parentOf(joinPath(parent, 'child', kind), kind)).toBe(parent);
     }
   });
 });

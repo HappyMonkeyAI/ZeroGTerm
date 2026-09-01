@@ -17,6 +17,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
 - Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
 - Shared ports over SSH, in a Ports view opened from the rail: forward a port on a remote host so it answers on this machine, or a port here so it answers on the remote. Each tunnel is its own SSH connection, so a host needs no terminal open first. Ports bind to loopback unless you widen them, and are remembered between launches.
+- A directory browser inside a pane, opened from the folder button in its title bar: the pane splits, terminal on one side and the directories on the other, with a draggable divider. Double-click a folder to take the shell there. It works on SSH panes and on local ones, WSL included, follows a `cd` you type by hand, and is remembered per pane when you switch workspaces or relaunch.
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
 - A ranked command palette on `Ctrl+Shift+R`, in the spirit of [McFly](https://github.com/cantino/mcfly): commands you have run, ranked by directory, host, recency, frequency, whether they worked, and whether you picked them before. Off by default — it is the one feature that stores what you typed — and it refuses anything that looks like it carries a credential.
@@ -222,6 +223,40 @@ are refused with a message rather than acted on. The `sftp` client re-reads its
 own arguments through a glob pass, and there is no encoding of those characters
 that is provably correct for every command — being approximately right about
 which file to delete is not good enough.
+
+## Browsing directories inside a pane
+
+The folder button in a pane's title bar splits that pane: the terminal on one
+side, the directories where its shell is standing on the other. Drag the divider
+to change the balance, double-click it to centre it, or use the arrow keys when
+it has focus. A pane remembers whether its browser was open and where the divider
+was, per workspace and between launches.
+
+Single-click a folder to look inside it without moving the shell.
+**Double-click** it to take the shell there — ZeroG types the `cd` into the pane,
+which is deliberately visible: you asked for it, and seeing the command is how
+you know what happened. `..` is always the first row, except at a root the shell
+cannot go above.
+
+Where it lists from depends on the pane. An SSH pane lists over the same SFTP
+connection the transfer panel uses. A native local pane lists the filesystem
+directly. A WSL pane lists the distribution through the `\\wsl.localhost\` share
+Windows serves it on, so what you see is the distribution's own filesystem and
+not the Windows one — and `~` is resolved by asking the distribution once, never
+by typing `pwd` into your pane.
+
+Two things it will refuse, with a sentence rather than in silence:
+
+- **A pane that is not at a prompt.** A `cd` sent while `vi`, `less`, or an agent
+  has the terminal goes to that program instead. Where a shell reports the OSC 133
+  prompt marks — the same integration the command history uses — this is known
+  exactly; otherwise the shape of the last line is the best available answer.
+- **A directory name it cannot quote for that shell.** A name containing a line
+  break, or a double quote in a Command Prompt pane, is not typed at all rather
+  than approximated.
+
+The browser navigates; it does not move files. The SFTP panel is the surface for
+that.
 
 ## Settings
 

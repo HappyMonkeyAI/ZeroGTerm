@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -30,9 +30,20 @@ import {
   workspaceDotState,
   workspacePaneCount,
   paneEntries,
+  DEFAULT_BROWSER_RATIO,
+  MAX_BROWSER_RATIO,
+  MIN_BROWSER_RATIO,
   type Workspace,
   type WorkspaceView
 } from './workspace-view';
+import { PaneBrowser } from './pane-browser';
+import {
+  changeDirectoryCommand,
+  listingPathFor,
+  pathKindFor,
+  shellFamily,
+  shellPathFor
+} from './pane-directory';
 import { planSessionRestore, type RestoreAction, type SessionDescriptor } from './session-restore';
 import {
   applyForwardStatus,
@@ -615,6 +626,70 @@ function TerminalView({
  * control has an equivalent: it takes focus, the arrow keys nudge it, and Enter
  * or a double-click puts it back where it started.
  */
+/**
+ * A pane's contents: the terminal, and the directory browser beside it.
+ *
+ * The wrapper is always rendered, open or not, so the terminal keeps its place
+ * in the tree. Moving it into and out of a wrapper would unmount xterm and
+ * reattach the pty every time the browser was toggled.
+ *
+ * The divider's position during a drag is held here rather than in the
+ * workspace, so dragging is one state update at the end instead of one per
+ * pointer move.
+ */
+function PaneBody({
+  open,
+  ratio,
+  browser,
+  onRatio,
+  children
+}: {
+  open: boolean;
+  /** The share of the pane's width the terminal keeps, as a percentage. */
+  ratio: number;
+  browser: React.ReactNode;
+  onRatio: (ratio: number) => void;
+  children: React.ReactNode;
+}) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState<number | null>(null);
+  const shown = dragging ?? ratio;
+  const clamp = (value: number) => Math.min(MAX_BROWSER_RATIO, Math.max(MIN_BROWSER_RATIO, Math.round(value)));
+
+  return (
+    <div
+      className={open ? 'pane-body pane-body-split' : 'pane-body'}
+      ref={bodyRef}
+      style={open ? { gridTemplateColumns: `${shown}fr ${100 - shown}fr` } : undefined}
+    >
+      {children}
+      {open ? (
+        <>
+          <ResizeHandle
+            orientation="vertical"
+            className="pane-resizer pane-browser-resizer"
+            label="Directory browser split"
+            valuePercent={shown}
+            style={{ left: `calc((100% - 1px) * ${shown / 100} + 0.5px)` }}
+            onDrag={(position) => {
+              const box = bodyRef.current?.getBoundingClientRect();
+              if (!box || box.width <= 0) return;
+              setDragging(clamp(((position.clientX - box.left) / box.width) * 100));
+            }}
+            onCommit={() => {
+              if (dragging !== null) onRatio(dragging);
+              setDragging(null);
+            }}
+            onNudge={(direction) => onRatio(clamp(shown + direction * 2))}
+            onReset={() => onRatio(DEFAULT_BROWSER_RATIO)}
+          />
+          {browser}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function ResizeHandle({
   orientation,
   className,
@@ -805,6 +880,49 @@ function App() {
   const registerTerminalRead = useCallback((sessionId: string, read: (() => string) | null) => {
     if (read) terminalReadRef.current.set(sessionId, read);
     else terminalReadRef.current.delete(sessionId);
+  }, []);
+
+  // Where each pane's browser is looking, when the user has taken it somewhere
+  // other than the shell's own directory. Cleared when the shell moves, so the
+  // two agree again.
+  const [browserPaths, setBrowserPaths] = useState<Record<string, string>>({});
+  // What `~` means in each WSL distribution, asked once. A WSL shell without
+  // integration reports `~`, and a symbol cannot be translated into the share
+  // path a listing needs.
+  const [wslHomes, setWslHomes] = useState<Record<string, string>>({});
+
+  // One listing function per pane, kept because PaneBrowser reloads whenever the
+  // function's identity changes — a fresh closure each render would list forever.
+  const listersRef = useRef(new Map<string, (path: string) => Promise<DirectoryListing>>());
+  const listerFor = useCallback((session: SessionInfo) => {
+    const existing = listersRef.current.get(session.id);
+    if (existing) return existing;
+    // An SSH pane lists over the connection it already has; a local pane, WSL
+    // included, lists through the filesystem. Neither is a new channel.
+    const lister = (path: string): Promise<DirectoryListing> => {
+      const currentApi = api();
+      if (!currentApi) return Promise.reject(new Error('The terminal bridge is not available.'));
+      return session.kind === 'ssh' ? currentApi.sftpList(session.id, path) : currentApi.listLocalDirectory(path);
+    };
+    listersRef.current.set(session.id, lister);
+    return lister;
+  }, []);
+
+  const askedHomesRef = useRef(new Set<string>());
+  /** Find out what `~` means in a distribution, once. */
+  const resolveWslHome = useCallback((distribution: string) => {
+    if (askedHomesRef.current.has(distribution)) return;
+    askedHomesRef.current.add(distribution);
+    const currentApi = api();
+    if (!currentApi) return;
+    void currentApi
+      .wslHome(distribution)
+      .then((home) => {
+        if (home) setWslHomes((current) => ({ ...current, [distribution]: home }));
+      })
+      // A distro that will not answer leaves the browser saying it does not know
+      // where the pane is, which is true.
+      .catch(() => undefined);
   }, []);
 
   /** Put the keyboard back in a pane, so the user can carry on typing. */
@@ -2003,6 +2121,135 @@ function App() {
     }
   };
 
+  const browserStateFor = (sessionId: string) => activeWorkspace?.view.browsers?.[sessionId];
+  const browserOpenFor = (sessionId: string) => Boolean(browserStateFor(sessionId)?.open);
+  const browserRatioFor = (sessionId: string) => browserStateFor(sessionId)?.ratio ?? DEFAULT_BROWSER_RATIO;
+
+  const patchBrowser = (sessionId: string, patch: Partial<{ open: boolean; ratio: number }>) => {
+    patchView((current) => ({
+      browsers: {
+        ...current.browsers,
+        [sessionId]: { open: false, ...current.browsers?.[sessionId], ...patch }
+      }
+    }));
+  };
+
+  const toggleBrowser = (sessionId: string) => {
+    const open = !browserOpenFor(sessionId);
+    patchBrowser(sessionId, { open });
+    // Closing forgets where it had been navigated to, so reopening starts from
+    // the pane's own directory rather than wherever it was left.
+    if (!open) setBrowserPaths((current) => ({ ...current, [sessionId]: '' }));
+  };
+
+  /**
+   * Where a pane's browser should be listing.
+   *
+   * Wherever the user has taken it, and the shell's own directory otherwise —
+   * which is how the browser follows a `cd` typed by hand, with no new signal:
+   * cwd-tracker already maintains that from OSC 7 or the prompt.
+   */
+  const browserPathFor = (session: SessionInfo): string | null =>
+    browserPaths[session.id] || listingPathFor(session, session.wslDistribution ? wslHomes[session.wslDistribution] : undefined);
+
+  /**
+   * Take the shell into a directory.
+   *
+   * Four gates, each refusing out loud rather than typing something
+   * approximate: the quoting rule has to be known, the path has to translate
+   * back to something this shell can reach, the name has to be quotable, and the
+   * pane has to be at a prompt. That last one is the point of the exercise — a
+   * `cd` sent while vim or an agent holds the terminal goes to *that* program.
+   */
+  const openDirectory = (session: SessionInfo, listingPath: string) => {
+    const currentApi = api();
+    if (!currentApi) return;
+
+    const family = shellFamily(session);
+    if (!family) {
+      setStatus(`ZeroG does not know how ${session.name} quotes a path, so it will not type one.`);
+      return;
+    }
+    const shellPath = shellPathFor(session, listingPath);
+    if (!shellPath) {
+      setStatus(`That directory is outside what ${session.name} can reach.`);
+      return;
+    }
+    if (!paneAcceptsCommand(session)) {
+      setStatus(`${session.name} is running something, so its directory was left alone.`);
+      return;
+    }
+    const built = changeDirectoryCommand(family, shellPath);
+    if ('refused' in built) {
+      setStatus(built.refused);
+      return;
+    }
+    // cwd-tracker deliberately never injects a `pwd`, because that would put a
+    // command the user did not ask for into their shell history. This is the
+    // other case: the user double-clicked asking for exactly this, and seeing
+    // the `cd` appear in the scrollback is honest about what happened.
+    currentApi.write(session.id, built.command + '\r');
+    setBrowserPaths((current) => ({ ...current, [session.id]: '' }));
+    setStatus(`${session.name}: ${built.command}`);
+    focusTerminal(session.id);
+  };
+
+  /**
+   * Is this pane sitting at a prompt?
+   *
+   * The OSC 133 marks answer exactly, where a shell reports them. Where it
+   * reports none, the prompt heuristic on the last line of the grid is the
+   * fallback — weaker, but the alternative is refusing the feature outright on
+   * every shell without integration installed.
+   */
+  const paneAcceptsCommand = (session: SessionInfo): boolean => {
+    const capture = captureRef.current.get(session.id);
+    if (capture?.hasMarks()) return capture.atPrompt();
+    const read = terminalReadRef.current.get(session.id);
+    // Nothing registered means the pane is not showing, and a pane the user
+    // cannot see is not one they just double-clicked in.
+    if (!read) return false;
+    const lines = read().trimEnd().split('\n');
+    return looksLikeShellPrompt(lines[lines.length - 1] ?? '');
+  };
+
+  // The browser follows the shell. When a pane reports a new directory — a `cd`
+  // typed by hand, or the one this feature sent — whatever the user had
+  // navigated its browser to stops applying, so the two never disagree.
+  const paneCwdRef = useRef(new Map<string, string | undefined>());
+  useEffect(() => {
+    const moved: string[] = [];
+    for (const session of sessions) {
+      const seen = paneCwdRef.current.has(session.id);
+      if (seen && paneCwdRef.current.get(session.id) !== session.cwd) moved.push(session.id);
+      paneCwdRef.current.set(session.id, session.cwd);
+    }
+    if (!moved.length) return;
+    setBrowserPaths((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const id of moved) {
+        if (next[id]) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [sessions]);
+
+  // Asked only for a pane whose browser is actually open, and only while its
+  // shell is still reporting a tilde: a distro is a process to start, and
+  // nothing should start one for a browser nobody opened.
+  useEffect(() => {
+    for (const session of sessions) {
+      if (!session.wslDistribution || !browserOpenFor(session.id)) continue;
+      if (wslHomes[session.wslDistribution]) continue;
+      if (session.cwd && !session.cwd.startsWith('~')) continue;
+      resolveWslHome(session.wslDistribution);
+    }
+  }, [sessions, activeWorkspace?.view.browsers, wslHomes, resolveWslHome]);
+
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
     setModal('workspace');
@@ -3107,6 +3354,11 @@ function App() {
             )}
             {allPanes.map(({ session: paneSession, index, dormant }) => {
               const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
+              // Null where ZeroG cannot tell how to read a path for this pane, in
+              // which case the button is offered disabled rather than hidden: the
+              // reason is more use than a missing control.
+              const browsePathKind = pathKindFor(paneSession);
+              const browserOpen = Boolean(browsePathKind) && browserOpenFor(paneSession.id);
               return (
                 <article
                   className={`pane terminal-pane ${dormant ? 'dormant-pane' : ''} ${!dormant && focusedSessionId === paneSession.id ? 'focused' : ''} ${!dormant && maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${dormant || isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
@@ -3129,6 +3381,23 @@ function App() {
                         </>
                       )}
                       {busy ? 'connecting…' : paneVoice ? `${paneVoice}…` : paneSession.kind === 'ssh' ? 'ssh' : 'bash'}
+                      <button
+                        type="button"
+                        className={browserOpen ? 'pane-browse active' : 'pane-browse'}
+                        onClick={() => toggleBrowser(paneSession.id)}
+                        disabled={!browsePathKind}
+                        title={
+                          browsePathKind
+                            ? browserOpen
+                              ? 'Hide the directory browser'
+                              : 'Browse directories'
+                            : 'ZeroG cannot tell what kind of paths this pane uses'
+                        }
+                        aria-label={`${browserOpen ? 'Hide' : 'Show'} the directory browser for ${paneSession.name}`}
+                        aria-pressed={browserOpen}
+                      >
+                        <Icon name="folder" />
+                      </button>
                       <button
                         type="button"
                         className="pane-proceed"
@@ -3156,18 +3425,38 @@ function App() {
                       </button>
                     </span>
                   </div>
-                  <TerminalView
-                    sessionId={paneSession.id}
-                    focused={!dormant && focusedSessionId === paneSession.id}
-                    dormant={dormant}
-                    onStatus={setStatus}
-                    appearance={settings.appearance}
-                    terminalSettings={settings.terminal}
-                    registerFocus={registerTerminalFocus}
-                    registerCapture={registerTerminalCapture}
-                    onCommand={recordCommand}
-                    registerRead={registerTerminalRead}
-                  />
+                  <PaneBody
+                    open={browserOpen}
+                    ratio={browserRatioFor(paneSession.id)}
+                    onRatio={(ratio) => patchBrowser(paneSession.id, { ratio })}
+                    browser={
+                      browsePathKind ? (
+                        <PaneBrowser
+                          session={paneSession}
+                          path={browserPathFor(paneSession)}
+                          pathKind={browsePathKind}
+                          shellPath={paneSession.cwd ?? null}
+                          list={listerFor(paneSession)}
+                          onOpen={(path) => openDirectory(paneSession, path)}
+                          onBrowse={(path) => setBrowserPaths((current) => ({ ...current, [paneSession.id]: path }))}
+                          onClose={() => toggleBrowser(paneSession.id)}
+                        />
+                      ) : null
+                    }
+                  >
+                    <TerminalView
+                      sessionId={paneSession.id}
+                      focused={!dormant && focusedSessionId === paneSession.id}
+                      dormant={dormant}
+                      onStatus={setStatus}
+                      appearance={settings.appearance}
+                      terminalSettings={settings.terminal}
+                      registerFocus={registerTerminalFocus}
+                      registerCapture={registerTerminalCapture}
+                      onCommand={recordCommand}
+                      registerRead={registerTerminalRead}
+                    />
+                  </PaneBody>
                 </article>
               );
             })}

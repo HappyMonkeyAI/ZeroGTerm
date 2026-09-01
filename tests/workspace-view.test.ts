@@ -613,3 +613,66 @@ describe('fromStoredFile', () => {
     expect(adopted[0].pending).toEqual([]);
   });
 });
+
+describe('directory browser state', () => {
+  it('forgets a browser whose pane the workspace no longer holds', () => {
+    // Otherwise a new session that happened to reuse the id would open onto a
+    // stranger's divider position.
+    const view: WorkspaceView = {
+      ...makeView('split-v'),
+      browsers: { 'local:api': { open: true, ratio: 70 }, 'local:gone': { open: true } }
+    };
+    expect(reconcileView(view, ['local:api']).browsers).toEqual({ 'local:api': { open: true, ratio: 70 } });
+  });
+
+  it('returns the same view when every browser still belongs', () => {
+    // reconcileView runs against every workspace on each session-list change, so
+    // an unchanged view has to be the same object or the render loops.
+    const view: WorkspaceView = { ...makeView('split-v'), browsers: { 'local:api': { open: true } } };
+    expect(reconcileView(view, ['local:api'])).toBe(view);
+  });
+
+  it('survives the store and comes back', () => {
+    const live = [{ ...session('local:api', 'connected'), name: 'api', screenName: 'api' }];
+    const before = [workspace('a', 'Workspace', ['local:api'], { layout: 'split-v', lastSplit: 'split-v' })];
+    before[0].view.browsers = { 'local:api': { open: true, ratio: 45 } };
+    const after = fromStoredFile(toStoredFile(before, 'a', live), 'stack');
+    expect(after.workspaces[0].view.browsers).toEqual({ 'local:api': { open: true, ratio: 45 } });
+  });
+
+  it('takes only well-formed browser state out of the store', () => {
+    const file: StoredWorkspaceFile = {
+      version: 1,
+      workspaces: [{
+        id: 'ws-1',
+        name: 'Workspace',
+        view: {
+          layout: 'stack',
+          lastSplit: 'split-v',
+          // A file on disk, possibly written by an older build or edited by hand.
+          browsers: {
+            'local:a': { open: true, ratio: 5 },
+            'local:b': { open: true, ratio: 50 },
+            'local:c': { open: true }
+          } as Record<string, { open: boolean; ratio?: number }>
+        },
+        members: []
+      }]
+    };
+    // A ratio narrower than the divider can be dragged to is dropped, leaving
+    // the default split rather than a pane the user cannot widen back.
+    expect(fromStoredFile(file, 'stack').workspaces[0].view.browsers).toEqual({
+      'local:a': { open: true },
+      'local:b': { open: true, ratio: 50 },
+      'local:c': { open: true }
+    });
+  });
+
+  it('reports no browsers rather than an empty map when the store held none', () => {
+    const file: StoredWorkspaceFile = {
+      version: 1,
+      workspaces: [{ id: 'ws-1', name: 'Workspace', view: { layout: 'stack', lastSplit: 'split-v' }, members: [] }]
+    };
+    expect(fromStoredFile(file, 'stack').workspaces[0].view.browsers).toBeUndefined();
+  });
+});
