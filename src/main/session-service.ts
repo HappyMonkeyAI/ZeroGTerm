@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import type { CreateLocalRequest, SessionInfo } from '../shared/types.js';
-import { defaultShellBackend, findOpenSshTool, isLocalShellBackend, resolveShellBackend, type ShellCatalogOptions } from './shell-catalog.js';
+import { WSL_HOME, defaultShellBackend, findOpenSshTool, isLocalShellBackend, ptyStartDirectory, resolveShellBackend, withWslStartDirectory, type ShellCatalogOptions } from './shell-catalog.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -174,6 +174,14 @@ function loadPty(): any {
 export class ScreenService {
   private ptys = new Map<string, SessionPty>();
   private sshSessions = new Map<string, SessionInfo>();
+  /**
+   * The argv each fallback local session was started with.
+   *
+   * Held apart from SessionInfo because it is not session metadata anyone else
+   * needs, and because the reported cwd moves as the shell does — a reattach
+   * must not rebuild the arguments from a directory that has since changed.
+   */
+  private launchArgs = new Map<string, string[]>();
   private fallbackLocalSessions = new Map<string, SessionInfo>();
   private readonly onEvent?: (event: 'created' | 'attached' | 'detached' | 'closed' | 'reconnect-failed', session: SessionInfo, available: boolean) => void;
   /** Injectable so tests can exercise routing and teardown without a real shell. */
@@ -236,14 +244,20 @@ export class ScreenService {
       ? resolveShellBackend(request.backend, request.wslDistribution)
       : defaultShellBackend();
     const backend = shell.backend;
-    const requestedCwd = request.cwd ?? homedir();
+    // A WSL shell starts where its own `--cd` argument says, not where the pty
+    // was launched from, so its directory is a Linux path inside the distro
+    // rather than the Windows one this side would otherwise report. Every other
+    // backend does start where the pty does.
+    const requestedCwd = request.cwd ?? (backend === 'wsl' ? WSL_HOME : homedir());
+    const launch = request.cwd ? withWslStartDirectory(shell, request.cwd) : shell;
     if (!(await this.available())) {
       const fallback: SessionInfo = { id: `local:${safeName}`, name: safeName, kind: 'local', host: 'local', cwd: requestedCwd, status: 'detached', lastSeen: new Date().toISOString(), persistence: 'process', backend, scope: 'local', source: 'active', wslDistribution: shell.wslDistribution };
       this.fallbackLocalSessions.set(fallback.id, fallback);
+      this.launchArgs.set(fallback.id, launch.args);
       this.onEvent?.('created', fallback, true);
       return fallback;
     }
-    await execFileAsync('screen', ['-dmS', safeName, shell.executable, ...shell.args], { cwd: requestedCwd });
+    await execFileAsync('screen', ['-dmS', safeName, launch.executable, ...launch.args], { cwd: ptyStartDirectory(requestedCwd) });
     const session: SessionInfo = { id: `local:${safeName}`, name: safeName, kind: 'local', host: 'local', cwd: requestedCwd, status: 'detached', lastSeen: new Date().toISOString(), persistence: 'screen', backend: 'screen', scope: 'local', source: 'active', screenName: safeName, wslDistribution: shell.wslDistribution };
     this.onEvent?.('created', session, true);
     return session;
@@ -295,7 +309,10 @@ export class ScreenService {
         const shell = isLocalShellBackend(fallback.backend)
           ? resolveShellBackend(fallback.backend, fallback.wslDistribution)
           : defaultShellBackend();
-        this.spawnCommand(id, shell.executable, shell.args, onData, onExit, fallback.cwd, size);
+        // The arguments this session was created with, so a WSL pane reattaches
+        // to the same directory rather than losing its `--cd`.
+        const args = this.launchArgs.get(id) ?? shell.args;
+        this.spawnCommand(id, shell.executable, args, onData, onExit, ptyStartDirectory(fallback.cwd), size);
         this.onEvent?.('attached', fallback, true);
         return { ...fallback };
       }
@@ -432,6 +449,7 @@ export class ScreenService {
     this.detach(sessionId);
     this.sshSessions.delete(sessionId);
     this.fallbackLocalSessions.delete(sessionId);
+    this.launchArgs.delete(sessionId);
     this.onEvent?.('closed', session, false);
   }
 }
