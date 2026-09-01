@@ -118,12 +118,27 @@ describe('what the buttons say they will do', () => {
   });
 
   it('names the split the single-pane view will return to', () => {
-    expect(singlePaneTitle(view({ maximized: true, lastSplit: 'grid' }))).toBe('Back to four-pane grid');
-    expect(singlePaneTitle(view({ layout: 'stack', lastSplit: 'split-h' }))).toBe('Back to horizontal split');
+    expect(singlePaneTitle(view({ maximized: true, lastSplit: 'grid' }))).toBe('Back to four-pane grid (Ctrl+Shift+L)');
+    expect(singlePaneTitle(view({ layout: 'stack', lastSplit: 'split-h' }))).toBe('Back to horizontal split (Ctrl+Shift+L)');
   });
 
   it('says what it will do on the way in, too', () => {
-    expect(singlePaneTitle(view({ sessionCount: 2 }))).toBe('Maximize focused pane');
-    expect(singlePaneTitle(view({ sessionCount: 1 }))).toBe('Single pane');
+    expect(singlePaneTitle(view({ sessionCount: 2 }))).toBe('Maximize focused pane (Ctrl+Shift+L)');
+    expect(singlePaneTitle(view({ sessionCount: 1 }))).toBe('Single pane (Ctrl+Shift+L)');
+  });
+
+  it('names the shortcut in every case, since this button is the only place it appears', () => {
+    // The keyboard equivalent for the layout toggle was documented nowhere at
+    // all — not in a tooltip, not in the README — so it is pinned here.
+    const cases = [
+      view(),
+      view({ maximized: true }),
+      view({ layout: 'stack' }),
+      view({ sessionCount: 1 }),
+      view({ sessionCount: 4, layout: 'grid' })
+    ];
+    for (const candidate of cases) {
+      expect(singlePaneTitle(candidate)).toContain('Ctrl+Shift+L');
+    }
   });
 });

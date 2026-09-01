@@ -120,6 +120,11 @@ export function splitButtonTitle(target: SplitLayout, view: PaneView): string {
 
 /** The tooltip for the single-pane button, which names the split it goes back to. */
 export function singlePaneTitle(view: PaneView): string {
-  if (view.maximized || view.layout === 'stack') return `Back to ${LAYOUT_NAMES[view.lastSplit].toLowerCase()}`;
-  return view.sessionCount > 1 ? 'Maximize focused pane' : 'Single pane';
+  // The shortcut is named here because this button was the only one whose
+  // keyboard equivalent appeared nowhere in the UI or the README.
+  const shortcut = ' (Ctrl+Shift+L)';
+  if (view.maximized || view.layout === 'stack') {
+    return `Back to ${LAYOUT_NAMES[view.lastSplit].toLowerCase()}${shortcut}`;
+  }
+  return (view.sessionCount > 1 ? 'Maximize focused pane' : 'Single pane') + shortcut;
 }

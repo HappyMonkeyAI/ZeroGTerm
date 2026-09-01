@@ -1341,6 +1341,12 @@ function App() {
         event.preventDefault();
         openSessionDialog('local');
       }
+      if (key === 'a') {
+        event.preventDefault();
+        // openSuggest, not setSuggest: with no endpoint configured it opens
+        // Settings and says so, exactly as the button does.
+        openSuggest();
+      }
       if (key === 'l') {
         event.preventDefault();
         // Match the layout buttons: a maximized pane would otherwise mask the change.
