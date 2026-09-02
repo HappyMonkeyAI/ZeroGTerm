@@ -240,3 +240,62 @@ describe('the source itself', () => {
     await expect(source.listerFor(local)('/etc')).rejects.toThrow('terminal bridge is not available');
   });
 });
+
+describe('listing before the shell has said anything', () => {
+  it('asks the connection where it is, rather than guessing', async () => {
+    // A freshly connected SSH pane has run nothing, so there is no reported
+    // directory. The connection has one of its own, the login directory, and
+    // sftp answers a pathless list with it. Reported as the browser showing
+    // nothing until pwd had been run by hand.
+    const { api, state } = fakeApi({ home: '/home/stephen' });
+    const source = createPaneListingSource(() => api);
+    const listing = await source.listerFor(session())();
+    expect(state.lists).toEqual([{ handle: 'sftp-1', path: undefined }]);
+    expect(listing.path).toBe('/home/stephen');
+  });
+
+  it('reports the login directory to whoever is watching', async () => {
+    // So a tilde the shell reports later resolves without a second round trip.
+    const homes: Array<[string, string]> = [];
+    const { api } = fakeApi({ home: '/home/dev' });
+    const source = createPaneListingSource(() => api, (id, home) => homes.push([id, home]));
+    await source.listerFor(session())();
+    expect(homes).toEqual([['ssh:1', '/home/dev']]);
+  });
+
+  it('reports it once, not on every listing', async () => {
+    const homes: string[] = [];
+    const { api } = fakeApi();
+    const source = createPaneListingSource(() => api, (_id, home) => homes.push(home));
+    const lister = source.listerFor(session());
+    await lister();
+    await lister('/etc');
+    await lister('/var');
+    expect(homes).toHaveLength(1);
+  });
+
+  it('surfaces the reason a first listing failed', async () => {
+    // The failure used to be swallowed: the browser said the pane had not
+    // reported a directory, which is indistinguishable from a host that could
+    // not be reached.
+    const { api } = fakeApi();
+    const refusing: PaneListingApi = {
+      ...api,
+      sftpOpen: async () => {
+        throw new Error('stephen@ubuntu: Permission denied (publickey).');
+      }
+    };
+    const source = createPaneListingSource(() => refusing);
+    await expect(source.listerFor(session())()).rejects.toThrow('Permission denied');
+  });
+
+  it('still refuses to guess for a local pane', async () => {
+    // A pathless local listing is answered with the Windows home directory,
+    // which for a pane inside a WSL distribution is the wrong filesystem.
+    const { api, state } = fakeApi();
+    const source = createPaneListingSource(() => api);
+    const wsl = session({ id: 'local:wsl', kind: 'local', host: 'local', backend: 'wsl', sshTarget: undefined });
+    await source.listerFor(wsl)(String.raw`\\wsl.localhost\Ubuntu-22.04\home\stephen`);
+    expect(state.localLists).toEqual([String.raw`\\wsl.localhost\Ubuntu-22.04\home\stephen`]);
+  });
+});

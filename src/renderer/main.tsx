@@ -904,7 +904,13 @@ function App() {
   // connection, whose handle is not the terminal session's id — passing the
   // wrong one is what made the browser fail on every SSH pane — so that
   // bookkeeping lives in pane-listing.ts where it can be tested.
-  const listingSource = useRef(createPaneListingSource(api)).current;
+  // The login directory arrives with the connection, so the browser is told
+  // about it as soon as one opens rather than being asked separately.
+  const listingSource = useRef(
+    createPaneListingSource(api, (sessionId, home) =>
+      setSshHomes((current) => (current[sessionId] === home ? current : { ...current, [sessionId]: home }))
+    )
+  ).current;
   const listerFor = listingSource.listerFor;
   // The login directory of an SSH pane's host, once a connection has said. Held
   // in state as well as in the source so a pane reporting `~` re-renders with a
@@ -3494,6 +3500,9 @@ function App() {
                         <PaneBrowser
                           session={paneSession}
                           path={browserPath}
+                          // An SSH pane can list before its shell has said
+                          // anything: the connection knows where it is.
+                          unanchored={paneSession.kind === 'ssh'}
                           pathKind={browsePathKind}
                           // Where the browser is, said the way this shell would
                           // say it — not the shell's own reported directory,
