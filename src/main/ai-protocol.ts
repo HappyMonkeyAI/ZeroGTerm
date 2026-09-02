@@ -232,7 +232,10 @@ export function parseModelList(payload: unknown): string[] {
   const ids = data
     .map((entry) => (entry && typeof entry === 'object' ? (entry as { id?: unknown }).id : undefined))
     .filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length < 200);
-  return [...new Set(ids)].sort();
+  // localeCompare, not the default sort: these become a list a person picks
+  // from, and the default orders by UTF-16 code unit, which puts every
+  // capitalised name before every lower-case one.
+  return [...new Set(ids)].sort((left, right) => left.localeCompare(right));
 }
 
 /** `{base}/chat/completions`, however the base was typed. */

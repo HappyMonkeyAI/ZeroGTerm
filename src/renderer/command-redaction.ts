@@ -79,7 +79,10 @@ const RULES: Rule[] = [
     // `mysql -pSecret`, `mysqldump -pSecret`. Attached only: a bare `-p` makes
     // the client prompt, which is the safe form and worth keeping.
     reason: 'credential-flag',
-    pattern: /\bmysql(?:dump|admin)?\b[^\r\n]*\s-p\S/i
+    // NOSONAR on the pattern below: rule S2068 reads it as a hardcoded MySQL
+    // password. It is the opposite of one, being the pattern that recognises a
+    // password so it is never stored. There is nothing here to change or remove.
+    pattern: /\bmysql(?:dump|admin)?\b[^\r\n]*\s-p\S/i // NOSONAR
   },
   {
     // `https://user:pass@host`, `postgres://u:p@host`. Excludes `host:port/path`

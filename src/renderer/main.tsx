@@ -1330,7 +1330,10 @@ function App() {
       .then(([file, live]) => {
         if (cancelled) return;
         const restored = fromStoredForwards(file);
-        setForwards(live.reduce(applyForwardStatus, restored));
+        // Wrapped rather than passed straight in: reduce also supplies the
+        // index and the array, so a third parameter added to
+        // applyForwardStatus later would start silently receiving one.
+        setForwards(live.reduce((merged, info) => applyForwardStatus(merged, info), restored));
       })
       .catch(() => undefined)
       .finally(() => {
