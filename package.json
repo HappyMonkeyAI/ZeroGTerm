@@ -38,7 +38,7 @@
     "test": "vitest run --pool=threads",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "electron .",
-    "package:win": "npm run build && electron-builder --win nsis portable --x64",
+    "package:win": "npm run build && electron-builder --win nsis portable --x64 --publish never",
     "prepublishOnly": "npm run build"
   },
   "build": {
@@ -60,7 +60,7 @@
           "arch": ["x64"]
         }
       ],
-      "artifactName": "ZeroG-Terminal-${version}-${arch}.${ext}"
+      "artifactName": "ZeroG-Terminal-${version}-${arch}-${target}.${ext}"
     },
     "nsis": {
       "oneClick": false,
