@@ -889,6 +889,11 @@ input:focus-visible {
   color: #f7768e;
 }
 
+/* A question the host is waiting on, which only the transfer panel can answer. */
+.pane-browser-asking {
+  color: #e0af68;
+}
+
 .pane-browser-foot {
   flex: none;
   padding: 4px 8px;

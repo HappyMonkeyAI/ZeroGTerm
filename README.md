@@ -252,9 +252,15 @@ which is deliberately visible: you asked for it, and seeing the command is how
 you know what happened. `..` is always the first row, except at a root the shell
 cannot go above.
 
-Where it lists from depends on the pane. An SSH pane lists over the same SFTP
-connection the transfer panel uses. A native local pane lists the filesystem
-directly. A WSL pane lists the distribution through the `\\wsl.localhost\` share
+Where it lists from depends on the pane. An SSH pane lists over an SFTP
+connection to its host, opening one if there is not already one open — the same
+client, `~/.ssh/config`, agent and `known_hosts` the transfer panel uses, and the
+same connection when both are looking at the same host. If the host asks for a
+password, a key passphrase, or a decision about its host key, the browser says
+so and the transfer panel (⇅) is where you answer: it shows the question with
+the key fingerprint beside it, and ZeroG never answers one on your behalf. The
+login directory that connection reports is also how a `~` in the pane's prompt
+becomes a path. A native local pane lists the filesystem directly. A WSL pane lists the distribution through the `\\wsl.localhost\` share
 Windows serves it on, so what you see is the distribution's own filesystem and
 not the Windows one — and `~` is resolved by asking the distribution once, never
 by typing `pwd` into your pane.

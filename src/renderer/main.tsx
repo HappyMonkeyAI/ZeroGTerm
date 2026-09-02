@@ -37,6 +37,7 @@ import {
   type WorkspaceView
 } from './workspace-view';
 import { PaneBrowser } from './pane-browser';
+import { createPaneListingSource } from './pane-listing';
 import {
   changeDirectoryCommand,
   listingPathFor,
@@ -892,22 +893,47 @@ function App() {
   // path a listing needs.
   const [wslHomes, setWslHomes] = useState<Record<string, string>>({});
 
-  // One listing function per pane, kept because PaneBrowser reloads whenever the
-  // function's identity changes — a fresh closure each render would list forever.
-  const listersRef = useRef(new Map<string, (path: string) => Promise<DirectoryListing>>());
-  const listerFor = useCallback((session: SessionInfo) => {
-    const existing = listersRef.current.get(session.id);
-    if (existing) return existing;
-    // An SSH pane lists over the connection it already has; a local pane, WSL
-    // included, lists through the filesystem. Neither is a new channel.
-    const lister = (path: string): Promise<DirectoryListing> => {
-      const currentApi = api();
-      if (!currentApi) return Promise.reject(new Error('The terminal bridge is not available.'));
-      return session.kind === 'ssh' ? currentApi.sftpList(session.id, path) : currentApi.listLocalDirectory(path);
-    };
-    listersRef.current.set(session.id, lister);
-    return lister;
+  // Where a pane's browser gets its listings. An SSH pane needs a transfer
+  // connection, whose handle is not the terminal session's id — passing the
+  // wrong one is what made the browser fail on every SSH pane — so that
+  // bookkeeping lives in pane-listing.ts where it can be tested.
+  const listingSource = useRef(createPaneListingSource(api)).current;
+  const listerFor = listingSource.listerFor;
+  // The login directory of an SSH pane's host, once a connection has said. Held
+  // in state as well as in the source so a pane reporting `~` re-renders with a
+  // path once the answer arrives.
+  const [sshHomes, setSshHomes] = useState<Record<string, string>>({});
+  // A question the transfer connection is waiting on, kept only to be shown.
+  // Answering it belongs to the transfer panel, which has the field and the
+  // fingerprint beside it; a browser that has just asked a host to connect can
+  // at least say why nothing is arriving instead of spinning for two minutes.
+  const [sftpQuestion, setSftpQuestion] = useState<string | null>(null);
+  useEffect(() => {
+    const currentApi = api();
+    return currentApi?.onSftpEvent?.((event) => {
+      if (event.type === 'prompt') setSftpQuestion(event.prompt.text.trim().split('\n').pop() ?? null);
+      // Anything else means the connection moved on: it opened, it failed, or it
+      // was answered in the panel.
+      else setSftpQuestion(null);
+    });
   }, []);
+
+  const askedSshHomes = useRef(new Set<string>());
+  const resolveSshHome = useCallback(
+    (session: SessionInfo) => {
+      if (askedSshHomes.current.has(session.id)) return;
+      askedSshHomes.current.add(session.id);
+      void listingSource
+        .learnHome(session)
+        .then((home) => {
+          if (home) setSshHomes((current) => ({ ...current, [session.id]: home }));
+        })
+        // A host that will not answer leaves the browser reporting why, from the
+        // listing attempt itself.
+        .catch(() => undefined);
+    },
+    [listingSource]
+  );
 
   const askedHomesRef = useRef(new Set<string>());
   /** Find out what `~` means in a distribution, once. */
@@ -2113,7 +2139,19 @@ function App() {
    * cwd-tracker already maintains that from OSC 7 or the prompt.
    */
   const browserPathFor = (session: SessionInfo): string | null =>
-    browserPaths[session.id] || listingPathFor(session, session.wslDistribution ? wslHomes[session.wslDistribution] : undefined);
+    browserPaths[session.id] || listingPathFor(session, paneHome(session));
+
+  /**
+   * What `~` means for this pane, when anything does.
+   *
+   * A WSL distribution is asked directly; an SSH host reports its login
+   * directory when the transfer connection opens. Both are cached, because a
+   * shell that reports `~` will keep reporting it.
+   */
+  const paneHome = (session: SessionInfo): string | undefined => {
+    if (session.kind === 'ssh') return sshHomes[session.id];
+    return session.wslDistribution ? wslHomes[session.wslDistribution] : undefined;
+  };
 
   /**
    * Take the shell into a directory.
@@ -2208,16 +2246,25 @@ function App() {
   }, [sessions]);
 
   // Asked only for a pane whose browser is actually open, and only while its
-  // shell is still reporting a tilde: a distro is a process to start, and
-  // nothing should start one for a browser nobody opened.
+  // shell is still reporting a tilde: a distro is a process to start and an SSH
+  // host is a connection to open, and nothing should start either for a browser
+  // nobody opened.
   useEffect(() => {
     for (const session of sessions) {
-      if (!session.wslDistribution || !browserOpenFor(session.id)) continue;
+      if (!browserOpenFor(session.id)) continue;
+      const reportsTilde = !session.cwd || session.cwd.startsWith('~');
+      if (session.kind === 'ssh') {
+        // An SSH pane needs the login directory even when it reports an
+        // absolute path: `..` from the pane's directory can walk above it, and
+        // the connection has to be open before anything can be listed anyway.
+        if (!sshHomes[session.id]) resolveSshHome(session);
+        continue;
+      }
+      if (!session.wslDistribution || !reportsTilde) continue;
       if (wslHomes[session.wslDistribution]) continue;
-      if (session.cwd && !session.cwd.startsWith('~')) continue;
       resolveWslHome(session.wslDistribution);
     }
-  }, [sessions, activeWorkspace?.view.browsers, wslHomes, resolveWslHome]);
+  }, [sessions, activeWorkspace?.view.browsers, wslHomes, sshHomes, resolveWslHome, resolveSshHome]);
 
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
@@ -2859,6 +2906,10 @@ function App() {
 
   const closePane = async (session: SessionInfo) => {
     if (voice.sessionId === session.id) cancelVoice();
+    // The pane is going, so its listing state should not outlive it. The
+    // transfer connection is left alone: the panel may be sharing it, and the
+    // service closes what is open when the app quits.
+    listingSource.forget(session.id);
     const remaining = workspaceSessions.filter((item) => item.id !== session.id);
     setWorkspaces((current) => {
       // releaseSession has already cleared any view field that named the pane
@@ -3411,6 +3462,7 @@ function App() {
                           // place the listing was no longer showing.
                           shellPath={browserPath ? shellPathFor(paneSession, browserPath) : null}
                           list={listerFor(paneSession)}
+                          question={paneSession.kind === 'ssh' ? sftpQuestion : null}
                           onOpen={(path) => openDirectory(paneSession, path)}
                           onBrowse={(path) => setBrowserPaths((current) => ({ ...current, [paneSession.id]: path }))}
                           onClose={() => toggleBrowser(paneSession.id)}

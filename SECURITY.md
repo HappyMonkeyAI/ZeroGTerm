@@ -81,6 +81,25 @@ the narrowest part of the application worth stating plainly:
   fingerprint, is put to the user. Passwords and passphrases are written to the
   client and are not stored, logged, or returned to the renderer.
 
+## What a pane's directory browser connects to
+
+Opening the browser in an SSH pane opens an SFTP connection to that pane's host
+if one is not already open — the browser is a second consumer of the transfer
+connections described above, and everything stated there applies unchanged:
+authentication is delegated to the system `sftp` client, so `~/.ssh/config`, the
+agent and `known_hosts` verification all apply, and ZeroG never answers a
+host-key or password prompt itself.
+
+Two consequences worth stating plainly:
+
+- The browser can start an outbound connection to a host the user has a terminal
+  open to. It is never automatic: a browser opens because the folder button was
+  clicked, and it is remembered per pane, so reopening a workspace whose pane had
+  one open will reconnect to that host.
+- A pending question is *shown* in the browser and answered only in the transfer
+  panel, which is the surface with the fingerprint next to it. The browser has no
+  answer field, so there is no second place a passphrase can be typed.
+
 ## Changing directory from the browser
 
 Double-clicking a folder in a pane's directory browser makes ZeroG type a command

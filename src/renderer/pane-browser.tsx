@@ -28,6 +28,12 @@ export type PaneBrowserProps = {
    */
   shellPath: string | null;
   list: (path: string) => Promise<DirectoryListing>;
+  /**
+   * What the host is waiting to be asked, when a transfer connection is being
+   * opened and has put a question. Shown, never answered: the transfer panel
+   * owns that, with the key fingerprint beside the question.
+   */
+  question?: string | null;
   /** Chosen by a double-click. The caller decides whether the shell can move. */
   onOpen: (path: string) => void;
   /** Navigating without moving the shell, which is the browser's own business. */
@@ -47,6 +53,7 @@ export function PaneBrowser({
   pathKind,
   shellPath,
   list,
+  question,
   onOpen,
   onBrowse,
   onClose
@@ -114,7 +121,13 @@ export function PaneBrowser({
       </div>
 
       <div className="pane-browser-list">
-        {state.phase === 'idle' ? (
+        {question && state.phase === 'loading' ? (
+          <p className="pane-browser-note pane-browser-asking">
+            {question}
+            <br />
+            Answer it in the transfer panel (⇅), then refresh.
+          </p>
+        ) : state.phase === 'idle' ? (
           <p className="pane-browser-note">
             {/* The honest answer rather than a guessed directory. cwd-tracker
                 reports where a shell is from OSC 7 or its prompt; until one of
