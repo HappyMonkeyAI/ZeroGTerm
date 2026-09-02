@@ -5,15 +5,30 @@ import { writeClipboardText } from './clipboard.js';
 import { ScreenService, parseWslDistributions, type PtySize } from './session-service.js';
 import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
+import { CommandHistoryStore, defaultCommandHistoryPath } from './command-history-store.js';
+import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
+import { PortForwardService } from './port-forward-service.js';
+import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
+import { wslHomeDirectory } from './wsl-home.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
-import { SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
-import type { FileEntry, SpeechApiKeyStatus } from '../shared/types.js';
+import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
+import { AiService } from './ai-service.js';
+import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
+// The only store holding what the user typed. Nothing reaches it that has not
+// been through command-redaction in the renderer, and it holds nothing at all
+// until the setting is turned on.
+const commands = new CommandHistoryStore({ filePath: defaultCommandHistoryPath(app.getPath('userData')) });
+const workspaceStore = new WorkspaceStore({ filePath: defaultWorkspacePath(app.getPath('userData')) });
+const forwardStore = new PortForwardStore({ filePath: defaultPortForwardPath(app.getPath('userData')) });
+// Tunnels outlive the Ports view being closed: authenticating again is a real
+// cost to pay for having looked away.
+const forwards = new PortForwardService({ onEvent: (event) => win?.webContents.send('forwards:event', event) });
 const service = new ScreenService({ onEvent: (event, session, available) => { void history.record(event, session, available); } });
 let win: BrowserWindow | undefined;
 // Transfer connections outlive any single panel opening, so the panel can be
@@ -101,6 +116,9 @@ function createWindow() {
     win = undefined;
     service.detachAll();
     sftp.closeAll();
+    // A tunnel is a listening socket on someone's machine. It does not outlive
+    // the window that opened it.
+    forwards.closeAll();
   });
 }
 
@@ -141,6 +159,21 @@ ipcMain.handle('links:openExternal', (_event, url: unknown) => {
 ipcMain.handle('sessions:list', () => service.list());
 ipcMain.handle('sessions:history', () => history.list());
 ipcMain.handle('sessions:historyRemove', (_event, entryId: string) => history.remove(entryId));
+
+ipcMain.handle('commands:list', () => commands.list());
+ipcMain.handle('commands:record', (_event, record: unknown) => commands.record(requireCommandRecord(record)));
+ipcMain.handle('commands:pick', (_event, id: unknown) => commands.pick(requireString(id, 'A command')));
+ipcMain.handle('commands:clear', () => commands.clear());
+ipcMain.handle('forwards:list', () => forwards.list());
+ipcMain.handle('forwards:open', (_event, request: unknown) => forwards.open(requireForwardRequest(request)));
+ipcMain.handle('forwards:close', (_event, id: unknown) => forwards.close(requireString(id, 'A shared port')));
+ipcMain.handle('forwards:answerPrompt', (_event, id: unknown, answer: unknown) =>
+  forwards.answerPrompt(requireString(id, 'A shared port'), requireString(answer, 'An answer')));
+ipcMain.handle('forwards:load', () => forwardStore.load());
+ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(file));
+
+ipcMain.handle('workspaces:load', () => workspaceStore.load());
+ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
 
 ipcMain.handle('sessions:backends', () => discoverShellBackends());
 ipcMain.handle('sessions:wslDistributions', async () => {
@@ -231,12 +264,98 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
+/**
+ * A captured command, shaped.
+ *
+ * Only the shape is checked here. Whether the text is safe to store was decided
+ * in the renderer by command-redaction, next to the capture that produced it —
+ * that is where the rules and their tests live.
+ */
+function requireCommandRecord(value: unknown): CommandRecord {
+  if (!isRecord(value)) throw new Error('A command is required.');
+  const text = (field: unknown): string | undefined => (typeof field === 'string' && field ? field : undefined);
+  return {
+    command: requireString(value.command, 'A command'),
+    ...(text(value.cwd) ? { cwd: String(value.cwd) } : {}),
+    ...(text(value.host) ? { host: String(value.host) } : {}),
+    ...(value.kind === 'ssh' || value.kind === 'local' ? { kind: value.kind } : {}),
+    ...(typeof value.exitCode === 'number' ? { exitCode: value.exitCode } : {})
+  };
+}
+
+function requireAiConfig(value: unknown): { baseUrl: string; model: string } {
+  if (!isRecord(value)) throw new Error('An AI endpoint is required.');
+  return {
+    baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl : '',
+    model: typeof value.model === 'string' ? value.model : ''
+  };
+}
+
+/**
+ * A suggestion request, shaped.
+ *
+ * The prompt and the context are checked for type here and for content by
+ * buildSuggestionRequest, which is where those rules are tested. The captured
+ * output is deliberately not inspected: it is untrusted by design, and
+ * ai-protocol is what makes it safe to include.
+ */
+function requireSuggestionRequest(value: unknown): AiSuggestionRequest {
+  if (!isRecord(value)) throw new Error('A request is required.');
+  const context = isRecord(value.context) ? value.context : {};
+  const text = (field: unknown): string | undefined => (typeof field === 'string' && field ? field : undefined);
+  return {
+    prompt: typeof value.prompt === 'string' ? value.prompt : '',
+    ...(text(value.sessionId) ? { sessionId: String(value.sessionId) } : {}),
+    context: {
+      ...(text(context.shell) ? { shell: String(context.shell) } : {}),
+      ...(text(context.cwd) ? { cwd: String(context.cwd) } : {}),
+      ...(text(context.host) ? { host: String(context.host) } : {}),
+      ...(context.kind === 'ssh' || context.kind === 'local' ? { kind: context.kind } : {}),
+      ...(text(context.output) ? { output: String(context.output) } : {})
+    }
+  };
+}
+
+/**
+ * A forwarding request, shaped.
+ *
+ * Only the shape is checked here: the values are vetted by buildForwardArgs,
+ * which is where the rules live and where they are tested, and which throws a
+ * sentence the renderer can show as-is.
+ */
+function requireForwardRequest(value: unknown): PortForwardRequest {
+  if (!isRecord(value)) throw new Error('A shared port is required.');
+  return {
+    target: requireString(value.target, 'An SSH target'),
+    direction: value.direction as PortForwardRequest['direction'],
+    bind: value.bind as PortForwardRequest['bind'],
+    listenPort: value.listenPort as number,
+    destinationPort: value.destinationPort as number,
+    ...(typeof value.destinationHost === 'string' && value.destinationHost ? { destinationHost: value.destinationHost } : {}),
+    ...(typeof value.id === 'string' && value.id ? { id: value.id } : {})
+  };
+}
+
 function requireEntryKind(value: unknown): FileEntry['kind'] {
   if (value === 'file' || value === 'directory' || value === 'symlink') return value;
   throw new Error('An entry kind of file, directory, or symlink is required.');
 }
 
+// Electron's own reading of package.json, so the title bar shows what is
+// actually running rather than a string compiled in from the repo.
+ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.handle('fs:localHome', () => localHome());
+// Cached on success only, so a distribution that was not running when it was
+// first asked can answer later.
+const wslHomes = new Map<string, string>();
+ipcMain.handle('fs:wslHome', async (_event, distribution: unknown) => {
+  const name = typeof distribution === 'string' ? distribution : '';
+  const known = wslHomes.get(name);
+  if (known) return known;
+  const home = await wslHomeDirectory(name);
+  if (home) wslHomes.set(name, home);
+  return home;
+});
 ipcMain.handle('fs:listLocal', (_event, path: unknown) => listLocalDirectory(typeof path === 'string' && path ? path : undefined));
 ipcMain.handle('fs:mkdirLocal', (_event, path: unknown) => createLocalDirectory(requireString(path, 'A folder path')));
 ipcMain.handle('fs:renameLocal', (_event, from: unknown, to: unknown) => renameLocalEntry(requireString(from, 'The current path'), requireString(to, 'The new path')));
@@ -257,10 +376,28 @@ ipcMain.handle('sftp:answerPrompt', (_event, id: unknown, answer: unknown) => {
 });
 ipcMain.handle('sftp:close', (_event, id: unknown) => sftp.close(requireString(id, 'A transfer connection')));
 
-ipcMain.handle('ai:suggest', () => ({
-  command: 'git status --short',
-  explanation: 'Read-only preview of changed files in the active workspace.'
-}));
+// The key is read here, per request, and never handed to the renderer.
+const ai = new AiService({ readApiKey: () => secrets.get(AI_API_KEY) });
+
+ipcMain.handle('ai:suggest', (_event, config: unknown, request: unknown) =>
+  ai.suggest(requireAiConfig(config), requireSuggestionRequest(request)));
+ipcMain.handle('ai:models', (_event, baseUrl: unknown) => ai.listModels(requireString(baseUrl, 'A base URL')));
+ipcMain.handle('ai:test', (_event, config: unknown) => ai.test(requireAiConfig(config)));
+ipcMain.handle('ai:cancel', () => ai.cancel());
+
+async function aiKeyStatus(): Promise<SpeechApiKeyStatus> {
+  return { stored: await secrets.has(AI_API_KEY), encryptionAvailable: secrets.encryptionAvailable() };
+}
+
+ipcMain.handle('aiKey:status', () => aiKeyStatus());
+ipcMain.handle('aiKey:save', async (_event, key: unknown) => {
+  await secrets.set(AI_API_KEY, typeof key === 'string' ? key.trim() : '');
+  return aiKeyStatus();
+});
+ipcMain.handle('aiKey:clear', async () => {
+  await secrets.clear(AI_API_KEY);
+  return aiKeyStatus();
+});
 
 async function speechKeyStatus(): Promise<SpeechApiKeyStatus> {
   return { stored: await secrets.has(SPEECH_API_KEY), encryptionAvailable: secrets.encryptionAvailable() };

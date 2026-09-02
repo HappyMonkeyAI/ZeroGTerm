@@ -18,6 +18,7 @@ import {
   type SpeechPrecision,
   type SpeechTask
 } from './speech-models';
+import { SHORTCUTS, isChord, type ShortcutOverrides } from './shortcuts';
 
 export type Theme = 'dark' | 'light';
 export type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
@@ -86,7 +87,13 @@ export type SessionSettings = {
 };
 
 export type AiSettings = {
-  /** Show the approval dialog before an AI suggestion reaches a terminal. */
+  /**
+   * Show the approval dialog before an AI suggestion reaches a terminal.
+   *
+   * Ignored, and shown as ignored, whenever terminal output was part of the
+   * prompt: that is the combination where a remote host's output could pick a
+   * command and have it run unseen. See canAutoRun in ai-suggest.ts.
+   */
   requireApproval: boolean;
   voiceInsert: VoiceInsert;
   /**
@@ -95,6 +102,32 @@ export type AiSettings = {
    * instead of a fixed phrase.
    */
   proceedPhrase: string;
+  /**
+   * Record the commands run in each pane, for the history palette.
+   *
+   * Off by default, and the only setting in ZeroG that turns on storing what the
+   * user typed. Nothing is recorded from a pane whose shell emits no OSC 133
+   * marks, and nothing at all that command-redaction refuses.
+   */
+  recordCommands: boolean;
+   /**
+   * An OpenAI-compatible base URL, ending in the version segment.
+   *
+   * One field serves OpenAI, Ollama, LM Studio, llama.cpp, vLLM and OpenRouter,
+   * because chat/completions is the one request shape they all implement.
+   */
+  baseUrl: string;
+  model: string;
+  /**
+   * Send a bounded tail of the focused pane with the request.
+   *
+   * Off by default. On, the model can read the error actually being asked
+   * about — and terminal content leaves the machine for whatever endpoint is
+   * configured, which is why the panel says so and auto-run stops applying.
+   */
+  includeOutput: boolean;
+  /** How much of that output, in characters. */
+  outputChars: number;
 };
 
 export type SpeechSettings = {
@@ -114,6 +147,11 @@ export type SpeechSettings = {
 
 export type Settings = {
   appearance: AppearanceSettings;
+  /**
+   * Chords the user has moved, keyed by action. Only what was changed is stored,
+   * so a default that is improved later reaches everyone who never touched it.
+   */
+  shortcuts: ShortcutOverrides;
   terminal: TerminalSettings;
   sessions: SessionSettings;
   ai: AiSettings;
@@ -127,6 +165,7 @@ export const SETTINGS_KEY = 'zerog-settings';
 export const LEGACY_THEME_KEY = 'zerog-theme';
 
 export const DEFAULT_SETTINGS: Settings = {
+  shortcuts: {},
   appearance: {
     theme: 'dark',
     font: 'system',
@@ -152,7 +191,14 @@ export const DEFAULT_SETTINGS: Settings = {
   ai: {
     requireApproval: true,
     voiceInsert: 'type',
-    proceedPhrase: 'OK, proceed'
+    proceedPhrase: 'OK, proceed',
+    recordCommands: false,
+    // Ollama's default, because a local model is the case with no key to set up
+    // and nothing leaving the machine.
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    model: '',
+    includeOutput: false,
+    outputChars: 2000
   },
   speech: {
     engine: 'builtin',
@@ -179,6 +225,9 @@ export const SETTING_LIMITS = {
   letterSpacing: { min: -2, max: 4 },
   scrollback: { min: 200, max: 200000 },
   maxUtteranceSeconds: { min: 5, max: 120 },
+  // Enough for a stack trace, capped well below a context window. ai-protocol
+  // enforces its own hard ceiling regardless of what is stored here.
+  outputChars: { min: 200, max: 8000 },
   silenceThreshold: { min: 0.0005, max: 0.05 },
   // Wide enough for a session name and a path, narrow enough to leave a usable
   // terminal beside it. The drawer also carries a max-width in vw, so a small
@@ -214,6 +263,22 @@ export const FONT_CHOICES: Array<{ value: FontChoice; label: string }> = [
 
 export function fontStack(choice: FontChoice): string {
   return FONT_STACKS[choice] ?? FONT_STACKS.system;
+}
+
+/**
+ * Shortcut overrides out of the stored file.
+ *
+ * Only the shape is checked here — a known action, and text that could be a
+ * chord. Whether the chord is *usable* is resolveBindings' judgement, because it
+ * needs to see all of them together to spot a collision.
+ */
+function pickShortcuts(value: Record<string, unknown>): ShortcutOverrides {
+  const out: ShortcutOverrides = {};
+  for (const { action } of SHORTCUTS) {
+    const chord = value[action];
+    if (isChord(chord)) out[action] = chord as string;
+  }
+  return out;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -292,6 +357,7 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
   const sessions = isRecord(source.sessions) ? source.sessions : {};
   const ai = isRecord(source.ai) ? source.ai : {};
   const speech = isRecord(source.speech) ? source.speech : {};
+  const shortcuts = isRecord(source.shortcuts) ? source.shortcuts : {};
 
   const defaultTheme = pickEnum(legacyTheme, THEMES, DEFAULT_SETTINGS.appearance.theme);
   const engine = pickEnum(speech.engine, ENGINES, DEFAULT_SETTINGS.speech.engine);
@@ -309,6 +375,10 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
     : 'auto';
 
   return {
+    // Kept as text and judged by resolveBindings, which is also what the capture
+    // field in Settings uses: one set of rules, so a hand-edited file cannot do
+    // what the interface would refuse.
+    shortcuts: pickShortcuts(shortcuts),
     appearance: {
       theme: pickEnum(appearance.theme, THEMES, defaultTheme),
       font: pickEnum(appearance.font, FONTS, DEFAULT_SETTINGS.appearance.font),
@@ -334,7 +404,12 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
     ai: {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
       voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert),
-      proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase)
+      proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase),
+      recordCommands: pickBoolean(ai.recordCommands, DEFAULT_SETTINGS.ai.recordCommands),
+      baseUrl: pickString(ai.baseUrl, DEFAULT_SETTINGS.ai.baseUrl, 512),
+      model: pickString(ai.model, DEFAULT_SETTINGS.ai.model, 200),
+      includeOutput: pickBoolean(ai.includeOutput, DEFAULT_SETTINGS.ai.includeOutput),
+      outputChars: Math.round(pickNumber(ai.outputChars, SETTING_LIMITS.outputChars, DEFAULT_SETTINGS.ai.outputChars))
     },
     speech: {
       engine,

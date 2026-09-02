@@ -130,6 +130,8 @@ The session service owns `screen`, SSH, attach/detach, discovery, naming, and li
 
 AI actions are represented as typed requests and events. Generated commands are suggestions until explicitly approved. Output capture must be bounded, cancellable, and associated with a session/task ID.
 
+As implemented: suggestions go to an OpenAI-compatible endpoint from the main process, so the API key never enters the renderer and a local server is not blocked by cross-origin rules. Terminal output is opt-in, capped, stripped of the delimiter that fences it, and labelled as untrusted data in the prompt. The guarantee does not rest on the model honouring that label: a reply is only believed when it parses into exactly one command, and approval cannot be disabled while output is being sent. Every request carries an AbortController and a timeout, and a suggestion is bound to the session id it was built from so it cannot be written into a different pane.
+
 ### File transfer boundary
 
 File transfer is a separate connection to the same host, not a use of the
@@ -163,6 +165,9 @@ Voice control uses an adapter interface. Talon, local speech recognition, or ano
 - Do not place credentials, API keys, or private SSH material in this repository.
 - Default network behavior to explicit user-selected hosts; do not expose a LAN service by default.
 - Treat terminal output as untrusted data when passed to AI systems.
+- The command history is the one store of what the user typed: off by default,
+  sourced only from OSC 133 marks a shell volunteers, and refusing any command
+  matching a credential shape outright rather than masking it. See SECURITY.md.
 
 ## Open questions
 
@@ -172,7 +177,14 @@ Voice control uses an adapter interface. Talon, local speech recognition, or ano
 4. Which AI agent protocols/adapters are required first?
 5. What Talon functionality is available and practical on this Fedora setup?
 6. Should remote sessions use `screen` directly, or support tmux as a later backend?
-7. What persistence store should hold workspace metadata: JSON first or SQLite from the beginning?
+7. ~~What persistence store should hold workspace metadata: JSON first or SQLite from the beginning?~~
+   Answered: JSON in the main process, one file per concern, written to a
+   temporary file and atomically renamed. `session-history.json` holds the
+   session lifecycle and `workspaces.json` holds workspace membership and
+   layout (`src/main/workspace-store.ts`). Both validate on load, treat the
+   file as user-editable, and swallow every failure so persistence can never
+   stop a terminal from working. SQLite stays open for later, if the volume
+   or the query shape ever justifies it.
 
 ## Definition of a credible first milestone
 

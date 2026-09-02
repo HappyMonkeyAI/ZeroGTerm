@@ -4,11 +4,62 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { HistoryEntry, KnownConnection, SessionInfo, ShellBackend, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
 import { useBackdropDismiss } from './backdrop-dismiss';
+import { useRowActivation } from './row-activation';
+import {
+  WORKSPACE_NAME_PATTERN,
+  adoptLiveSessions,
+  claimInto,
+  closeWorkspace,
+  dropPending,
+  duplicateWorkspace,
+  fromStoredFile,
+  isWorkspaceName,
+  layoutForSessionCount,
+  makeView,
+  makeWorkspace,
+  nextWorkspaceName,
+  reconcileWorkspaces,
+  releaseSession,
+  renameWorkspace,
+  toStoredFile,
+  updateView,
+  workspaceDotState,
+  workspacePaneCount,
+  paneEntries,
+  DEFAULT_BROWSER_RATIO,
+  MAX_BROWSER_RATIO,
+  MIN_BROWSER_RATIO,
+  type Workspace,
+  type WorkspaceView
+} from './workspace-view';
+import { PaneBrowser } from './pane-browser';
+import { HelpPanel } from './help-panel';
+import { createPaneListingSource } from './pane-listing';
+import { formatVersion, versionLabel } from '../shared/version';
+import {
+  changeDirectoryCommand,
+  startingListingPath,
+  pathKindFor,
+  shellFamily,
+  shellPathFor
+} from './pane-directory';
+import { planSessionRestore, type RestoreAction, type SessionDescriptor } from './session-restore';
+import {
+  applyForwardStatus,
+  forwardConflict,
+  forwardDotState,
+  forwardLabel,
+  fromStoredForwards,
+  groupForwards,
+  isWidelyBound,
+  listenerLabel,
+  toStoredForwards
+} from './port-forwards';
 import { Icon } from './icons';
 import { CWD_BUFFER_CHARS, readCwd } from './cwd-tracker';
 import { SftpPanel } from './sftp-panel';
@@ -33,7 +84,7 @@ import {
   type TerminalSettings,
   type Theme
 } from './settings';
-import { SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
   SPLIT_BUTTONS,
@@ -42,10 +93,16 @@ import {
   splitButtonAction,
   splitButtonTitle,
   type PaneAction,
-  type PaneView,
-  type SplitLayout
+  type PaneView
 } from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
+import { chordFor, matchShortcut, resolveBindings, topDismissTarget } from './shortcuts';
+import { dropIndexFor, indexOfId, passedThreshold, reorder } from './tab-reorder';
+import { ContextMenu, type MenuItem } from './context-menu';
+import { createCommandCapture, readBufferRange, type CapturedCommand, type CommandCapture } from './command-capture';
+import { redactionReason } from './command-redaction';
+import { rankCommands, type RankedCommand } from './command-ranking';
+import { askSuggestion, boundedTail, canAutoRun, isConfigured, type SuggestPhase } from './ai-suggest';
 
 /** Settle once output has been quiet this long — the primary readiness signal. */
 const PROMPT_QUIET_MS = 150;
@@ -53,17 +110,48 @@ const PROMPT_QUIET_MS = 150;
 const PROMPT_WAIT_CAP_MS = 3000;
 /** Enough tail to hold a prompt spanning several chunks, without growing forever. */
 const PROMPT_BUFFER_CHARS = 512;
+/**
+ * How long the workspace layout must hold still before it is written to disk.
+ *
+ * Long enough to swallow a burst of pane switches or a divider drag, short
+ * enough that quitting straight after a change still saves it.
+ */
+const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
+
+/**
+ * The message a main-process error actually carries.
+ *
+ * Electron wraps a rejected ipcMain handler as "Error invoking remote method
+ * 'channel': Error: …", which buries a sentence written for the user behind two
+ * layers of plumbing they have no use for. The main process takes trouble over
+ * those sentences — "Port 3000 is already shared from build.example.com", "Could
+ * not reach http://…/v1/chat/completions. Is the server running?" — and they are
+ * worth showing as written.
+ */
+function ipcMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:Error|TypeError):\s*/, '');
+}
+
+/** A stored pane as the restore planner wants it. */
+function memberDescriptor(member: StoredWorkspaceMember): SessionDescriptor {
+  return {
+    id: member.sessionId,
+    name: member.name,
+    kind: member.kind,
+    host: member.host,
+    screenName: member.screenName,
+    sshTarget: member.sshTarget,
+    backend: member.backend
+  };
+}
 
 type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 
-type ModalKind = 'workspace' | 'local' | 'ssh' | null;
+type ModalKind = 'workspace' | 'rename' | 'local' | 'ssh' | 'forward' | null;
 type SidebarTab = 'terminals' | 'screens' | 'connections';
-
-type Workspace = {
-  id: string;
-  name: string;
-  sessionIds: string[];
-};
+/** Which thing the sidebar is a list of. Ports are their own view, not a tab. */
+type SidebarView = 'sessions' | 'ports';
 
 const api = () => window.zerog;
 
@@ -100,6 +188,80 @@ function SessionRow({ session, active = false, ghosted = false, onClick }: { ses
   );
 }
 
+/**
+ * A pane a workspace remembers from a previous launch but has not reopened.
+ *
+ * Reads as a session row so it keeps its place in the workspace's list, and is
+ * ghosted so it is never mistaken for a running terminal. Clicking it is the
+ * consent to reconnect — an SSH pane must not dial out to a host on startup.
+ */
+function PendingPaneRow({ member, onClick }: { member: StoredWorkspaceMember; onClick: () => void }) {
+  const detail = member.kind === 'ssh'
+    ? `SSH · ${member.host ?? member.sshTarget ?? 'saved host'}`
+    : member.screenName
+      ? `screen · ${member.screenName}`
+      : 'local';
+  return (
+    <button type="button" className="session-row session-ghosted" title={`Reconnect ${member.name}`} onClick={onClick}>
+      <span className="status-dot" />
+      <span className="session-copy"><b>{member.name}</b><small>{detail} · not connected</small></span>
+      <span className="session-state">↻</span>
+    </button>
+  );
+}
+
+/**
+ * A saved SSH connection in the sidebar's Connections tab.
+ *
+ * Click opens the connect dialog with the host filled in, for when the target
+ * or the pane's label wants editing. Double-click skips the dialog and puts the
+ * host straight into a new pane — the common case for a connection whose
+ * ~/.ssh/config entry already says everything ssh needs.
+ */
+function ConnectionRow({ connection, onConfigure, onConnect }: { connection: KnownConnection; onConfigure: () => void; onConnect: () => void }) {
+  const activation = useRowActivation(onConfigure, onConnect);
+  const detail = connection.hostName
+    ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}`
+    : 'Saved SSH connection';
+  return (
+    <button
+      type="button"
+      className="session-row"
+      title={`Double-click to connect ${connection.alias} in a new pane`}
+      onClick={activation.onClick}
+      onDoubleClick={activation.onDoubleClick}
+    >
+      <span className="status-dot" />
+      <span className="session-copy"><b>{connection.alias}</b><small>{detail}</small></span>
+      <span className="session-state">→</span>
+    </button>
+  );
+}
+
+/**
+ * What a pane is showing, as plain text.
+ *
+ * Walks xterm's buffer rather than accumulating output as it arrives: the buffer
+ * is already the wrapped, overwritten, cursor-addressed result, which is what
+ * the user is looking at. A rolling copy of the raw stream would include frames
+ * that were painted over and escape sequences that never rendered.
+ *
+ * translateToString already yields plain text, so nothing needs stripping. Only
+ * the tail is read — a scrollback of 200,000 lines is not worth walking to throw
+ * most of it away.
+ */
+function readTerminalText(terminal: Terminal | null, maxLines = 200): string {
+  if (!terminal) return '';
+  const buffer = terminal.buffer.active;
+  const end = buffer.length;
+  const start = Math.max(0, end - maxLines);
+  const lines: string[] = [];
+  for (let index = start; index < end; index += 1) {
+    lines.push(buffer.getLine(index)?.translateToString(true) ?? '');
+  }
+  return lines.join('\n');
+}
+
 function sessionBackendTag(session: SessionInfo): string {
   if (session.kind === 'ssh') return 'SSH';
   if (session.backend === 'screen') return 'screen';
@@ -118,18 +280,43 @@ const PTY_RESIZE_SETTLE_MS = 120;
 function TerminalView({
   sessionId,
   focused,
+  dormant = false,
   onStatus,
   appearance,
   terminalSettings,
-  registerFocus
+  registerFocus,
+  registerCapture,
+  onCommand,
+  registerRead
 }: {
   sessionId?: string;
   focused?: boolean;
+  /** This pane's workspace is not on screen: mounted and live, but unpainted. */
+  dormant?: boolean;
   onStatus: (message: string) => void;
   appearance: AppearanceSettings;
   terminalSettings: TerminalSettings;
   /** Lets the app put the keyboard back in this pane after a control took it. */
   registerFocus?: (sessionId: string, focus: (() => void) | null) => void;
+  /**
+   * Hands the app this pane's OSC 133 reader, so it can ask whether the shell is
+   * reporting marks at all — which is the only honest answer to "did my snippet
+   * work".
+   */
+  registerCapture?: (sessionId: string, capture: CommandCapture | null) => void;
+  /**
+   * A command this pane ran. Whether to redact it, store it, or ignore it
+   * depends on settings this component has no business knowing.
+   */
+  onCommand?: (sessionId: string, command: CapturedCommand) => void;
+  /**
+   * Lets the app read what this pane is showing, for an AI suggestion.
+   *
+   * A registration rather than a prop of content, because the buffer is xterm's
+   * and copying it on every render would be absurd — the app asks at the one
+   * moment it needs to.
+   */
+  registerRead?: (sessionId: string, read: (() => string) | null) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -143,6 +330,11 @@ function TerminalView({
   const terminalSettingsRef = useRef(terminalSettings);
   terminalSettingsRef.current = terminalSettings;
   const refitRef = useRef<(() => void) | null>(null);
+  // Read through a ref by the OSC handler: the setup effect is keyed on
+  // sessionId, and rebuilding the Terminal to pick up a new callback would drop
+  // the pane's scrollback.
+  const onCommandRef = useRef(onCommand);
+  onCommandRef.current = onCommand;
 
   useEffect(() => {
     if (!ref.current) return;
@@ -293,6 +485,27 @@ function TerminalView({
       isCopyOnSelectEnabled: () => terminalSettingsRef.current.copyOnSelect
     });
 
+    // OSC 133 through xterm's own parser rather than a regex over the stream:
+    // the parser is already a state machine that handles a sequence split across
+    // two reads. cwd-tracker.ts regexes raw data because it runs outside xterm
+    // and does not have that luxury.
+    const capture = createCommandCapture(
+      {
+        cursor: () => ({
+          row: terminal.buffer.active.baseY + terminal.buffer.active.cursorY,
+          col: terminal.buffer.active.cursorX
+        }),
+        read: (from, to) =>
+          readBufferRange((row) => terminal.buffer.active.getLine(row)?.translateToString(true), from, to),
+        now: () => Date.now()
+      },
+      (command) => {
+        if (sessionId) onCommandRef.current?.(sessionId, command);
+      }
+    );
+    const marks = terminal.parser.registerOscHandler(133, (data) => capture.handle(data));
+    if (sessionId) registerCapture?.(sessionId, capture);
+
     const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(host);
     window.addEventListener('resize', scheduleFit);
@@ -335,12 +548,37 @@ function TerminalView({
       removeData();
       removeStatus();
       observer.disconnect();
+      marks.dispose();
+      if (sessionId) registerCapture?.(sessionId, null);
       window.removeEventListener('resize', scheduleFit);
       refitRef.current = null;
       terminalRef.current = null;
       terminal.dispose();
     };
   }, [sessionId]);
+
+  /**
+   * Repaint a pane that has just come back on screen.
+   *
+   * A dormant pane is `display: none`, so it has no box and xterm's renderer has
+   * had nothing to draw into. Refitting alone does not fix that: if the pane
+   * returns at the size it left, xterm's own resize is a no-op and the renderer
+   * is never asked to paint, which is why a returning workspace showed empty
+   * panes until something changed their size. refresh() marks every row dirty
+   * and is the only thing that reliably puts the existing buffer back on screen.
+   */
+  useEffect(() => {
+    if (dormant) return;
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    refitRef.current?.();
+    // After the browser has given the pane a box again, or there is still
+    // nothing to measure against.
+    const frame = requestAnimationFrame(() => {
+      if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [dormant]);
 
   // Appearance and terminal behaviour are mutable xterm options. Rebuilding the
   // Terminal to apply them would dispose the renderer and drop the pane's
@@ -371,6 +609,12 @@ function TerminalView({
     return () => registerFocus(sessionId, null);
   }, [sessionId, registerFocus]);
 
+  useEffect(() => {
+    if (!sessionId || !registerRead) return;
+    registerRead(sessionId, () => readTerminalText(terminalRef.current));
+    return () => registerRead(sessionId, null);
+  }, [sessionId, registerRead]);
+
   return (
     <div className="terminal" ref={ref} onMouseDownCapture={(event) => event.preventDefault()} />
   );
@@ -389,6 +633,70 @@ function TerminalView({
  * control has an equivalent: it takes focus, the arrow keys nudge it, and Enter
  * or a double-click puts it back where it started.
  */
+/**
+ * A pane's contents: the terminal, and the directory browser beside it.
+ *
+ * The wrapper is always rendered, open or not, so the terminal keeps its place
+ * in the tree. Moving it into and out of a wrapper would unmount xterm and
+ * reattach the pty every time the browser was toggled.
+ *
+ * The divider's position during a drag is held here rather than in the
+ * workspace, so dragging is one state update at the end instead of one per
+ * pointer move.
+ */
+function PaneBody({
+  open,
+  ratio,
+  browser,
+  onRatio,
+  children
+}: {
+  open: boolean;
+  /** The share of the pane's width the terminal keeps, as a percentage. */
+  ratio: number;
+  browser: React.ReactNode;
+  onRatio: (ratio: number) => void;
+  children: React.ReactNode;
+}) {
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState<number | null>(null);
+  const shown = dragging ?? ratio;
+  const clamp = (value: number) => Math.min(MAX_BROWSER_RATIO, Math.max(MIN_BROWSER_RATIO, Math.round(value)));
+
+  return (
+    <div
+      className={open ? 'pane-body pane-body-split' : 'pane-body'}
+      ref={bodyRef}
+      style={open ? { gridTemplateColumns: `${shown}fr ${100 - shown}fr` } : undefined}
+    >
+      {children}
+      {open ? (
+        <>
+          <ResizeHandle
+            orientation="vertical"
+            className="pane-resizer pane-browser-resizer"
+            label="Directory browser split"
+            valuePercent={shown}
+            style={{ left: `calc((100% - 1px) * ${shown / 100} + 0.5px)` }}
+            onDrag={(position) => {
+              const box = bodyRef.current?.getBoundingClientRect();
+              if (!box || box.width <= 0) return;
+              setDragging(clamp(((position.clientX - box.left) / box.width) * 100));
+            }}
+            onCommit={() => {
+              if (dragging !== null) onRatio(dragging);
+              setDragging(null);
+            }}
+            onNudge={(direction) => onRatio(clamp(shown + direction * 2))}
+            onReset={() => onRatio(DEFAULT_BROWSER_RATIO)}
+          />
+          {browser}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function ResizeHandle({
   orientation,
   className,
@@ -479,50 +787,59 @@ function PanePlaceholder({ index, onCreate }: { index: number; onCreate: () => v
   );
 }
 
-function makeWorkspace(name: string, sessionIds: string[] = []): Workspace {
-  return {
-    id: `ws-${crypto.randomUUID()}`,
-    name,
-    sessionIds
-  };
-}
-
 function App() {
   // Read once, synchronously, so the first paint already uses the stored theme
   // and font instead of flashing the defaults.
   const [settings, setSettings] = useState<Settings>(() => loadSettings(browserStorage()));
   const theme: Theme = settings.appearance.theme;
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
-    const initial = makeWorkspace('Workspace');
-    return [initial];
-  });
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => [
+    makeWorkspace('Workspace', settings.sessions.defaultLayout)
+  ]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
-  const [active, setActive] = useState<SessionInfo | null>(null);
   const [status, setStatus] = useState('Ready');
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
+  const [sidebarView, setSidebarView] = useState<SidebarView>('sessions');
+  const [forwards, setForwards] = useState<PortForwardInfo[]>([]);
+  const [forwardsLoaded, setForwardsLoaded] = useState(false);
+  const [forwardPrompt, setForwardPrompt] = useState<{ forwardId: string; kind: string; text: string } | null>(null);
+  const [forwardTarget, setForwardTarget] = useState('');
+  const [forwardDirection, setForwardDirection] = useState<ForwardDirection>('local');
+  const [forwardBind, setForwardBind] = useState<ForwardBind>('loopback');
+  const [forwardListenPort, setForwardListenPort] = useState('');
+  const [forwardDestinationPort, setForwardDestinationPort] = useState('');
+  const [forwardDestinationHost, setForwardDestinationHost] = useState('');
+  const [forwardAdvanced, setForwardAdvanced] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // The chords in force. Everywhere the interface names one it asks this,
+  // because a chord written into a tooltip becomes a lie the moment the user
+  // moves that shortcut in Settings.
+  const bindings = useMemo(() => resolveBindings(settings.shortcuts), [settings.shortcuts]);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const [paletteIndex, setPaletteIndex] = useState(0);
+  const [commandEntries, setCommandEntries] = useState<CommandHistoryEntry[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [overview, setOverview] = useState(false);
-  const [layout, setLayout] = useState<Layout>(settings.sessions.defaultLayout);
-  // The split the single-pane view folds out of. A ref, not state: the
-  // keyboard handler reads it from a closure that does not re-subscribe on
-  // every layout change, and a stale split there would send Ctrl+Shift+L back
-  // to the wrong one.
-  const lastSplitLayout = useRef<SplitLayout>(
-    settings.sessions.defaultLayout === 'stack' ? 'split-v' : settings.sessions.defaultLayout
-  );
-  const [focusedSessionId, setFocusedSessionId] = useState<string>();
-  const [maximizedSessionId, setMaximizedSessionId] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState('Workspace');
+  const [renamingWorkspace, setRenamingWorkspace] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  // Nothing may be saved until the stored file has been read, or the empty
+  // starting state would be written over it on the first render.
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  const [visitedWorkspaces, setVisitedWorkspaces] = useState<string[]>([]);
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
   const [sshTarget, setSshTarget] = useState('');
-  const [approval, setApproval] = useState<{ command: string; explanation: string } | null>(null);
+  const [suggest, setSuggest] = useState<SuggestPhase | null>(null);
+  const [aiKey, setAiKey] = useState<SpeechKeyState>({ status: 'idle', stored: false, encryptionAvailable: true, sessionOnly: false });
+  const [aiModels, setAiModels] = useState<string[]>([]);
+  const [aiTest, setAiTest] = useState<AiTestState>({ status: 'idle' });
   const [voice, setVoice] = useState<{ status: VoiceStatus; sessionId: string | null }>({ status: 'idle', sessionId: null });
   const [voiceReview, setVoiceReview] = useState<{ sessionId: string; text: string } | null>(null);
   const recorderRef = useRef<VoiceRecorder | null>(null);
@@ -561,6 +878,108 @@ function App() {
     if (focus) terminalFocusRef.current.set(sessionId, focus);
     else terminalFocusRef.current.delete(sessionId);
   }, []);
+  // Each pane's OSC 133 reader, so the settings panel can say how many shells
+  // are actually reporting marks rather than leaving the user to guess.
+  const captureRef = useRef(new Map<string, CommandCapture>());
+  const registerTerminalCapture = useCallback((sessionId: string, capture: CommandCapture | null) => {
+    if (capture) captureRef.current.set(sessionId, capture);
+    else captureRef.current.delete(sessionId);
+  }, []);
+
+  // What each pane is showing, for a suggestion that includes output. Registered
+  // the same way focus is, and read only at the moment a request is made.
+  const terminalReadRef = useRef(new Map<string, () => string>());
+  const registerTerminalRead = useCallback((sessionId: string, read: (() => string) | null) => {
+    if (read) terminalReadRef.current.set(sessionId, read);
+    else terminalReadRef.current.delete(sessionId);
+  }, []);
+
+  // Where each pane's browser is looking, when the user has taken it somewhere
+  // other than the shell's own directory. Cleared when the shell moves, so the
+  // two agree again.
+  const [browserPaths, setBrowserPaths] = useState<Record<string, string>>({});
+  // What `~` means in each WSL distribution, asked once. A WSL shell without
+  // integration reports `~`, and a symbol cannot be translated into the share
+  // path a listing needs.
+  const [wslHomes, setWslHomes] = useState<Record<string, string>>({});
+
+  // Where a pane's browser gets its listings. An SSH pane needs a transfer
+  // connection, whose handle is not the terminal session's id — passing the
+  // wrong one is what made the browser fail on every SSH pane — so that
+  // bookkeeping lives in pane-listing.ts where it can be tested.
+  // The login directory arrives with the connection, so the browser is told
+  // about it as soon as one opens rather than being asked separately.
+  const listingSource = useRef(
+    createPaneListingSource(api, (sessionId, home) =>
+      setSshHomes((current) => (current[sessionId] === home ? current : { ...current, [sessionId]: home }))
+    )
+  ).current;
+  const listerFor = listingSource.listerFor;
+  // The login directory of an SSH pane's host, once a connection has said. Held
+  // in state as well as in the source so a pane reporting `~` re-renders with a
+  // path once the answer arrives.
+  const [sshHomes, setSshHomes] = useState<Record<string, string>>({});
+  // A question the transfer connection is waiting on, kept only to be shown.
+  // Answering it belongs to the transfer panel, which has the field and the
+  // fingerprint beside it; a browser that has just asked a host to connect can
+  // at least say why nothing is arriving instead of spinning for two minutes.
+  const [sftpQuestion, setSftpQuestion] = useState<string | null>(null);
+
+  // The running version, shown beside the wordmark. Asked of the app rather than
+  // compiled in, so a packaged build cannot show the version of the checkout it
+  // was built from.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    // Optional-called: a preload from an older build has no version channel, and
+    // the title bar simply stays as it was.
+    void api()?.appVersion?.()
+      .then((version) => setAppVersion(formatVersion(version)))
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const currentApi = api();
+    return currentApi?.onSftpEvent?.((event) => {
+      if (event.type === 'prompt') setSftpQuestion(event.prompt.text.trim().split('\n').pop() ?? null);
+      // Anything else means the connection moved on: it opened, it failed, or it
+      // was answered in the panel.
+      else setSftpQuestion(null);
+    });
+  }, []);
+
+  const askedSshHomes = useRef(new Set<string>());
+  const resolveSshHome = useCallback(
+    (session: SessionInfo) => {
+      if (askedSshHomes.current.has(session.id)) return;
+      askedSshHomes.current.add(session.id);
+      void listingSource
+        .learnHome(session)
+        .then((home) => {
+          if (home) setSshHomes((current) => ({ ...current, [session.id]: home }));
+        })
+        // A host that will not answer leaves the browser reporting why, from the
+        // listing attempt itself.
+        .catch(() => undefined);
+    },
+    [listingSource]
+  );
+
+  const askedHomesRef = useRef(new Set<string>());
+  /** Find out what `~` means in a distribution, once. */
+  const resolveWslHome = useCallback((distribution: string) => {
+    if (askedHomesRef.current.has(distribution)) return;
+    askedHomesRef.current.add(distribution);
+    const currentApi = api();
+    if (!currentApi) return;
+    void currentApi
+      .wslHome(distribution)
+      .then((home) => {
+        if (home) setWslHomes((current) => ({ ...current, [distribution]: home }));
+      })
+      // A distro that will not answer leaves the browser saying it does not know
+      // where the pane is, which is true.
+      .catch(() => undefined);
+  }, []);
+
   /** Put the keyboard back in a pane, so the user can carry on typing. */
   const focusTerminal = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return;
@@ -573,9 +992,13 @@ function App() {
   // Backdrop dismissal, gated on where the press started so that selecting
   // text inside a dialog cannot close it. See backdrop-dismiss.ts.
   const dismissModal = useBackdropDismiss(() => setModal(null));
-  const dismissApproval = useBackdropDismiss(() => setApproval(null));
+  const dismissSuggest = useBackdropDismiss(() => {
+    void api()?.cancelAiRequest?.();
+    setSuggest(null);
+  });
   const dismissOverview = useBackdropDismiss(() => setOverview(false));
   const dismissHistory = useBackdropDismiss(() => setHistoryOpen(false));
+  const dismissPalette = useBackdropDismiss(() => setPaletteOpen(false));
   const dismissSettings = useBackdropDismiss(() => setSettingsOpen(false));
   const dismissVoiceReview = useBackdropDismiss(() => closeVoiceReview());
   const dismissTransfer = useBackdropDismiss(() => setTransferOpen(false));
@@ -619,19 +1042,72 @@ function App() {
     [workspaces, activeWorkspaceId]
   );
 
+  // Layout, selection, focus, and maximize belong to the workspace, not to the
+  // app: switching away and back has to find the arrangement you left. They are
+  // read out here and written through the small setters below so that the rest
+  // of this component still reads as though they were plain state.
+  const view: WorkspaceView = activeWorkspace?.view ?? makeView(settings.sessions.defaultLayout);
+  const layout = view.layout;
+  const focusedSessionId = view.focusedSessionId;
+  const maximizedSessionId = view.maximizedSessionId ?? null;
+
+  /**
+   * The selected session, looked up rather than stored.
+   *
+   * Holding the whole SessionInfo in state meant every status, cwd, or
+   * persistence change had to be copied into it as well, and anything read off
+   * the copy — the status bar, the transfer panel's target — could be a step
+   * behind the sidebar.
+   */
+  const active = useMemo(
+    () => (view.activeSessionId ? sessions.find((item) => item.id === view.activeSessionId) ?? null : null),
+    [view.activeSessionId, sessions]
+  );
+
+  const patchView = useCallback(
+    (patch: Partial<WorkspaceView> | ((current: WorkspaceView) => Partial<WorkspaceView>), workspaceId?: string) => {
+      setWorkspaces((current) => updateView(current, workspaceId ?? activeWorkspaceId, patch));
+    },
+    [activeWorkspaceId]
+  );
+
+  const setActive = useCallback(
+    (session: SessionInfo | null) => patchView({ activeSessionId: session?.id }),
+    [patchView]
+  );
+  const setLayout = useCallback(
+    (value: Layout | ((current: Layout) => Layout)) =>
+      patchView((current) => ({ layout: typeof value === 'function' ? value(current.layout) : value })),
+    [patchView]
+  );
+  const setFocusedSessionId = useCallback(
+    (sessionId?: string) => patchView({ focusedSessionId: sessionId }),
+    [patchView]
+  );
+  const setMaximizedSessionId = useCallback(
+    (sessionId: string | null) => patchView({ maximizedSessionId: sessionId }),
+    [patchView]
+  );
+
+  /**
+   * The sessions this workspace holds — only the ones it actually claimed.
+   *
+   * A discovered `screen` session or a known SSH connection is global
+   * inventory, not a member of whichever workspace happens to be open when it
+   * is found; attaching one is what claims it. The first workspace used to
+   * absorb everything unassigned, which made its Terminals tab a dumping ground
+   * for other projects' shells and could push it past the four-pane cap on its
+   * own. Unclaimed screens now stay in the Screens tab, whose filter already
+   * excludes workspace members, so nothing becomes unreachable.
+   */
   const workspaceSessions = useMemo(() => {
     if (!activeWorkspace) return sessions;
     const known = new Set(activeWorkspace.sessionIds);
-    const owned = sessions.filter((session) => known.has(session.id));
-    // Keep unassigned sessions visible in the first workspace until claimed.
-    if (activeWorkspace.id === workspaces[0]?.id) {
-      const assigned = new Set(workspaces.flatMap((item) => item.sessionIds));
-      const orphans = sessions.filter((session) => !assigned.has(session.id));
-      const byId = new Map([...owned, ...orphans].map((session) => [session.id, session]));
-      return [...byId.values()];
-    }
-    return owned;
-  }, [activeWorkspace, sessions, workspaces]);
+    return sessions.filter((session) => known.has(session.id));
+  }, [activeWorkspace, sessions]);
+
+  /** Panes this workspace remembers from a previous launch, still to reconnect. */
+  const pendingPanes = activeWorkspace?.pending ?? [];
 
   const refresh = useCallback(async () => {
     const currentApi = api();
@@ -725,6 +1201,11 @@ function App() {
   // the renderer remembers: asked once here so the settings panel opens with
   // the truth rather than a guess.
   useEffect(() => {
+    if (!settings.ai.recordCommands) return;
+    void api()?.listCommandHistory?.().then(setCommandEntries).catch(() => undefined);
+  }, [settings.ai.recordCommands]);
+
+  useEffect(() => {
     const currentApi = api();
     if (!currentApi?.speechApiKeyStatus) return;
     currentApi
@@ -734,10 +1215,184 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.aiApiKeyStatus) return;
+    currentApi
+      .aiApiKeyStatus()
+      .then((status) => setAiKey((previous) => ({ ...previous, stored: status.stored, encryptionAvailable: status.encryptionAvailable })))
+      .catch(() => undefined);
+  }, []);
+
+  /**
+   * Drop session ids the workspaces still name but that no longer exist.
+   *
+   * A `screen` session killed from another terminal, or one closed while a
+   * different workspace was on screen, leaves a dangling id behind. Left there
+   * it counts towards the four-pane cap and makes the tab dot claim a workspace
+   * has contents it cannot show. reconcileWorkspaces returns the same array
+   * when there is nothing to drop, so this settles in one pass.
+   */
+  useEffect(() => {
+    if (sessionsLoading || !workspacesLoaded) return;
+    setWorkspaces((current) => reconcileWorkspaces(current, sessions));
+  }, [sessions, sessionsLoading, workspacesLoaded]);
+
+  /**
+   * Read the stored workspaces back, once, before anything can overwrite them.
+   *
+   * A failure here is not fatal: the app keeps the default single workspace and
+   * carries on, and the save effect below is held off until this has finished so
+   * an empty starting state cannot be written over a good file.
+   */
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.loadWorkspaces) {
+      setWorkspacesLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    currentApi
+      .loadWorkspaces()
+      .then((file) => {
+        if (cancelled) return;
+        const restored = fromStoredFile(file, settings.sessions.defaultLayout);
+        if (restored.workspaces.length) {
+          setWorkspaces(restored.workspaces);
+          if (restored.activeWorkspaceId) setActiveWorkspaceId(restored.activeWorkspaceId);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setWorkspacesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Take over remembered panes whose sessions turn out to be running.
+   *
+   * Runs on every session-list change, not just at startup: a remote screen
+   * discovered a few seconds in should be adopted by the workspace that was
+   * waiting for it, rather than sitting as a ghost row beside the live session.
+   * Only `attach` counts — anything that would have to dial out to a host waits
+   * for the user to click.
+   */
+  useEffect(() => {
+    if (sessionsLoading || !workspacesLoaded) return;
+    setWorkspaces((current) =>
+      adoptLiveSessions(current, (member) => {
+        const action = planSessionRestore(memberDescriptor(member), sessions, knownConnections);
+        return action.kind === 'attach' ? action.sessionId : undefined;
+      })
+    );
+  }, [sessions, sessionsLoading, workspacesLoaded, knownConnections]);
+
+  /**
+   * Follow tunnels the main process is reporting on.
+   *
+   * A tunnel can change without this window asking — a host drops the
+   * connection, sshd refuses a forward, the client wants a password — so the
+   * list is driven by events rather than by what the open call returned.
+   */
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.onForwardEvent) return;
+    return currentApi.onForwardEvent((event) => {
+      if (event.type === 'status') {
+        setForwards((current) => applyForwardStatus(current, event.forward));
+        return;
+      }
+      if (event.type === 'prompt') {
+        setForwardPrompt({ forwardId: event.forwardId, kind: event.prompt.kind, text: event.prompt.text });
+        return;
+      }
+      // Closed: leave the row in place if it is carrying an error, so the reason
+      // survives long enough to be read.
+      setForwards((current) =>
+        current.map((forward) =>
+          forward.id === event.forwardId && forward.status !== 'error'
+            ? { ...forward, status: 'idle' as const }
+            : forward
+        )
+      );
+    });
+  }, []);
+
+  /**
+   * Read remembered ports back, and adopt any tunnel already running.
+   *
+   * Nothing is reopened here. A restored row is idle until clicked, for the same
+   * reason a restored SSH pane is: launching the app must not dial out to a host
+   * on its own. Tunnels the main process already holds — this window was
+   * reloaded, not restarted — are merged in with their real status.
+   */
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.loadForwards) {
+      setForwardsLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    Promise.all([currentApi.loadForwards(), currentApi.listForwards?.() ?? []])
+      .then(([file, live]) => {
+        if (cancelled) return;
+        const restored = fromStoredForwards(file);
+        // Wrapped rather than passed straight in: reduce also supplies the
+        // index and the array, so a third parameter added to
+        // applyForwardStatus later would start silently receiving one.
+        setForwards(live.reduce((merged, info) => applyForwardStatus(merged, info), restored));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setForwardsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!forwardsLoaded) return;
+    const currentApi = api();
+    if (!currentApi?.saveForwards) return;
+    const timer = setTimeout(() => {
+      currentApi.saveForwards(toStoredForwards(forwards)).catch(() => {
+        // Remembering a port must never interrupt the terminals.
+      });
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [forwards, forwardsLoaded]);
+
+  /**
+   * Save the layout after it settles.
+   *
+   * Debounced because the things it watches move in bursts — dragging a divider
+   * or switching panes — and each save is a file write in the main process.
+   */
+  useEffect(() => {
+    if (!workspacesLoaded || sessionsLoading) return;
+    const currentApi = api();
+    if (!currentApi?.saveWorkspaces) return;
+    const timer = setTimeout(() => {
+      currentApi.saveWorkspaces(toStoredFile(workspaces, activeWorkspaceId, sessions)).catch(() => {
+        // Layout memory must never interrupt the terminals.
+      });
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [workspaces, activeWorkspaceId, sessions, workspacesLoaded, sessionsLoading]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    setVisitedWorkspaces((current) => (current.includes(activeWorkspaceId) ? current : [...current, activeWorkspaceId]));
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
     if (!active && workspaceSessions.length) {
       setActive(workspaceSessions[0]);
     }
-  }, [active, workspaceSessions]);
+  }, [active, workspaceSessions, setActive]);
 
   /**
    * Follow each session's working directory by reading its output.
@@ -772,7 +1427,8 @@ function App() {
         if (!existing || existing.cwd === reading.path) return current;
         return current.map((item) => (item.id === sessionId ? { ...item, cwd: reading.path } : item));
       });
-      setActive((current) => (current && current.id === sessionId && current.cwd !== reading.path ? { ...current, cwd: reading.path } : current));
+      // The selected session is looked up from `sessions`, so updating the list
+      // is the whole job — there is no second copy to keep in step.
     });
   }, []);
 
@@ -780,94 +1436,102 @@ function App() {
   // the shell. The pane holds the keyboard during a recording — that is the
   // point, so typing carries on working — and xterm would otherwise consume the
   // key first and send it to the pty.
-  useEffect(() => {
-    if (voice.status !== 'listening') return;
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      cancelVoice();
-      setStatus('Voice cancelled');
-    };
-    window.addEventListener('keydown', onEscape, true);
-    return () => window.removeEventListener('keydown', onEscape, true);
-  }, [voice.status]);
-
+  // One keydown listener, and the deciding is not done here: matchShortcut and
+  // topDismissTarget say what a keypress means, so the bindings can be
+  // enumerated by a test. This block only carries them out.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        if (transferOpen) {
+        // A drag in flight is the most immediate thing Escape can undo, and it
+        // is not an overlay, so it is handled before the stack of them.
+        if (tabDrag.current) {
           event.preventDefault();
-          setTransferOpen(false);
+          cancelTabDrag();
           return;
         }
-        if (settingsOpen) {
-          event.preventDefault();
-          setSettingsOpen(false);
-          return;
+        const target = topDismissTarget({
+          help: helpOpen,
+          transfer: transferOpen,
+          settings: settingsOpen,
+          voiceReview: Boolean(voiceReview),
+          overview,
+          suggest: Boolean(suggest),
+          modal: Boolean(modal),
+          palette: paletteOpen,
+          history: historyOpen
+        });
+        if (!target) return;
+        event.preventDefault();
+        if (target === 'help') setHelpOpen(false);
+        if (target === 'transfer') setTransferOpen(false);
+        if (target === 'settings') setSettingsOpen(false);
+        if (target === 'voiceReview') closeVoiceReview();
+        if (target === 'overview') setOverview(false);
+        if (target === 'suggest') {
+          // Abandon whatever is in flight: its answer would arrive against a
+          // dialog that has gone.
+          void api()?.cancelAiRequest?.();
+          setSuggest(null);
         }
-        if (voiceReview) {
-          event.preventDefault();
-          closeVoiceReview();
-          return;
-        }
-        if (overview) {
-          event.preventDefault();
-          setOverview(false);
-          return;
-        }
-        if (approval) {
-          event.preventDefault();
-          setApproval(null);
-          return;
-        }
-        if (modal) {
-          event.preventDefault();
-          setModal(null);
-          return;
-        }
-        if (historyOpen) {
-          event.preventDefault();
-          setHistoryOpen(false);
-          return;
-        }
+        if (target === 'modal') setModal(null);
+        if (target === 'palette') setPaletteOpen(false);
+        if (target === 'history') setHistoryOpen(false);
+        return;
       }
 
-      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
-      const key = event.key.toLowerCase();
-      if (key === 'o') {
-        event.preventDefault();
-        setOverview((value) => !value);
+      const shortcut = matchShortcut({
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        // Needed for the Ctrl+Alt family, which is where a user moves a
+        // shortcut when something else on the machine has taken Ctrl+Shift.
+        altKey: event.altKey,
+        // App chrome, not the shell: a shortcut must not fire while the user is
+        // typing into one of our own fields, such as the inline workspace
+        // rename. xterm's input is a textarea, so a focused terminal is
+        // deliberately still covered by these.
+        inTextField: event.target instanceof HTMLInputElement
+      }, bindings);
+      if (!shortcut) return;
+      event.preventDefault();
+
+      if (shortcut.action === 'switch-workspace') {
+        const target = workspaces[shortcut.position - 1];
+        if (target) switchWorkspace(target.id);
+        return;
       }
-      if (key === 'n') {
-        event.preventDefault();
+      if (shortcut.action === 'toggle-help') setHelpOpen((value) => !value);
+      if (shortcut.action === 'toggle-overview') setOverview((value) => !value);
+      if (shortcut.action === 'new-workspace') {
         setWorkspaceName(nextWorkspaceName(workspaces));
         setModal('workspace');
       }
-      if (key === 't') {
-        event.preventDefault();
-        openSessionDialog('local');
-      }
-      if (key === 'l') {
-        event.preventDefault();
+      if (shortcut.action === 'new-terminal') openSessionDialog('local');
+      // openSuggest, not setSuggest: with no endpoint configured it opens
+      // Settings and says so, exactly as the button does.
+      if (shortcut.action === 'ask-ai') openSuggest();
+      if (shortcut.action === 'toggle-layout') {
         // Match the layout buttons: a maximized pane would otherwise mask the change.
-        setMaximizedSessionId(null);
-        setLayout((value) => (value === 'stack' ? lastSplitLayout.current : 'stack'));
+        patchView((current) => ({
+          maximizedSessionId: null,
+          layout: current.layout === 'stack' ? current.lastSplit : 'stack'
+        }));
       }
-      if (key === 'b') {
-        event.preventDefault();
-        setDrawerCollapsed((value) => !value);
-      }
-      // Matched on code, not key: with Shift held, a comma reports as '<' on
-      // most layouts, so event.key would never equal ','.
-      if (event.code === 'Comma') {
-        event.preventDefault();
-        setSettingsOpen((value) => !value);
-      }
+      if (shortcut.action === 'toggle-sidebar') setDrawerCollapsed((value) => !value);
+      if (shortcut.action === 'toggle-settings') setSettingsOpen((value) => !value);
+      // The Shift variant only, never bare Ctrl+R: McFly can rebind ctrl-r as it
+      // *is* the shell. Swallowing it here would take reverse-search away from
+      // every shell in every pane, including remote ones this feature cannot see.
+      if (shortcut.action === 'history-palette') openPalette();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [overview, approval, modal, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspace, workspaceSessions]);
+    // `sessions` is listed because the workspace-switch shortcut reads it to
+    // pick the terminal to focus. It costs nothing: workspaceSessions already
+    // changes with it, and setSessions returns the same array when nothing moved.
+  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -877,9 +1541,37 @@ function App() {
   const transferTarget = sftpTargetForSession(active);
   const transfer = transferAvailability(active);
   const paneCount = layout === 'stack' ? 1 : layout === 'grid' ? 4 : 2;
+
+  /**
+   * Workspaces whose panes are mounted.
+   *
+   * A workspace is not mounted until it has been shown once, because mounting a
+   * pane attaches its session: rendering every workspace up front would start
+   * every shell in every workspace on launch. Once visited it stays mounted, so
+   * switching away no longer disposes its terminals. The active workspace is
+   * always included, so the first frame after a switch already has its panes.
+   */
+  const mountedWorkspaceIds = useMemo(
+    () => new Set([...visitedWorkspaces, activeWorkspaceId]),
+    [visitedWorkspaces, activeWorkspaceId]
+  );
+
+  const allPanes = useMemo(
+    () => paneEntries(workspaces.filter((workspace) => mountedWorkspaceIds.has(workspace.id)), sessions, activeWorkspaceId),
+    [workspaces, sessions, activeWorkspaceId, mountedWorkspaceIds]
+  );
+
   // Keep every workspace terminal mounted while changing layouts. Hiding a
   // pane must not dispose its xterm renderer and lose its scrollback/content.
-  const paneSessions = workspaceSessions.slice(0, 4);
+  //
+  // Taken from allPanes rather than filtered again, so that pane order and the
+  // index the visibility rule counts against are the same list the grid renders.
+  // Claim order is also the right order: it is the order panes were added, where
+  // the session list's order is whatever the main process last reported.
+  const paneSessions = useMemo(
+    () => allPanes.filter((entry) => entry.workspaceId === activeWorkspaceId).map((entry) => entry.session),
+    [allPanes, activeWorkspaceId]
+  );
   const renderedPaneCount = Math.max(paneCount, paneSessions.length);
   // A pane maximized in another workspace has no match here, and the grid would
   // then hide every pane including placeholders. Derive the effective id so that
@@ -901,9 +1593,11 @@ function App() {
 
   useEffect(() => {
     // Recorded from the layout rather than at each button, so a split reached
-    // by any route is the one the single-pane view folds back out to.
-    if (layout !== 'stack') lastSplitLayout.current = layout;
-  }, [layout]);
+    // by any route is the one the single-pane view folds back out to. Per
+    // workspace, so each one folds back to its own split.
+    if (layout === 'stack' || view.lastSplit === layout) return;
+    patchView({ lastSplit: layout });
+  }, [layout, view.lastSplit, patchView]);
 
   const attach = async (session: SessionInfo) => {
     setActive(session);
@@ -928,24 +1622,13 @@ function App() {
   };
 
   const claimSession = (session: SessionInfo, workspaceId = activeWorkspaceId) => {
-    setWorkspaces((current) =>
-      current.map((workspace) => {
-        if (workspace.id !== workspaceId) {
-          return {
-            ...workspace,
-            sessionIds: workspace.sessionIds.filter((id) => id !== session.id)
-          };
-        }
-        if (workspace.sessionIds.includes(session.id)) return workspace;
-        return { ...workspace, sessionIds: [...workspace.sessionIds, session.id] };
-      })
-    );
+    setWorkspaces((current) => claimInto(current, workspaceId, session.id));
   };
 
   const createWorkspace = async (event: React.FormEvent) => {
     event.preventDefault();
     const name = workspaceName.trim() || nextWorkspaceName(workspaces);
-    const workspace = makeWorkspace(name);
+    const workspace = makeWorkspace(name, settings.sessions.defaultLayout);
     setWorkspaces((current) => [...current, workspace]);
     setActiveWorkspaceId(workspace.id);
     setActive(null);
@@ -957,7 +1640,7 @@ function App() {
     event.preventDefault();
     const currentApi = api();
     if (!currentApi) return;
-    if (workspaceSessions.length >= 4) {
+    if ((activeWorkspace ? workspacePaneCount(activeWorkspace) : workspaceSessions.length) >= 4) {
       setStatus('This workspace supports up to 4 sessions.');
       setModal(null);
       return;
@@ -979,43 +1662,152 @@ function App() {
     }
   };
 
-  const createSsh = async (event: React.FormEvent) => {
-    event.preventDefault();
+  /**
+   * Open an SSH session on `target` in a new pane of the active workspace.
+   *
+   * Shared by the connect dialog and the connections list: both need the same
+   * four-pane cap, the same layout bump, and the same attach, and differ only
+   * in where the target came from. The setModal(null) matters on the dialog
+   * path and is a no-op on the other.
+   */
+  const connectSsh = async (
+    target: string,
+    name?: string,
+    options?: {
+      /**
+       * Filling a pane the workspace already counts — a remembered one being
+       * reconnected — rather than adding a new one. The cap must not refuse to
+       * restore the fourth pane of a workspace that legitimately has four.
+       */
+      replacingPane?: boolean;
+    }
+  ): Promise<SessionInfo | null> => {
     const currentApi = api();
-    if (!currentApi) return;
-    if (workspaceSessions.length >= 4) {
+    if (!currentApi) return null;
+    // The dialog's submit button is disabled while busy, but a sidebar row is
+    // always clickable: two connects in flight would each read the pane count
+    // from before the other, and between them could put five panes in a
+    // workspace that holds four.
+    if (busy) return null;
+    const panes = activeWorkspace ? workspacePaneCount(activeWorkspace) : workspaceSessions.length;
+    if (!options?.replacingPane && panes >= 4) {
       setStatus('This workspace supports up to 4 sessions.');
       setModal(null);
-      return;
+      return null;
     }
     setBusy(true);
     try {
-      const session = await currentApi.createSshSession({ name: sshName || undefined, target: sshTarget });
+      const session = await currentApi.createSshSession({ name: name || undefined, target });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
       setFocusedSessionId(session.id);
       setMaximizedSessionId(null);
-      setLayout(layoutForSessionCount(workspaceSessions.length + 1));
+      setLayout(layoutForSessionCount(options?.replacingPane ? Math.max(panes, 1) : panes + 1));
       setModal(null);
       await attach(session);
+      return session;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+      return null;
     } finally {
       setBusy(false);
     }
   };
 
-  const attachRemoteScreen = async (session: SessionInfo, connection: KnownConnection) => {
+  const createSsh = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await connectSsh(sshTarget, sshName);
+  };
+
+  /**
+   * Carry out what the restore planner decided.
+   *
+   * The history popover and a workspace's remembered panes both come through
+   * here, so the two cannot drift into reconnecting the same shell differently.
+   */
+  const runRestoreAction = async (action: RestoreAction, options?: { replacingPane?: boolean }): Promise<SessionInfo | null> => {
+    const currentApi = api();
+    if (!currentApi) return null;
+
+    if (action.kind === 'unavailable') {
+      setStatus(action.reason);
+      return null;
+    }
+
+    if (action.kind === 'attach') {
+      const session = sessions.find((item) => item.id === action.sessionId);
+      if (!session) return null;
+      claimSession(session);
+      await attach(session);
+      return session;
+    }
+
+    if (action.kind === 'attach-remote-screen') {
+      return attachRemoteScreen(action.name, action.screenName, action.connection);
+    }
+
+    const session = await connectSsh(action.target, action.name, options);
+    if (!session || !action.screenCommand) return session;
+    // The shell has to be ready before `screen -x` goes down the pipe, or the
+    // command lands in a login banner and is lost.
+    await currentApi.attachSession(session.id);
+    await waitForShellPrompt(currentApi, session.id);
+    currentApi.write(session.id, `${action.screenCommand}\r`);
+    return session;
+  };
+
+  /**
+   * Reconnect a pane the active workspace remembered from a previous launch.
+   *
+   * The remembered entry is dropped only once something came back, so a failed
+   * reconnect — host down, key refused — leaves the ghost row in place to try
+   * again rather than quietly shrinking the workspace.
+   */
+  const restorePendingPane = async (member: StoredWorkspaceMember) => {
+    const action = planSessionRestore(memberDescriptor(member), sessions, knownConnections);
+    if (action.kind === 'unavailable') {
+      // Nothing to reconnect to: stop offering it, and say why.
+      setWorkspaces((current) => dropPending(current, activeWorkspaceId, member.sessionId));
+      setStatus(action.reason);
+      return;
+    }
+    setStatus(`Reconnecting ${member.name}…`);
+    const session = await runRestoreAction(action, { replacingPane: true });
+    if (!session) return;
+    setWorkspaces((current) => dropPending(current, activeWorkspaceId, member.sessionId));
+  };
+
+  /**
+   * Connect a saved connection without going through the dialog.
+   *
+   * The target matches what the dialog would have been pre-filled with, so a
+   * double-click and a click-then-confirm reach the same host. The alias makes
+   * a better pane label than the derived hostname, but session names cap
+   * shorter than SSH aliases do — both allow the same characters, so trimming
+   * an over-long alias is enough to keep it a valid name.
+   */
+  const connectKnownConnection = (connection: KnownConnection) => {
+    setStatus(`Connecting to ${connection.alias}…`);
+    void connectSsh(connection.hostName ?? connection.alias, connection.alias.slice(0, 48));
+  };
+
+  /**
+   * Open an SSH session and re-enter a `screen` on the far side.
+   *
+   * Takes the two names it actually needs rather than a SessionInfo: callers
+   * reconnecting from history or from a stored workspace have a description,
+   * not a session, and one of them used to fake the object with a cast.
+   */
+  const attachRemoteScreen = async (name: string, screenName: string, connection: KnownConnection): Promise<SessionInfo | null> => {
     try {
       const currentApi = api();
-      if (!currentApi) return;
-      setStatus(`Attaching to ${session.name} on ${connection.alias}…`);
-      const result = await currentApi.buildRemoteScreenAttach?.(connection, session.screenName ?? session.name);
+      if (!currentApi) return null;
+      setStatus(`Attaching to ${name} on ${connection.alias}…`);
+      const result = await currentApi.buildRemoteScreenAttach?.(connection, screenName);
       const args = result?.args;
       const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
       const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
-      const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
-      const screenName = session.screenName ?? session.name;
+      const ssh = await currentApi.createSshSession({ target: destination, name });
       const attached = { ...ssh, screenName, persistence: 'screen' as const, backend: 'screen' as const };
       setSessions((current) => {
         const exists = current.some((item) => item.id === attached.id);
@@ -1028,9 +1820,11 @@ function App() {
       await waitForShellPrompt(currentApi, attached.id);
       currentApi.write(attached.id, `${screenCommand}\r`);
       await refresh();
-      setStatus(`Connected to ${session.name} on ${connection.alias}`);
+      setStatus(`Connected to ${name} on ${connection.alias}`);
+      return attached;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+      return null;
     }
   };
 
@@ -1067,9 +1861,693 @@ function App() {
     });
   });
 
+  /**
+   * A command a pane reported, on its way to the store — or not.
+   *
+   * Three gates, in this order: the setting, then redaction, then the store. The
+   * setting is checked here rather than in the pane so that turning it off stops
+   * recording immediately, without rebuilding a Terminal.
+   */
+  const recordCommand = useCallback(
+    (sessionId: string, captured: CapturedCommand) => {
+      if (!settings.ai.recordCommands) return;
+      const refused = redactionReason(captured.command);
+      if (refused) {
+        // Said out loud, without the command: silently dropping it would look
+        // like the feature was broken.
+        setStatus(`Command not remembered — it looks like it carries a credential (${refused}).`);
+        return;
+      }
+      const currentApi = api();
+      if (!currentApi?.recordCommand) return;
+      const session = sessions.find((item) => item.id === sessionId);
+      void currentApi
+        .recordCommand({
+          command: captured.command,
+          ...(session?.cwd ? { cwd: session.cwd } : {}),
+          ...(session?.host ? { host: session.host } : {}),
+          ...(session?.kind ? { kind: session.kind } : {}),
+          ...(captured.exitCode === undefined ? {} : { exitCode: captured.exitCode })
+        })
+        .then((entry) => {
+          if (entry) setCommandEntries((current) => [...current.filter((item) => item.id !== entry.id), entry]);
+        })
+        .catch(() => undefined);
+    },
+    [settings.ai.recordCommands, sessions]
+  );
+
+  /**
+   * What the settings panel says about recording.
+   *
+   * `panesReporting` is the answer to "did my snippet work" — counted from the
+   * panes that have actually emitted a mark, not from anything configured.
+   */
+  const commandHistoryState = useMemo<CommandHistoryState>(() => {
+    const captures = [...captureRef.current.values()];
+    return {
+      entries: commandEntries.length,
+      panesReporting: captures.filter((capture) => capture.hasMarks()).length,
+      panesOpen: captures.length
+    };
+  }, [commandEntries, settingsOpen, sessions]);
+
+  const openPalette = () => {
+    setPaletteQuery('');
+    setPaletteIndex(0);
+    setPaletteOpen(true);
+    // Refreshed on open rather than kept in step: the store is the truth, and
+    // this is the one moment it is about to be read.
+    void api()?.listCommandHistory?.().then(setCommandEntries).catch(() => undefined);
+  };
+
+  /**
+   * The ranked matches for what has been typed.
+   *
+   * Ranked against the focused pane's directory and host, because "in this
+   * directory" is the strongest signal the palette has and the focused pane is
+   * where the command is going.
+   */
+  const paletteMatches = useMemo<RankedCommand[]>(() => {
+    if (!paletteOpen) return [];
+    const target = sessions.find((item) => item.id === (focusedSessionId ?? active?.id));
+    return rankCommands(commandEntries, {
+      query: paletteQuery,
+      ...(target?.cwd ? { cwd: target.cwd } : {}),
+      ...(target?.host ? { host: target.host } : {}),
+      now: Date.now(),
+      limit: 40
+    });
+  }, [paletteOpen, commandEntries, paletteQuery, sessions, focusedSessionId, active?.id]);
+
+  /**
+   * Put a remembered command on the prompt, without running it.
+   *
+   * No trailing newline, deliberately. The command came out of a store rather
+   * than from the user's hands just now, so pressing Enter should be their
+   * decision — and it leaves room to edit the arguments, which is most of why
+   * anyone reaches for history in the first place.
+   */
+  const usePaletteCommand = (match: RankedCommand) => {
+    const target = focusedSessionId ?? active?.id;
+    setPaletteOpen(false);
+    if (!target) {
+      setStatus('No terminal selected for the command');
+      return;
+    }
+    api()?.write(target, match.entry.command);
+    void api()?.pickCommand?.(match.entry.id).catch(() => undefined);
+    setStatus(`On the prompt: ${match.entry.command}`);
+    focusTerminal(target);
+  };
+
+  const clearCommandHistory = async () => {
+    await api()?.clearCommandHistory?.().catch(() => undefined);
+    setCommandEntries([]);
+    setStatus('Remembered commands forgotten.');
+  };
+
+  /**
+   * Open the prompt box, remembering which pane it was asked from.
+   *
+   * The pane is captured here rather than when the answer arrives: a suggestion
+   * built from one pane's output must not land in another, which is what
+   * CONTEXT.md's "associated with a session/task ID" is there to prevent.
+   */
+  const openSuggest = () => {
+    if (!isConfigured(settings.ai)) {
+      setSettingsOpen(true);
+      setStatus('Set an AI endpoint and model in Settings first.');
+      return;
+    }
+    setSuggest(askSuggestion(active?.id ?? focusedSessionId));
+  };
+
+  /** Ask the endpoint, then show what came back. */
+  const runSuggest = async (prompt: string) => {
+    const currentApi = api();
+    const current = suggest;
+    if (!currentApi?.requestAiCommand || !current) return;
+
+    // Read the pane now, at the moment the request is made: the setting can
+    // change and the pane can scroll while an answer is in flight.
+    const sessionId = current.sessionId;
+    const session = sessionId ? sessions.find((item) => item.id === sessionId) : undefined;
+    const usedOutput = settings.ai.includeOutput && Boolean(sessionId);
+    const output = usedOutput && sessionId
+      ? boundedTail(terminalReadRef.current.get(sessionId)?.() ?? '', settings.ai.outputChars)
+      : '';
+
+    setSuggest({ phase: 'thinking', sessionId, prompt, usedOutput: usedOutput && Boolean(output) });
+    try {
+      const suggestion = await currentApi.requestAiCommand(
+        { baseUrl: settings.ai.baseUrl, model: settings.ai.model },
+        {
+          prompt,
+          ...(sessionId ? { sessionId } : {}),
+          context: {
+            ...(session?.backend ? { shell: backendLabel(session.backend) } : {}),
+            ...(session?.cwd ? { cwd: session.cwd } : {}),
+            ...(session?.host ? { host: session.host } : {}),
+            ...(session?.kind ? { kind: session.kind } : {}),
+            ...(output ? { output } : {})
+          }
+        }
+      );
+
+      const withOutput = usedOutput && Boolean(output);
+      if (canAutoRun(settings.ai, withOutput, suggestion.command) && sessionId) {
+        // Approval is off and nothing but metadata was sent, so the setting is
+        // taken at its word.
+        currentApi.write(sessionId, `${suggestion.command}\r`);
+        setSuggest(null);
+        setStatus(`Ran suggestion: ${suggestion.command}`);
+        return;
+      }
+      setSuggest({ phase: 'reviewing', sessionId, prompt, usedOutput: withOutput, suggestion });
+    } catch (error) {
+      setSuggest({ phase: 'failed', sessionId, prompt, message: ipcMessage(error) });
+    }
+  };
+
+  /** Send the reviewed command to the pane it was built from. */
+  const acceptSuggestion = () => {
+    if (suggest?.phase !== 'reviewing') return;
+    const { sessionId, suggestion } = suggest;
+    setSuggest(null);
+    if (!sessionId || !suggestion.command) return;
+    api()?.write(sessionId, `${suggestion.command}\r`);
+    setStatus(`Sent: ${suggestion.command}`);
+    focusTerminal(sessionId);
+  };
+
+  const refreshAiModels = async () => {
+    const currentApi = api();
+    if (!currentApi?.listAiModels) return;
+    try {
+      setAiModels(await currentApi.listAiModels(settings.ai.baseUrl));
+    } catch (error) {
+      setAiModels([]);
+      setStatus(ipcMessage(error));
+    }
+  };
+
+  const runAiTest = async () => {
+    const currentApi = api();
+    if (!currentApi?.testAiEndpoint) return;
+    setAiTest({ status: 'testing', message: null });
+    const result = await currentApi.testAiEndpoint({ baseUrl: settings.ai.baseUrl, model: settings.ai.model });
+    setAiTest({ status: 'idle', ok: result.ok, message: result.message });
+  };
+
+  /**
+   * The hosts a port could be shared through.
+   *
+   * Saved connections plus the hosts of live SSH sessions: a tunnel is its own
+   * `ssh` process, so it does not need a terminal open to the host first — but
+   * if one is open, that is almost certainly the host meant.
+   */
+  const forwardHosts = useMemo(() => {
+    const hosts = new Set<string>();
+    for (const session of sessions) {
+      if (session.kind === 'ssh' && session.host) hosts.add(session.host);
+    }
+    for (const connection of knownConnections) hosts.add(connection.hostName ?? connection.alias);
+    return [...hosts];
+  }, [sessions, knownConnections]);
+
+  const openSharePortDialog = () => {
+    setForwardTarget((current) => current || (active?.kind === 'ssh' ? active.host : forwardHosts[0]) || '');
+    setForwardAdvanced(false);
+    setModal('forward');
+  };
+
+  /**
+   * Open a tunnel, or say why it cannot be opened.
+   *
+   * The row appears before the client has connected and follows itself through
+   * `connecting` to `open` on the event stream, so a slow host looks like a slow
+   * host rather than a dead button.
+   */
+  const shareForward = async (request: Omit<PortForwardInfo, 'status'>) => {
+    const currentApi = api();
+    if (!currentApi?.openForward) return;
+    const conflict = forwardConflict(request, forwards);
+    if (conflict) {
+      setStatus(conflict);
+      return;
+    }
+    setSidebarView('ports');
+    setForwards((current) => applyForwardStatus(current, { ...request, status: 'connecting' }));
+    try {
+      const opened = await currentApi.openForward(request);
+      setForwards((current) => applyForwardStatus(current, opened));
+      setStatus(`Sharing ${forwardLabel(opened)}`);
+    } catch (error) {
+      const message = ipcMessage(error);
+      // Kept in the list as an error rather than removed: the user asked for it,
+      // and a row that says why beats a row that silently never appeared.
+      setForwards((current) => applyForwardStatus(current, { ...request, status: 'error', message }));
+      setStatus(message);
+    }
+  };
+
+  const createForward = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const listenPort = Number(forwardListenPort);
+    // The far side defaults to the same number, which is what is wanted almost
+    // every time and saves typing it twice.
+    const destinationPort = Number(forwardDestinationPort || forwardListenPort);
+    // Checked here, not left to the client: a number the range rejects is a
+    // typo, and the dialog staying open with the message beats closing it and
+    // leaving a row that only says what was already typed. The service checks
+    // again regardless — it cannot trust this side.
+    const unusable = [listenPort, destinationPort].some(
+      (port) => !Number.isInteger(port) || port < 1 || port > 65535
+    );
+    if (unusable) {
+      setStatus('A port must be a whole number between 1 and 65535.');
+      return;
+    }
+    setModal(null);
+    await shareForward({
+      id: `forward:${crypto.randomUUID()}`,
+      target: forwardTarget.trim(),
+      direction: forwardDirection,
+      bind: forwardBind,
+      listenPort,
+      destinationPort,
+      ...(forwardDestinationHost.trim() ? { destinationHost: forwardDestinationHost.trim() } : {})
+    });
+  };
+
+  const closeForward = async (forward: PortForwardInfo) => {
+    const currentApi = api();
+    // Dropped from the list whatever the main process says: the user asked for it
+    // to stop, and a row that lingers after the cross looks broken.
+    setForwards((current) => current.filter((item) => item.id !== forward.id));
+    setStatus(`Stopped sharing ${listenerLabel(forward)}`);
+    try {
+      await currentApi?.closeForward?.(forward.id);
+    } catch {
+      /* already gone */
+    }
+  };
+
+  const browserStateFor = (sessionId: string) => activeWorkspace?.view.browsers?.[sessionId];
+  const browserOpenFor = (sessionId: string) => Boolean(browserStateFor(sessionId)?.open);
+  const browserRatioFor = (sessionId: string) => browserStateFor(sessionId)?.ratio ?? DEFAULT_BROWSER_RATIO;
+
+  const patchBrowser = (sessionId: string, patch: Partial<{ open: boolean; ratio: number }>) => {
+    patchView((current) => ({
+      browsers: {
+        ...current.browsers,
+        [sessionId]: { open: false, ...current.browsers?.[sessionId], ...patch }
+      }
+    }));
+  };
+
+  const toggleBrowser = (sessionId: string) => {
+    const open = !browserOpenFor(sessionId);
+    patchBrowser(sessionId, { open });
+    // Closing forgets where it had been navigated to, so reopening starts from
+    // the pane's own directory rather than wherever it was left.
+    if (!open) setBrowserPaths((current) => ({ ...current, [sessionId]: '' }));
+  };
+
+  /**
+   * Where a pane's browser should be listing.
+   *
+   * Wherever the user has taken it, and the shell's own directory otherwise —
+   * which is how the browser follows a `cd` typed by hand, with no new signal:
+   * cwd-tracker already maintains that from OSC 7 or the prompt.
+   */
+  const browserPathFor = (session: SessionInfo): string | null =>
+    browserPaths[session.id] || startingListingPath(session, paneHome(session));
+
+  /**
+   * What `~` means for this pane, when anything does.
+   *
+   * A WSL distribution is asked directly; an SSH host reports its login
+   * directory when the transfer connection opens. Both are cached, because a
+   * shell that reports `~` will keep reporting it.
+   */
+  const paneHome = (session: SessionInfo): string | undefined => {
+    if (session.kind === 'ssh') return sshHomes[session.id];
+    return session.wslDistribution ? wslHomes[session.wslDistribution] : undefined;
+  };
+
+  /**
+   * Take the shell into a directory.
+   *
+   * Four gates, each refusing out loud rather than typing something
+   * approximate: the quoting rule has to be known, the path has to translate
+   * back to something this shell can reach, the name has to be quotable, and the
+   * pane has to be at a prompt. That last one is the point of the exercise — a
+   * `cd` sent while vim or an agent holds the terminal goes to *that* program.
+   */
+  const openDirectory = (session: SessionInfo, listingPath: string) => {
+    const currentApi = api();
+    if (!currentApi) return;
+
+    const family = shellFamily(session);
+    if (!family) {
+      setStatus(`ZeroG does not know how ${session.name} quotes a path, so it will not type one.`);
+      return;
+    }
+    const shellPath = shellPathFor(session, listingPath);
+    if (!shellPath) {
+      setStatus(`That directory is outside what ${session.name} can reach.`);
+      return;
+    }
+    if (!paneAcceptsCommand(session)) {
+      setStatus(`${session.name} is running something, so its directory was left alone.`);
+      return;
+    }
+    const built = changeDirectoryCommand(family, shellPath);
+    if ('refused' in built) {
+      setStatus(built.refused);
+      return;
+    }
+    // cwd-tracker deliberately never injects a `pwd`, because that would put a
+    // command the user did not ask for into their shell history. This is the
+    // other case: the user double-clicked asking for exactly this, and seeing
+    // the `cd` appear in the scrollback is honest about what happened.
+    currentApi.write(session.id, built.command + '\r');
+    // Take the browser there rather than waiting to be told. We know exactly
+    // where the shell was sent, and cwd tracking may never report it: a prompt
+    // reading `~/my project` is not a path the prompt parser can extract, so
+    // relying on the report left the browser a directory behind — observed
+    // against a real WSL shell. The follow effect clears this override the
+    // moment the shell does report somewhere new.
+    setBrowserPaths((current) => ({ ...current, [session.id]: listingPath }));
+    setStatus(`${session.name}: ${built.command}`);
+    focusTerminal(session.id);
+  };
+
+  /**
+   * Is this pane sitting at a prompt?
+   *
+   * The OSC 133 marks answer exactly, where a shell reports them. Where it
+   * reports none, the prompt heuristic on the last line of the grid is the
+   * fallback — weaker, but the alternative is refusing the feature outright on
+   * every shell without integration installed.
+   */
+  const paneAcceptsCommand = (session: SessionInfo): boolean => {
+    const capture = captureRef.current.get(session.id);
+    if (capture?.hasMarks()) return capture.atPrompt();
+    const read = terminalReadRef.current.get(session.id);
+    // Nothing registered means the pane is not showing, and a pane the user
+    // cannot see is not one they just double-clicked in.
+    if (!read) return false;
+    const lines = read().trimEnd().split('\n');
+    return looksLikeShellPrompt(lines[lines.length - 1] ?? '');
+  };
+
+  // The browser follows the shell. When a pane reports a new directory — a `cd`
+  // typed by hand, or the one this feature sent — whatever the user had
+  // navigated its browser to stops applying, so the two never disagree.
+  const paneCwdRef = useRef(new Map<string, string | undefined>());
+  useEffect(() => {
+    const moved: string[] = [];
+    for (const session of sessions) {
+      const seen = paneCwdRef.current.has(session.id);
+      if (seen && paneCwdRef.current.get(session.id) !== session.cwd) moved.push(session.id);
+      paneCwdRef.current.set(session.id, session.cwd);
+    }
+    if (!moved.length) return;
+    setBrowserPaths((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const id of moved) {
+        if (next[id]) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [sessions]);
+
+  // Asked only for a pane whose browser is actually open, and only while its
+  // shell is still reporting a tilde: a distro is a process to start and an SSH
+  // host is a connection to open, and nothing should start either for a browser
+  // nobody opened.
+  useEffect(() => {
+    for (const session of sessions) {
+      if (!browserOpenFor(session.id)) continue;
+      const reportsTilde = !session.cwd || session.cwd.startsWith('~');
+      if (session.kind === 'ssh') {
+        // An SSH pane needs the login directory even when it reports an
+        // absolute path: `..` from the pane's directory can walk above it, and
+        // the connection has to be open before anything can be listed anyway.
+        if (!sshHomes[session.id]) resolveSshHome(session);
+        continue;
+      }
+      if (!session.wslDistribution || !reportsTilde) continue;
+      if (wslHomes[session.wslDistribution]) continue;
+      resolveWslHome(session.wslDistribution);
+    }
+  }, [sessions, activeWorkspace?.view.browsers, wslHomes, sshHomes, resolveWslHome, resolveSshHome]);
+
+  /**
+   * Dragging a workspace tab into a different position.
+   *
+   * The strip reorders as the pointer moves rather than showing an insertion
+   * marker: the tabs are the only thing on that row, so watching them move is
+   * clearer than a line between them, and the order is state the app already
+   * keeps.
+   *
+   * A tab is also the button that switches workspace, so a press is a click
+   * until it has travelled far enough to be a drag. Once it has, the click that
+   * follows the release is suppressed — switching to a workspace someone was
+   * only rearranging is exactly the kind of surprise this should not cause.
+   */
+  const tabDrag = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    dragging: boolean;
+    /** The order to go back to if the drag is abandoned. */
+    original: Workspace[];
+  } | null>(null);
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  /** The tab whose menu is open, and where the click was. */
+  const [tabMenu, setTabMenu] = useState<{ id: string; at: { x: number; y: number } } | null>(null);
+  /** The workspace the rename dialog is for, which need not be the active one. */
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  /** Set from the moment a drag begins until the click it produces is swallowed. */
+  const suppressTabClick = useRef(false);
+
+  const tabBoxes = (): Array<{ id: string; left: number; width: number }> =>
+    [...document.querySelectorAll('.workspace-tab-slot')].map((slot) => {
+      const box = slot.getBoundingClientRect();
+      return { id: (slot as HTMLElement).dataset.workspaceId ?? '', left: box.left, width: box.width };
+    });
+
+  const beginTabDrag = (workspace: Workspace, event: React.PointerEvent) => {
+    // Left button only, and never from the close cross.
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest('.workspace-tab-close')) return;
+    tabDrag.current = {
+      id: workspace.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      dragging: false,
+      original: workspaces
+    };
+    // Captured so the drag survives the pointer leaving the tab, which it does
+    // immediately: the tab moves out from under it.
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const moveTabDrag = (event: React.PointerEvent) => {
+    const drag = tabDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.dragging) {
+      if (!passedThreshold(drag.startX, event.clientX)) return;
+      drag.dragging = true;
+      suppressTabClick.current = true;
+      setDraggingTabId(drag.id);
+    }
+    const boxes = tabBoxes();
+    const from = boxes.findIndex((box) => box.id === drag.id);
+    if (from < 0) return;
+    const to = dropIndexFor(boxes, event.clientX);
+    setWorkspaces((current) => {
+      const at = indexOfId(current, drag.id);
+      if (at < 0) return current;
+      // reorder returns the same array when nothing would move, so holding a
+      // tab still does not re-render the strip.
+      return reorder(current, at, to) as Workspace[];
+    });
+  };
+
+  const endTabDrag = (event: React.PointerEvent) => {
+    const drag = tabDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    tabDrag.current = null;
+    setDraggingTabId(null);
+    // The click arrives after the release, so the flag has to outlive this
+    // handler by a moment. Cleared on a timer rather than in the click handler
+    // so a drag that somehow produces no click cannot leave clicks swallowed.
+    if (drag.dragging) window.setTimeout(() => { suppressTabClick.current = false; }, 0);
+  };
+
+  const cancelTabDrag = () => {
+    const drag = tabDrag.current;
+    if (!drag) return;
+    tabDrag.current = null;
+    setDraggingTabId(null);
+    if (drag.dragging) setWorkspaces(drag.original);
+    suppressTabClick.current = false;
+  };
+
+  /** The commands on a workspace tab's menu. */
+  const tabMenuItems = (workspace: Workspace): MenuItem[] => {
+    const at = indexOfId(workspaces, workspace.id);
+    const last = workspaces.length - 1;
+    const move = (to: number) => setWorkspaces((current) => reorder(current, indexOfId(current, workspace.id), to) as Workspace[]);
+    return [
+      {
+        label: 'Rename…',
+        icon: 'pencil',
+        onSelect: () => {
+          setRenameTarget(workspace.id);
+          setWorkspaceName(workspace.name);
+          setModal('rename');
+        }
+      },
+      {
+        label: 'Duplicate',
+        icon: 'copy',
+        hint: 'Copies the layout, and each SSH pane as one to reconnect',
+        onSelect: () => duplicateWorkspaceTab(workspace)
+      },
+      {
+        label: 'Move left',
+        icon: 'chevron-left',
+        disabled: at <= 0,
+        onSelect: () => move(at - 1)
+      },
+      {
+        label: 'Move right',
+        icon: 'chevron-right',
+        disabled: at < 0 || at >= last,
+        onSelect: () => move(at + 1)
+      },
+      {
+        label: 'Close workspace',
+        icon: 'x',
+        danger: true,
+        disabled: workspaces.length < 2,
+        hint: workspaces.length < 2 ? 'The last workspace cannot be closed' : 'Its terminals keep running',
+        onSelect: () => closeWorkspaceTab(workspace.id)
+      }
+    ];
+  };
+
+  /**
+   * Copy a workspace's arrangement into a new one beside it.
+   *
+   * What comes across is said out loud, because what cannot is not obvious: a
+   * local shell is a process on this machine, so the copy would be a different
+   * terminal rather than a duplicate of anything.
+   */
+  const duplicateWorkspaceTab = (workspace: Workspace) => {
+    const name = nextWorkspaceName(workspaces);
+    const result = duplicateWorkspace(workspaces, workspace.id, sessions, name);
+    if (!result.created) return;
+    setWorkspaces(result.workspaces);
+    setActiveWorkspaceId(result.created.id);
+    setActive(null);
+    const parts = [`Workspace “${name}” copies ${workspace.name}`];
+    if (result.copied) parts.push(`${result.copied} SSH ${result.copied === 1 ? 'pane' : 'panes'} to reconnect`);
+    if (result.skipped) parts.push(`${result.skipped} local ${result.skipped === 1 ? 'pane' : 'panes'} not copied`);
+    setStatus(parts.join(' · '));
+  };
+
+  /** Rename whichever workspace the menu was opened on. */
+  const commitWorkspaceRename = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const id = renameTarget;
+    const value = workspaceName.trim();
+    setModal(null);
+    setRenameTarget(null);
+    if (!id || !isWorkspaceName(value)) return;
+    const previous = workspaces.find((workspace) => workspace.id === id)?.name;
+    if (value === previous) return;
+    setWorkspaces((current) => renameWorkspace(current, id, value));
+    setStatus(`Workspace “${previous}” is now “${value}”`);
+  };
+
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
     setModal('workspace');
+  };
+
+  /**
+   * Make a workspace the active one.
+   *
+   * Only the id moves. Layout, selection, focus, and maximize come along
+   * because they live on the workspace being switched to — the arrangement it
+   * had when it was last on screen is the arrangement it comes back with.
+   */
+  const switchWorkspace = (workspaceId: string) => {
+    if (workspaceId === activeWorkspaceId) return;
+    const target = workspaces.find((workspace) => workspace.id === workspaceId);
+    if (!target) return;
+    setRenamingWorkspace(false);
+    setActiveWorkspaceId(workspaceId);
+    setStatus(`Workspace “${target.name}”`);
+  };
+
+  /**
+   * Close a workspace, leaving its shells alone.
+   *
+   * Only the grouping goes away: a `screen` session it held keeps running and
+   * goes back to being unclaimed inventory under Screens, which is the same
+   * promise the app makes when the whole window closes.
+   */
+  const closeWorkspaceTab = (workspaceId: string) => {
+    const target = workspaces.find((workspace) => workspace.id === workspaceId);
+    const result = closeWorkspace(workspaces, workspaceId, activeWorkspaceId);
+    if (result.workspaces === workspaces) return;
+    setRenamingWorkspace(false);
+    setWorkspaces(result.workspaces);
+    setActiveWorkspaceId(result.activeWorkspaceId);
+    // Nothing needs re-pointing: the selection and focus that named those
+    // sessions went with the view of the workspace that held them.
+    const count = result.releasedSessionIds.length;
+    setStatus(
+      count
+        ? `Closed workspace “${target?.name}” · ${count} session${count === 1 ? '' : 's'} still running`
+        : `Closed workspace “${target?.name}”`
+    );
+  };
+
+  const startRenameWorkspace = () => {
+    if (!activeWorkspace) return;
+    setRenameDraft(activeWorkspace.name);
+    setRenamingWorkspace(true);
+  };
+
+  /**
+   * Commit an inline rename, or abandon it.
+   *
+   * Called on blur as well as Enter, so an invalid or empty draft has to be
+   * refused rather than clamped — moving focus away must not be able to
+   * overwrite a good name with a half-typed one. renameWorkspace returns the
+   * list unchanged in that case.
+   */
+  const commitRenameWorkspace = () => {
+    setRenamingWorkspace(false);
+    if (!activeWorkspace) return;
+    const value = renameDraft.trim();
+    if (!isWorkspaceName(value) || value === activeWorkspace.name) return;
+    setWorkspaces((current) => renameWorkspace(current, activeWorkspace.id, value));
+    setStatus(`Workspace renamed to “${value}”`);
   };
 
   /**
@@ -1089,6 +2567,73 @@ function App() {
   };
 
   const openNewLocalTerminal = () => openSessionDialog('local');
+
+  /**
+   * The Ports view: tunnels grouped by the host they run through.
+   *
+   * Grouped by host rather than listed flat because a port number means nothing
+   * without knowing which machine it reaches, and because the same number can be
+   * shared to two hosts at once.
+   */
+  const renderPortsView = () => {
+    if (!forwards.length) {
+      return (
+        <div className="session-list">
+          <div className="session-empty">
+            <b>No shared ports</b>
+            <small>Share a port to reach a service on a remote host from this machine, or the other way round.</small>
+            <button type="button" onClick={openSharePortDialog}>Share a port</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="session-list">
+        {groupForwards(forwards).map((group) => (
+          <React.Fragment key={group.host}>
+            <div className="session-group-label">{group.host}</div>
+            {group.forwards.map((forward) => (
+              <div className={`session-row forward-row ${forward.status === 'idle' ? 'session-ghosted' : ''}`} key={forward.id}>
+                <span className={`status-dot ${forwardDotState(forward)}`} />
+                <button
+                  type="button"
+                  className="forward-open"
+                  // An idle row is a remembered one: clicking it is what asks for
+                  // the tunnel, the same gesture as a restored SSH pane.
+                  onClick={() => (forward.status === 'idle' || forward.status === 'error'
+                    ? void shareForward(forward)
+                    : undefined)}
+                  title={forward.status === 'idle' || forward.status === 'error' ? `Reconnect ${listenerLabel(forward)}` : forwardLabel(forward)}
+                >
+                  <span className="session-copy">
+                    <b>{listenerLabel(forward)}</b>
+                    <small>
+                      {forward.direction === 'local' ? '←' : '→'} {forward.destinationHost || 'localhost'}:{forward.destinationPort}
+                      {forward.status === 'connecting' ? ' · connecting…' : ''}
+                      {forward.status === 'idle' ? ' · not connected' : ''}
+                      {forward.status === 'error' ? ` · ${forward.message ?? 'failed'}` : ''}
+                    </small>
+                  </span>
+                </button>
+                {/* Said plainly rather than left to be worked out: a wide bind
+                    re-exports someone else's service onto this network. */}
+                {isWidelyBound(forward) && <span className="forward-badge" title="Reachable from your network, not just this machine">LAN</span>}
+                <button
+                  type="button"
+                  className="forward-close"
+                  onClick={() => void closeForward(forward)}
+                  title={`Stop sharing ${listenerLabel(forward)}`}
+                  aria-label={`Stop sharing ${listenerLabel(forward)}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  };
 
   const renderScreensTab = () => {
     const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
@@ -1222,7 +2767,7 @@ function App() {
     columnRatio,
     rowRatio,
     sessionCount: workspaceSessions.length,
-    lastSplit: lastSplitLayout.current
+    lastSplit: view.lastSplit
   };
 
   const sidebarRef = useRef<HTMLElement>(null);
@@ -1233,8 +2778,10 @@ function App() {
   };
 
   const toggleMaximize = (sessionId: string) => {
-    setFocusedSessionId(sessionId);
-    setMaximizedSessionId((current) => current === sessionId ? null : sessionId);
+    patchView((current) => ({
+      focusedSessionId: sessionId,
+      maximizedSessionId: current.maximizedSessionId === sessionId ? null : sessionId
+    }));
   };
 
   /** Carry out what the layout rules decided a click should do. */
@@ -1332,6 +2879,42 @@ function App() {
       setSpeechKey((previous) => ({ ...previous, status: 'idle', stored: status.stored, sessionOnly: false, notice: 'Key cleared.', error: null }));
     } catch (error) {
       setSpeechKey((previous) => ({ ...previous, status: 'idle', sessionOnly: false, error: error instanceof Error ? error.message : String(error) }));
+    }
+  };
+
+  /**
+   * Save or clear the AI endpoint key.
+   *
+   * Simpler than the speech pair: there is no in-memory fallback for a machine
+   * without a keyring. A suggestion is not worth holding a key in renderer
+   * memory for, and the panel already says when a system cannot encrypt one.
+   */
+  const saveAiKey = async (key: string) => {
+    const currentApi = api();
+    if (!currentApi?.saveAiApiKey) return;
+    setAiKey((previous) => ({ ...previous, status: 'saving', error: null, notice: null }));
+    try {
+      const status = await currentApi.saveAiApiKey(key);
+      setAiKey({
+        status: 'idle',
+        stored: status.stored,
+        encryptionAvailable: status.encryptionAvailable,
+        sessionOnly: false,
+        notice: status.stored ? 'Key saved, encrypted by this system.' : 'Key cleared.'
+      });
+    } catch (error) {
+      setAiKey((previous) => ({ ...previous, status: 'idle', error: ipcMessage(error) }));
+    }
+  };
+
+  const clearAiKey = async () => {
+    const currentApi = api();
+    if (!currentApi?.clearAiApiKey) return;
+    try {
+      const status = await currentApi.clearAiApiKey();
+      setAiKey((previous) => ({ ...previous, status: 'idle', stored: status.stored, notice: 'Key cleared.', error: null }));
+    } catch (error) {
+      setAiKey((previous) => ({ ...previous, status: 'idle', error: ipcMessage(error) }));
     }
   };
 
@@ -1539,17 +3122,22 @@ function App() {
 
   const closePane = async (session: SessionInfo) => {
     if (voice.sessionId === session.id) cancelVoice();
+    // The pane is going, so its listing state should not outlive it. The
+    // transfer connection is left alone: the panel may be sharing it, and the
+    // service closes what is open when the app quits.
+    listingSource.forget(session.id);
     const remaining = workspaceSessions.filter((item) => item.id !== session.id);
-    setWorkspaces((current) =>
-      current.map((workspace) => ({
-        ...workspace,
-        sessionIds: workspace.sessionIds.filter((id) => id !== session.id)
-      }))
-    );
-    if (active?.id === session.id) setActive(remaining[0] ?? null);
-    if (focusedSessionId === session.id) setFocusedSessionId(remaining[0]?.id);
-    if (maximizedSessionId === session.id) setMaximizedSessionId(null);
-    setLayout(layoutForSessionCount(remaining.length));
+    setWorkspaces((current) => {
+      // releaseSession has already cleared any view field that named the pane
+      // being closed, so the `??` here only fires for those — selection and
+      // focus land on a surviving terminal instead of on nothing.
+      const released = releaseSession(current, session.id);
+      return updateView(released, activeWorkspaceId, (current) => ({
+        activeSessionId: current.activeSessionId ?? remaining[0]?.id,
+        focusedSessionId: current.focusedSessionId ?? remaining[0]?.id,
+        layout: layoutForSessionCount(remaining.length)
+      }));
+    });
 
     const currentApi = api();
     if (currentApi) {
@@ -1573,36 +3161,68 @@ function App() {
   return (
     <main className={`app-shell ${drawerCollapsed ? 'drawer-collapsed' : ''}`}>
       <header className="window-bar">
-        <div className="window-brand">
+        <div className="window-brand" title={versionLabel(appVersion)}>
           <span className="brand-mark">ZG</span>
           <span className="brand-name">ZeroG</span>
+          {appVersion && <span className="brand-version">{appVersion}</span>}
         </div>
         <div className="workspace-tabs">
-          {workspaces.map((workspace) => (
-            <button
-              key={workspace.id}
-              type="button"
-              className={`workspace-tab ${workspace.id === activeWorkspace?.id ? 'active' : ''}`}
-              onClick={() => {
-                setActiveWorkspaceId(workspace.id);
-                const first = sessions.find((session) => workspace.sessionIds.includes(session.id));
-                setActive(first ?? null);
-                // Do not leave focus pointing at a terminal in the workspace we just left.
-                setFocusedSessionId(first?.id);
-              }}
-            >
-              <span className="tab-dot" />
-              {workspace.name}
-              <span className="tab-meta">{workspace.sessionIds.length || (workspace.id === workspaces[0]?.id ? workspaceSessions.length : 0)}</span>
-            </button>
-          ))}
+          {workspaces.map((workspace, index) => {
+            // The last workspace cannot be closed: there would be nowhere for the
+            // panes, the sidebar header, or this strip to point.
+            const closable = workspaces.length > 1;
+            const dot = workspaceDotState(workspace, sessions);
+            return (
+              <span
+                className={`workspace-tab-slot ${closable ? 'closable' : ''} ${draggingTabId === workspace.id ? 'dragging' : ''}`}
+                key={workspace.id}
+                data-workspace-id={workspace.id}
+              >
+                <button
+                  type="button"
+                  className={`workspace-tab ${workspace.id === activeWorkspace?.id ? 'active' : ''}`}
+                  title={`Switch to ${workspace.name}${index < 9 ? ` (Ctrl+Shift+${index + 1})` : ''} · drag to reorder`}
+                  onPointerDown={(event) => beginTabDrag(workspace, event)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    // A right-click is not a drag, and one that began is
+                    // abandoned rather than left holding the pointer.
+                    cancelTabDrag();
+                    setTabMenu({ id: workspace.id, at: { x: event.clientX, y: event.clientY } });
+                  }}
+                  onPointerMove={moveTabDrag}
+                  onPointerUp={endTabDrag}
+                  onPointerCancel={cancelTabDrag}
+                  onClick={() => {
+                    if (suppressTabClick.current) return;
+                    switchWorkspace(workspace.id);
+                  }}
+                >
+                  <span className={`status-dot ${dot === 'empty' ? '' : dot}`} />
+                  {workspace.name}
+                  <span className="tab-meta">{workspacePaneCount(workspace)}</span>
+                </button>
+                {closable && (
+                  <button
+                    type="button"
+                    className="workspace-tab-close"
+                    title={`Close ${workspace.name} · its terminals keep running`}
+                    aria-label={`Close workspace ${workspace.name}`}
+                    onClick={() => closeWorkspaceTab(workspace.id)}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            );
+          })}
         </div>
         <div className="window-actions">
           <button
             type="button"
             className="bar-button"
             onClick={() => setOverview((value) => !value)}
-            title="Session overview (Ctrl+Shift+O)"
+            title={`Session overview (${chordFor('toggle-overview', bindings)})`}
           >
             <Icon name="grid" />
             <span>Overview</span>
@@ -1611,31 +3231,16 @@ function App() {
             type="button"
             className="bar-button"
             onClick={openNewWorkspace}
-            title="New workspace (Ctrl+Shift+N)"
+            title={`New workspace (${chordFor('new-workspace', bindings)})`}
           >
             <Icon name="plus" />
-            <span>New</span>
+            <span>Workspace</span>
           </button>
           <button
             type="button"
             className="bar-button"
-            onClick={async () => {
-              const currentApi = api();
-              if (!currentApi) return;
-              const suggestion = await currentApi.requestAiCommand();
-              if (settings.ai.requireApproval) {
-                setApproval(suggestion);
-                return;
-              }
-              // Approval turned off means the suggestion runs — the setting says so.
-              const target = active?.id ?? focusedSessionId;
-              if (!target) {
-                setStatus('No terminal selected for the suggestion');
-                return;
-              }
-              currentApi.write(target, `${suggestion.command}\r`);
-              setStatus(`Ran suggestion: ${suggestion.command}`);
-            }}
+            onClick={openSuggest}
+            title={isConfigured(settings.ai) ? `Ask for a command (${chordFor('ask-ai', bindings)})` : 'Set an AI endpoint in Settings first'}
           >
             <Icon name="spark" />
             <span>Suggest</span>
@@ -1650,6 +3255,16 @@ function App() {
           >
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
+          <button
+            type="button"
+            className={helpOpen ? 'bar-button active' : 'bar-button'}
+            onClick={() => setHelpOpen((value) => !value)}
+            title={`Features and keyboard shortcuts (${chordFor('toggle-help', bindings)})`}
+            aria-label="Help"
+            aria-pressed={helpOpen}
+          >
+            <Icon name="help" />
+          </button>
         </div>
       </header>
 
@@ -1658,23 +3273,46 @@ function App() {
           <button
             type="button"
             className="rail-button"
-            title={drawerCollapsed ? 'Show sessions sidebar (Ctrl+Shift+B)' : 'Hide sessions sidebar (Ctrl+Shift+B)'}
+            title={`${drawerCollapsed ? 'Show' : 'Hide'} sessions sidebar (${chordFor('toggle-sidebar', bindings)})`}
             onClick={() => setDrawerCollapsed((value) => !value)}
           >
             <Icon name={drawerCollapsed ? 'panel-left-open' : 'panel-left'} />
           </button>
-          <button type="button" className={`rail-button ${!drawerCollapsed ? 'active' : ''}`} title="Sessions" onClick={() => setDrawerCollapsed(false)}>
+          <button
+            type="button"
+            className={`rail-button ${!drawerCollapsed && sidebarView === 'sessions' ? 'active' : ''}`}
+            title="Sessions"
+            onClick={() => { setSidebarView('sessions'); setDrawerCollapsed(false); }}
+          >
             <Icon name="sessions" />
           </button>
           <button type="button" className="rail-button" onClick={() => setOverview(true)} title="Overview">
             <Icon name="grid" />
           </button>
+          <button
+            type="button"
+            className={`rail-button ${!drawerCollapsed && sidebarView === 'ports' ? 'active' : ''}`}
+            title="Shared ports"
+            aria-label="Shared ports"
+            onClick={() => { setSidebarView('ports'); setDrawerCollapsed(false); }}
+          >
+            <Icon name="ports" />
+          </button>
           <span className="rail-spacer" />
           <button
             type="button"
             className="rail-button"
+            onClick={openSharePortDialog}
+            title="Share a port over SSH"
+            aria-label="Share a port"
+          >
+            <Icon name="port-plus" />
+          </button>
+          <button
+            type="button"
+            className="rail-button"
             onClick={openNewLocalTerminal}
-            title="New local terminal (Ctrl+Shift+T)"
+            title={`New local terminal (${chordFor('new-terminal', bindings)})`}
             aria-label="New local terminal"
           >
             <Icon name="terminal" />
@@ -1685,7 +3323,7 @@ function App() {
           <button
             type="button"
             className={`rail-button ${settingsOpen ? 'active' : ''}`}
-            title="Settings (Ctrl+Shift+,)"
+            title={`Settings (${chordFor('toggle-settings', bindings)})`}
             aria-label="Settings"
             aria-expanded={settingsOpen}
             onClick={() => setSettingsOpen((value) => !value)}
@@ -1697,9 +3335,43 @@ function App() {
         {!drawerCollapsed && (
           <aside className="session-drawer" ref={sidebarRef} style={{ width: settings.sessions.sidebarWidth }}>
             <div className="drawer-head">
-              <div>
-                <span className="eyebrow">WORKSPACE</span>
-                <h1>{activeWorkspace?.name ?? 'Sessions'}</h1>
+              <div className="drawer-head-name">
+                <span className="eyebrow">{sidebarView === 'ports' ? 'SHARED PORTS' : 'WORKSPACE'}</span>
+                {sidebarView === 'ports' ? (
+                  <h1>Ports</h1>
+                ) : renamingWorkspace && activeWorkspace ? (
+                  <input
+                    className="workspace-rename"
+                    autoFocus
+                    aria-label="Workspace name"
+                    value={renameDraft}
+                    pattern={WORKSPACE_NAME_PATTERN}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onBlur={commitRenameWorkspace}
+                    onKeyDown={(event) => {
+                      // Kept off the window handler: Escape there hunts for an
+                      // overlay to close, and Enter has no business leaving a
+                      // field the user is still typing in.
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        commitRenameWorkspace();
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setRenamingWorkspace(false);
+                      }
+                    }}
+                  />
+                ) : (
+                  <h1
+                    onDoubleClick={startRenameWorkspace}
+                    title={activeWorkspace ? 'Double-click to rename this workspace' : undefined}
+                  >
+                    {activeWorkspace?.name ?? 'Sessions'}
+                  </h1>
+                )}
               </div>
               <div className="drawer-head-actions">
                 <button
@@ -1723,65 +3395,106 @@ function App() {
                 <button
                   type="button"
                   className="square-button"
-                  onClick={openNewLocalTerminal}
-                  title="New local terminal"
-                  aria-label="New local terminal"
+                  onClick={openNewWorkspace}
+                  title={`New workspace (${chordFor('new-workspace', bindings)})`}
+                  aria-label="New workspace"
                 >
                   <Icon name="plus" />
                 </button>
               </div>
             </div>
 
-            <div className="drawer-tools" role="tablist" aria-label="Session inventory">
-              {(['terminals', 'screens', 'connections'] as const).map((tab) => {
-                const labels: Record<SidebarTab, string> = { terminals: 'Terminals', screens: 'Screens', connections: 'Connections' };
-                const count = tab === 'terminals'
-                  ? workspaceSessions.length
-                  : tab === 'screens'
-                    ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length + remoteScreenEntries.length
-                    : sessions.filter((session) => session.kind === 'ssh').length;
-                return (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={sidebarTab === tab}
-                    className={`drawer-tool ${sidebarTab === tab ? 'active' : ''}`}
-                    key={tab}
-                    onClick={() => setSidebarTab(tab)}
-                  >
-                    {labels[tab]} <span>{count}</span>
-                  </button>
-                );
-              })}
-            </div>
+            {sidebarView === 'ports' ? renderPortsView() : (
+              <>
+              <div className="drawer-tools" role="tablist" aria-label="Session inventory">
+                {(['terminals', 'screens', 'connections'] as const).map((tab) => {
+                  const labels: Record<SidebarTab, string> = { terminals: 'Terminals', screens: 'Screens', connections: 'Connections' };
+                  const count = tab === 'terminals'
+                    ? workspaceSessions.length
+                    : tab === 'screens'
+                      ? sessions.filter((session) => (session.persistence === 'screen' || session.screenName) && !workspaceSessions.some((item) => item.id === session.id)).length + remoteScreenEntries.length
+                      : sessions.filter((session) => session.kind === 'ssh').length;
+                  return (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={sidebarTab === tab}
+                      className={`drawer-tool ${sidebarTab === tab ? 'active' : ''}`}
+                      key={tab}
+                      onClick={() => setSidebarTab(tab)}
+                    >
+                      {labels[tab]} <span>{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
 
-            <div className="session-list" role="tabpanel">
-              {sessionsLoading ? (
-                <div className="session-empty"><b>Loading sessions…</b><small>Checking available terminals and durable sessions.</small></div>
-              ) : sessionsError ? (
-                <div className="session-empty session-error"><b>Session inventory unavailable</b><small>{sessionsError}</small><button type="button" onClick={() => void refresh()}>Retry</button></div>
-              ) : sidebarTab === 'terminals' ? (
-                workspaceSessions.length ? workspaceSessions.map((session) => (
-                  <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
-                )) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
-              ) : sidebarTab === 'screens' ? (
-                  renderScreensTab()
-                ) : sidebarTab === 'connections' ? (
-                knownConnections.length ? knownConnections.map((connection) => (
-                  <button type="button" className="session-row" key={connection.alias} onClick={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}>
-                    <span className="status-dot" />
-                    <span className="session-copy"><b>{connection.alias}</b><small>{connection.hostName ? `${connection.user ?? ''}${connection.user ? '@' : ''}${connection.hostName}${connection.port ? `:${connection.port}` : ''}` : 'Saved SSH connection'}</small></span>
-                    <span className="session-state">→</span>
-                  </button>
-                )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
-              ) : (
-                sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').length ? sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').map((session) => (
-                  <SessionRow key={session.id} session={session} ghosted onClick={async () => { claimSession(session); setStatus(`Attaching remote screen ${session.name}…`); const currentApi = api(); if (!currentApi) return; try { const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name); const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host; const ssh = await currentApi.createSshSession({ target: destination, name: session.name }); setSessions((current) => current.map((item) => item.id === session.id ? ssh : item)); await attach(ssh); } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); } }} />
-                )) : <div className="session-empty"><b>No remote screens</b><small>Remote screen sessions will appear here after discovery.</small></div>
-              )}
-            </div>
+              <div className="session-list" role="tabpanel">
+                {sessionsLoading ? (
+                  <div className="session-empty"><b>Loading sessions…</b><small>Checking available terminals and durable sessions.</small></div>
+                ) : sessionsError ? (
+                  <div className="session-empty session-error"><b>Session inventory unavailable</b><small>{sessionsError}</small><button type="button" onClick={() => void refresh()}>Retry</button></div>
+                ) : sidebarTab === 'terminals' ? (
+                  workspaceSessions.length || pendingPanes.length ? (
+                    <>
+                      {workspaceSessions.map((session) => (
+                        <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
+                      ))}
+                      {/* Panes this workspace remembers but has not reconnected.
+                          Ghosted like a discovered screen, because that is what
+                          they are to the user: something known to belong here that
+                          is not running in front of them yet. */}
+                      {pendingPanes.map((member) => (
+                        <PendingPaneRow key={member.sessionId} member={member} onClick={() => void restorePendingPane(member)} />
+                      ))}
+                    </>
+                  ) : <div className="session-empty"><b>No terminals yet</b><small>Add a local terminal or SSH connection to this workspace.</small></div>
+                ) : sidebarTab === 'screens' ? (
+                    renderScreensTab()
+                  ) : sidebarTab === 'connections' ? (
+                  knownConnections.length ? knownConnections.map((connection) => (
+                    <ConnectionRow
+                      key={connection.alias}
+                      connection={connection}
+                      onConfigure={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}
+                      onConnect={() => connectKnownConnection(connection)}
+                    />
+                  )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
+                ) : (
+                  sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').length ? sessions.filter((session) => session.kind === 'ssh' && session.scope === 'remote' && session.source === 'discovered').map((session) => (
+                    <SessionRow
+                      key={session.id}
+                      session={session}
+                      ghosted
+                      onClick={async () => {
+                        setStatus(`Attaching remote screen ${session.name}…`);
+                        const currentApi = api();
+                        if (!currentApi) return;
+                        try {
+                          const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name);
+                          const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host;
+                          const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+                          setSessions((current) => current.map((item) => item.id === session.id ? ssh : item));
+                          // Claim the session that now exists, not the discovered
+                          // row it replaced: the two have different ids, and the
+                          // workspace would otherwise hold one that is gone.
+                          claimSession(ssh);
+                          await attach(ssh);
+                        } catch (error) {
+                          setStatus(error instanceof Error ? error.message : String(error));
+                        }
+                      }}
+                    />
+                  )) : <div className="session-empty"><b>No remote screens</b><small>Remote screen sessions will appear here after discovery.</small></div>
+                )}
+              </div>
+              </>
+            )}
 
             <div className="drawer-bottom">
+              <button type="button" className="drawer-action" onClick={openSharePortDialog}>
+                <Icon name="port-plus" /> Share port
+              </button>
               <button type="button" className="drawer-action" onClick={openNewLocalTerminal}>
                 <Icon name="plus" /> Local terminal <kbd>⌘⇧T</kbd>
               </button>
@@ -1854,7 +3567,7 @@ function App() {
                   type="button"
                   className={layout === 'stack' || maximizedPaneId ? 'layout-button active' : 'layout-button'}
                   onClick={() => applyPaneAction(singlePaneAction(paneView))}
-                  title={singlePaneTitle(paneView)}
+                  title={`${singlePaneTitle(paneView)} (${chordFor('toggle-layout', bindings)})`}
                 >
                   <Icon name="stack" />
                 </button>
@@ -1904,15 +3617,17 @@ function App() {
                 onReset={() => resetSplit('row')}
               />
             )}
-            {Array.from({ length: renderedPaneCount }, (_, index) => {
-              const paneSession = paneSessions[index];
-              if (!paneSession) {
-                return <PanePlaceholder key={index} index={index + 1} onCreate={openNewLocalTerminal} />;
-              }
+            {allPanes.map(({ session: paneSession, index, dormant }) => {
               const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
+              // Null where ZeroG cannot tell how to read a path for this pane, in
+              // which case the button is offered disabled rather than hidden: the
+              // reason is more use than a missing control.
+              const browsePathKind = pathKindFor(paneSession);
+              const browserOpen = Boolean(browsePathKind) && browserOpenFor(paneSession.id);
+              const browserPath = browserOpen ? browserPathFor(paneSession) : null;
               return (
                 <article
-                  className={`pane terminal-pane ${focusedSessionId === paneSession.id ? 'focused' : ''} ${maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
+                  className={`pane terminal-pane ${dormant ? 'dormant-pane' : ''} ${!dormant && focusedSessionId === paneSession.id ? 'focused' : ''} ${!dormant && maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${dormant || isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
                   key={paneSession.id}
                   onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
@@ -1932,6 +3647,23 @@ function App() {
                         </>
                       )}
                       {busy ? 'connecting…' : paneVoice ? `${paneVoice}…` : paneSession.kind === 'ssh' ? 'ssh' : 'bash'}
+                      <button
+                        type="button"
+                        className={browserOpen ? 'pane-browse active' : 'pane-browse'}
+                        onClick={() => toggleBrowser(paneSession.id)}
+                        disabled={!browsePathKind}
+                        title={
+                          browsePathKind
+                            ? browserOpen
+                              ? 'Hide the directory browser'
+                              : 'Browse directories'
+                            : 'ZeroG cannot tell what kind of paths this pane uses'
+                        }
+                        aria-label={`${browserOpen ? 'Hide' : 'Show'} the directory browser for ${paneSession.name}`}
+                        aria-pressed={browserOpen}
+                      >
+                        <Icon name="folder" />
+                      </button>
                       <button
                         type="button"
                         className="pane-proceed"
@@ -1959,17 +3691,58 @@ function App() {
                       </button>
                     </span>
                   </div>
-                  <TerminalView
-                    sessionId={paneSession.id}
-                    focused={focusedSessionId === paneSession.id}
-                    onStatus={setStatus}
-                    appearance={settings.appearance}
-                    terminalSettings={settings.terminal}
-                    registerFocus={registerTerminalFocus}
-                  />
+                  <PaneBody
+                    open={browserOpen}
+                    ratio={browserRatioFor(paneSession.id)}
+                    onRatio={(ratio) => patchBrowser(paneSession.id, { ratio })}
+                    browser={
+                      browsePathKind ? (
+                        <PaneBrowser
+                          session={paneSession}
+                          path={browserPath}
+                          // An SSH pane can list before its shell has said
+                          // anything: the connection knows where it is.
+                          unanchored={paneSession.kind === 'ssh'}
+                          pathKind={browsePathKind}
+                          // Where the browser is, said the way this shell would
+                          // say it — not the shell's own reported directory,
+                          // which lags behind and left the header naming a
+                          // place the listing was no longer showing.
+                          shellPath={browserPath ? shellPathFor(paneSession, browserPath) : null}
+                          list={listerFor(paneSession)}
+                          question={paneSession.kind === 'ssh' ? sftpQuestion : null}
+                          onOpen={(path) => openDirectory(paneSession, path)}
+                          onBrowse={(path) => setBrowserPaths((current) => ({ ...current, [paneSession.id]: path }))}
+                          onClose={() => toggleBrowser(paneSession.id)}
+                        />
+                      ) : null
+                    }
+                  >
+                    <TerminalView
+                      sessionId={paneSession.id}
+                      focused={!dormant && focusedSessionId === paneSession.id}
+                      dormant={dormant}
+                      onStatus={setStatus}
+                      appearance={settings.appearance}
+                      terminalSettings={settings.terminal}
+                      registerFocus={registerTerminalFocus}
+                      registerCapture={registerTerminalCapture}
+                      onCommand={recordCommand}
+                      registerRead={registerTerminalRead}
+                    />
+                  </PaneBody>
                 </article>
               );
             })}
+            {/* Empty slots of the active workspace. After the panes, so grid
+                auto-placement fills them from the end. */}
+            {Array.from({ length: Math.max(0, renderedPaneCount - paneSessions.length) }, (_, index) => (
+              <PanePlaceholder
+                key={`placeholder-${index}`}
+                index={paneSessions.length + index + 1}
+                onCreate={openNewLocalTerminal}
+              />
+            ))}
           </div>
 
           <footer className="status-bar">
@@ -1985,6 +3758,21 @@ function App() {
           </footer>
         </section>
       </div>
+
+      {tabMenu && (() => {
+        const workspace = workspaces.find((candidate) => candidate.id === tabMenu.id);
+        if (!workspace) return null;
+        return (
+          <ContextMenu
+            at={tabMenu.at}
+            label={`${workspace.name} options`}
+            items={tabMenuItems(workspace)}
+            onClose={() => setTabMenu(null)}
+          />
+        );
+      })()}
+
+      {helpOpen && <HelpPanel version={appVersion} bindings={bindings} onClose={() => setHelpOpen(false)} />}
 
       {overview && (
         <div className="overview-layer" role="presentation" {...dismissOverview}>
@@ -2040,6 +3828,94 @@ function App() {
           own. Closing only on a press that started on the backdrop removes the
           need for the popover to stop propagation, which was a click handler on
           a non-interactive dialog element. */}
+      {/* The ranked command palette, on the Shift variant only — the shell keeps
+          its own reverse-search on bare Ctrl+R. */}
+      {paletteOpen && (
+        <div className="palette-layer" role="presentation" {...dismissPalette}>
+          <div className="palette" role="dialog" aria-label="Command history">
+            <input
+              autoFocus
+              className="palette-query"
+              value={paletteQuery}
+              placeholder="Search commands you have run"
+              aria-label="Search commands you have run"
+              onChange={(event) => {
+                setPaletteQuery(event.target.value);
+                setPaletteIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setPaletteIndex((index) => Math.min(index + 1, Math.max(0, paletteMatches.length - 1)));
+                } else if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setPaletteIndex((index) => Math.max(0, index - 1));
+                } else if (event.key === 'Enter') {
+                  event.preventDefault();
+                  const match = paletteMatches[paletteIndex];
+                  if (match) usePaletteCommand(match);
+                }
+              }}
+            />
+
+            {!settings.ai.recordCommands ? (
+              <div className="palette-empty">
+                <b>Commands are not being remembered</b>
+                <small>
+                  Turn on &ldquo;Remember commands&rdquo; in Settings under AI &amp; voice. Nothing about what you
+                  type is stored until you do.
+                </small>
+                <button type="button" onClick={() => { setPaletteOpen(false); setSettingsOpen(true); }}>
+                  Open settings
+                </button>
+              </div>
+            ) : !commandEntries.length ? (
+              <div className="palette-empty">
+                <b>Nothing remembered yet</b>
+                <small>
+                  Commands are recorded from panes whose shell reports prompt marks. Settings has a snippet to
+                  paste into your shell &mdash; and onto a remote host, where it has to be installed there.
+                </small>
+                <button type="button" onClick={() => { setPaletteOpen(false); setSettingsOpen(true); }}>
+                  Open settings
+                </button>
+              </div>
+            ) : !paletteMatches.length ? (
+              <div className="palette-empty">
+                <b>No match</b>
+                <small>{commandEntries.length} commands remembered, none matching that.</small>
+              </div>
+            ) : (
+              <div className="palette-list">
+                {paletteMatches.map((match, index) => (
+                  <button
+                    type="button"
+                    key={match.entry.id}
+                    className={`palette-row ${index === paletteIndex ? 'active' : ''}`}
+                    onMouseEnter={() => setPaletteIndex(index)}
+                    onClick={() => usePaletteCommand(match)}
+                  >
+                    <span className="palette-command">{highlight(match.entry.command, match.matched)}</span>
+                    <span className="palette-meta">
+                      {/* Only a real failure is marked. An absent status means the
+                          shell did not say, which is not the same thing. */}
+                      {match.entry.exitCode !== undefined && match.entry.exitCode !== 0 ? (
+                        <span className="palette-failed" title={`Exited ${match.entry.exitCode}`}>failed</span>
+                      ) : null}
+                      {match.entry.cwd ? <span className="palette-cwd">{match.entry.cwd}</span> : null}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <small className="palette-note">
+              Enter puts the command on the prompt without running it. ↑↓ to choose, Esc to close.
+            </small>
+          </div>
+        </div>
+      )}
+
       {historyOpen && (
         <div className="history-layer" role="presentation" {...dismissHistory}>
           <div className="history-popover" role="dialog" aria-label="Session history">
@@ -2047,76 +3923,14 @@ function App() {
           {historyEntries.length ? historyEntries.slice().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((entry) => (
             <button type="button" className="history-item" key={entry.id} onClick={async () => {
               setHistoryOpen(false);
-              const hasScreen = !!entry.session.screenName;
-              const isPlainSsh = entry.session.kind === 'ssh' && !hasScreen;
-              if (hasScreen || entry.session.backend === 'screen') {
-                setSidebarTab('screens');
-                const screenSource = entry.session.screenName || entry.session.name;
-                const remoteMatch = sessions.find((s) => s.kind === 'ssh' && s.screenName === screenSource);
-                const localMatch = sessions.find((s) => s.screenName === screenSource && s.kind === 'local');
-                if (remoteMatch) {
-                  claimSession(remoteMatch);
-                  await attach(remoteMatch);
-                  setStatus(`Reconnecting to ${remoteMatch.name}…`);
-                  return;
-                }
-                if (localMatch) {
-                  claimSession(localMatch);
-                  await attach(localMatch);
-                  setStatus(`Reconnecting to ${localMatch.name}…`);
-                  return;
-                }
-                const currentApi = api();
-                if (!currentApi) return;
-                const known = knownConnections.find((c) => (entry.session.host || '').includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(entry.session.host || ''));
-                if (known) {
-                  await attachRemoteScreen({ ...entry.session, screenName: screenSource, host: known.hostName || known.alias } as any, known);
-                  return;
-                }
-                if (entry.session.host) {
-                  const target = entry.session.host;
-                  const newSession = await currentApi.createSshSession({ target, name: entry.session.name });
-                  setSessions((current) => [...current, newSession]);
-                  claimSession(newSession);
-                  setFocusedSessionId(newSession.id);
-                  setMaximizedSessionId(null);
-                  setLayout(layoutForSessionCount(workspaceSessions.length + 1));
-                  await attach(newSession);
-                  const screenSource = entry.session.screenName || entry.session.name;
-                  currentApi.write(newSession.id, `screen -x ${screenSource}\r`);
-                  setStatus(`Connected to ${newSession.name}`);
-                }
-                return;
-              }
-              if (isPlainSsh) {
-                const target = entry.session.host || entry.session.sshTarget || '';
-                const defaultName = target.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 40);
-                setSshTarget(target);
-                setSshName(entry.session.name && entry.session.name !== defaultName ? entry.session.name : '');
-                const currentApi = api();
-                if (!currentApi) return;
-                const connection = knownConnections.find((c) => (target.includes(c.hostName || c.alias) || (c.hostName || c.alias).includes(target)));
-                const fallbackName = entry.session.name || defaultName;
-                const ssh = await currentApi.createSshSession({ target, name: fallbackName });
-                setSessions((current) => [...current, ssh]);
-                claimSession(ssh);
-                await attach(ssh);
-                setStatus(`Connected to ${ssh.name}`);
-                if (currentApi.discoverRemoteScreens && connection) {
-                  try {
-                    const remote = await currentApi.discoverRemoteScreens(connection);
-                    if (remote.length) {
-                      const screen = remote.find((s) => s.status === 'detached') ?? remote[0];
-                      await attachRemoteScreen(screen, connection);
-                      return;
-                    }
-                  } catch {
-                    // keep the SSH session even if remote screen discovery fails.
-                  }
-                }
-                return;
-              }
-              setSidebarTab('terminals');
+              // Same planner the workspaces use, so a shell reconnected from
+              // here and one reconnected by a restored workspace end up in the
+              // same place. The tab switch is the one thing that is only
+              // meaningful from history: it says where to look for the result.
+              const action = planSessionRestore(entry.session, sessions, knownConnections);
+              setSidebarTab(entry.session.screenName || entry.session.backend === 'screen' ? 'screens' : 'terminals');
+              const session = await runRestoreAction(action);
+              if (session) setStatus(`Reconnected ${session.name}`);
             }}>
               <span className="history-main">
                 <span className="history-kind">{entry.event.toUpperCase()}</span>
@@ -2134,7 +3948,7 @@ function App() {
         <div className="modal-layer" role="presentation" {...dismissModal}>
           <form
             className="modal-card"
-            onSubmit={modal === 'workspace' ? createWorkspace : modal === 'local' ? createLocal : createSsh}
+            onSubmit={modal === 'workspace' ? createWorkspace : modal === 'rename' ? commitWorkspaceRename : modal === 'forward' ? createForward : modal === 'local' ? createLocal : createSsh}
           >
             <div className="modal-head">
               <div>
@@ -2177,6 +3991,21 @@ function App() {
               </div>
             )}
 
+            {modal === 'rename' && (
+              <>
+                <p>Rename this workspace. Its panes, layout and shortcuts position are unaffected.</p>
+                <label>
+                  Workspace name
+                  <input
+                    autoFocus
+                    value={workspaceName}
+                    pattern={WORKSPACE_NAME_PATTERN}
+                    onChange={(event) => setWorkspaceName(event.target.value)}
+                  />
+                </label>
+              </>
+            )}
+
             {modal === 'workspace' && (
               <>
                 <p>Create a separate workspace for a project or host group. Terminals stay scoped to the active workspace.</p>
@@ -2186,10 +4015,90 @@ function App() {
                     autoFocus
                     value={workspaceName}
                     onChange={(event) => setWorkspaceName(event.target.value)}
-                    pattern="[A-Za-z0-9](?:[A-Za-z0-9_.]|-| ){0,48}"
+                    pattern={WORKSPACE_NAME_PATTERN}
                     required
                   />
                 </label>
+              </>
+            )}
+
+            {modal === 'forward' && (
+              <>
+                <p>Reach a port on a remote host from this machine, over SSH. The tunnel is its own connection, so the host does not need a terminal open.</p>
+                <label>
+                  SSH host
+                  <input
+                    autoFocus
+                    list="forward-hosts"
+                    value={forwardTarget}
+                    onChange={(event) => setForwardTarget(event.target.value)}
+                    placeholder="user@server"
+                    required
+                  />
+                  <datalist id="forward-hosts">
+                    {forwardHosts.map((host) => <option key={host} value={host} />)}
+                  </datalist>
+                </label>
+                <label>
+                  Port
+                  <input
+                    value={forwardListenPort}
+                    onChange={(event) => setForwardListenPort(event.target.value)}
+                    inputMode="numeric"
+                    pattern="[0-9]{1,5}"
+                    placeholder="3000"
+                    required
+                  />
+                </label>
+                {/* The uncommon choices, folded away: almost every forward is a
+                    remote port reached here on the same number, bound to
+                    loopback. */}
+                <button type="button" className="dialog-disclosure" onClick={() => setForwardAdvanced((value) => !value)} aria-expanded={forwardAdvanced}>
+                  {forwardAdvanced ? 'Fewer options' : 'More options'}
+                </button>
+                {forwardAdvanced && (
+                  <>
+                    <label>
+                      Direction
+                      <select value={forwardDirection} onChange={(event) => setForwardDirection(event.target.value as ForwardDirection)}>
+                        <option value="local">Remote port, reachable here</option>
+                        <option value="remote">Port here, reachable on the remote</option>
+                      </select>
+                    </label>
+                    <label>
+                      Forward to <span className="muted-text">optional</span>
+                      <input
+                        value={forwardDestinationHost}
+                        onChange={(event) => setForwardDestinationHost(event.target.value)}
+                        placeholder="localhost"
+                      />
+                    </label>
+                    <label>
+                      Port on that side <span className="muted-text">defaults to the same</span>
+                      <input
+                        value={forwardDestinationPort}
+                        onChange={(event) => setForwardDestinationPort(event.target.value)}
+                        inputMode="numeric"
+                        pattern="[0-9]{1,5}"
+                        placeholder={forwardListenPort || '3000'}
+                      />
+                    </label>
+                    <label className="dialog-check">
+                      <input
+                        type="checkbox"
+                        checked={forwardBind === 'all'}
+                        onChange={(event) => setForwardBind(event.target.checked ? 'all' : 'loopback')}
+                      />
+                      Share on my network, not just this machine
+                    </label>
+                    {forwardBind === 'all' && (
+                      <p className="dialog-warning">
+                        Anything on the network this machine is attached to will be able to reach
+                        {forwardDirection === 'local' ? ' the remote service' : ' the service running here'}.
+                      </p>
+                    )}
+                  </>
+                )}
               </>
             )}
 
@@ -2282,6 +4191,18 @@ function App() {
           speechKey={speechKey}
           onSpeechKeySave={(key) => void saveSpeechKey(key)}
           onSpeechKeyClear={() => void clearSpeechKey()}
+          commandHistory={commandHistoryState}
+          onCopySnippet={(snippet) => {
+            void api()?.copyText?.(snippet).then(() => setStatus('Shell integration snippet copied.')).catch(() => undefined);
+          }}
+          onClearCommandHistory={() => void clearCommandHistory()}
+          aiKey={aiKey}
+          onAiKeySave={(key) => void saveAiKey(key)}
+          onAiKeyClear={() => void clearAiKey()}
+          aiModels={aiModels}
+          onAiModelsRefresh={() => void refreshAiModels()}
+          aiTest={aiTest}
+          onAiTest={() => void runAiTest()}
         />
       )}
 
@@ -2315,36 +4236,208 @@ function App() {
         </div>
       )}
 
-      {approval && (
-        <div className="modal-layer" role="presentation" {...dismissApproval}>
+      {/* What the SSH client wants before a tunnel can open. ZeroG never answers
+          a host-key question on the user's behalf, and the fingerprint is shown
+          with the question — the same rule the transfer panel follows, because
+          it is the same client asking. Nothing typed here is stored. */}
+      {forwardPrompt && (
+        <div className="modal-layer" role="presentation">
+          <form
+            className="modal-card approval-card"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const answer = new FormData(event.currentTarget).get('answer');
+              const currentApi = api();
+              setForwardPrompt(null);
+              void currentApi?.answerForwardPrompt?.(forwardPrompt.forwardId, String(answer ?? '')).catch((error: unknown) => {
+                setStatus(ipcMessage(error));
+              });
+            }}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow">SHARED PORT</span>
+                <h2>{forwardPrompt.kind === 'confirm' ? 'Accept this host key?' : 'The host is asking'}</h2>
+              </div>
+            </div>
+            <code>{forwardPrompt.text}</code>
+            <label>
+              {forwardPrompt.kind === 'confirm' ? 'Type yes, no, or the fingerprint' : 'Answer'}
+              <input
+                autoFocus
+                name="answer"
+                type={forwardPrompt.kind === 'confirm' ? 'text' : 'password'}
+                autoComplete="off"
+              />
+            </label>
+            <div className="modal-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  // Cancelling has to end the attempt, not leave a client sitting
+                  // at a prompt nobody is going to answer.
+                  const id = forwardPrompt.forwardId;
+                  setForwardPrompt(null);
+                  void api()?.closeForward?.(id).catch(() => undefined);
+                  setForwards((current) => current.map((item) => (item.id === id ? { ...item, status: 'idle' as const } : item)));
+                }}
+              >
+                Cancel
+              </button>
+              <button className="primary-button" type="submit">Send</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* One dialog through the whole exchange: ask, wait, then review. The
+          command is shown before it can run whenever terminal output was part
+          of the prompt — see canAutoRun in ai-suggest.ts — because the answer is
+          then downstream of text a remote host chose. */}
+      {suggest && (
+        <div className="modal-layer" role="presentation" {...dismissSuggest}>
           <div className="modal-card approval-card">
             <div className="modal-head">
               <div>
-                <span className="eyebrow warning-text">APPROVAL REQUIRED</span>
-                <h2>Run suggestion?</h2>
+                <span className={suggest.phase === 'reviewing' ? 'eyebrow warning-text' : 'eyebrow'}>
+                  {suggest.phase === 'reviewing' ? 'APPROVAL REQUIRED' : 'AI SUGGESTION'}
+                </span>
+                <h2>
+                  {suggest.phase === 'asking'
+                    ? 'What would you like to do?'
+                    : suggest.phase === 'thinking'
+                      ? 'Asking the model…'
+                      : suggest.phase === 'failed'
+                        ? 'No suggestion'
+                        : 'Run this command?'}
+                </h2>
               </div>
-              <button type="button" className="close-button" onClick={() => setApproval(null)}>Esc</button>
-            </div>
-            <p>{approval.explanation}</p>
-            <code>{approval.command}</code>
-            <div className="modal-actions">
-              <button type="button" onClick={() => setApproval(null)}>Cancel</button>
               <button
                 type="button"
-                className="primary-button"
+                className="close-button"
                 onClick={() => {
-                  if (active) api()?.write(active.id, `${approval.command}\r`);
-                  setApproval(null);
+                  void api()?.cancelAiRequest?.();
+                  setSuggest(null);
                 }}
               >
-                Approve & run
+                Esc
               </button>
             </div>
+
+            {suggest.phase === 'asking' && (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const prompt = String(new FormData(event.currentTarget).get('prompt') ?? '').trim();
+                  if (prompt) void runSuggest(prompt);
+                }}
+              >
+                <p>
+                  {settings.ai.model} at {settings.ai.baseUrl}.{' '}
+                  {settings.ai.includeOutput
+                    ? 'The last of this pane\u2019s output is sent with your request.'
+                    : 'Only the shell, directory and host are sent.'}
+                </p>
+                <label>
+                  Request
+                  <input autoFocus name="prompt" placeholder="fix that error" autoComplete="off" />
+                </label>
+                <div className="modal-actions">
+                  <button type="button" onClick={() => setSuggest(null)}>Cancel</button>
+                  <button className="primary-button" type="submit">Ask</button>
+                </div>
+              </form>
+            )}
+
+            {suggest.phase === 'thinking' && (
+              <>
+                <p>{suggest.prompt}</p>
+                <p className="muted-text">
+                  {suggest.usedOutput ? 'Sent with recent output from this pane.' : 'Sent without terminal output.'}
+                </p>
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void api()?.cancelAiRequest?.();
+                      setSuggest(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+
+            {suggest.phase === 'reviewing' && (
+              <>
+                <p>{suggest.suggestion.explanation}</p>
+                {suggest.suggestion.command ? <code>{suggest.suggestion.command}</code> : null}
+                {suggest.usedOutput ? (
+                  <p className="dialog-warning">
+                    This was suggested from output in the pane, which can come from a remote host. Read the
+                    command before running it.
+                  </p>
+                ) : null}
+                <div className="modal-actions">
+                  <button type="button" onClick={() => setSuggest(null)}>Cancel</button>
+                  {/* Nothing to run when the reply did not parse or named several
+                      commands, which is what an empty command means. */}
+                  {suggest.suggestion.command ? (
+                    <button type="button" className="primary-button" onClick={acceptSuggestion}>Run</button>
+                  ) : (
+                    <button type="button" onClick={() => setSuggest(askSuggestion(suggest.sessionId))}>Ask again</button>
+                  )}
+                </div>
+              </>
+            )}
+
+            {suggest.phase === 'failed' && (
+              <>
+                <p>{suggest.message}</p>
+                <div className="modal-actions">
+                  <button type="button" onClick={() => setSuggest(null)}>Close</button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => setSuggest(askSuggestion(suggest.sessionId))}
+                  >
+                    Try again
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
     </main>
   );
+}
+
+/**
+ * A command with the query's matched characters marked.
+ *
+ * Worth the trouble because the matching is a subsequence: without showing which
+ * characters matched, a row can look like it has nothing to do with what was
+ * typed, and the ranking looks broken when it is not.
+ */
+function highlight(command: string, matched: number[]): React.ReactNode {
+  if (!matched.length) return command;
+  const positions = new Set(matched);
+  const parts: React.ReactNode[] = [];
+  let run = '';
+  let runMatched = positions.has(0);
+  for (let index = 0; index < command.length; index += 1) {
+    const isMatch = positions.has(index);
+    if (isMatch !== runMatched && run) {
+      parts.push(runMatched ? <b key={index}>{run}</b> : run);
+      run = '';
+    }
+    runMatched = isMatch;
+    run += command.charAt(index);
+  }
+  if (run) parts.push(runMatched ? <b key="tail">{run}</b> : run);
+  return parts;
 }
 
 function terminalTheme(theme: Theme) {
@@ -2373,13 +4466,6 @@ function terminalTheme(theme: Theme) {
       };
 }
 
-function nextWorkspaceName(workspaces: Workspace[]): string {
-  let index = workspaces.length + 1;
-  const names = new Set(workspaces.map((item) => item.name.toLowerCase()));
-  while (names.has(`workspace ${index}`)) index += 1;
-  return `Workspace ${index}`;
-}
-
 function nextTerminalName(workspaceName: string, sessions: SessionInfo[]): string {
   const base = workspaceName
     .toLowerCase()
@@ -2391,12 +4477,6 @@ function nextTerminalName(workspaceName: string, sessions: SessionInfo[]): strin
   let index = 2;
   while (names.has(`${base}-${index}`)) index += 1;
   return `${base}-${index}`;
-}
-
-function layoutForSessionCount(count: number): Layout {
-  if (count <= 1) return 'stack';
-  if (count === 2) return 'split-v';
-  return 'grid';
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

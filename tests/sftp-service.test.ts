@@ -380,3 +380,26 @@ describe('what only a pty makes possible', () => {
     expect(pty.writes[pty.writes.length - 1]).toBe('bye\n');
   });
 });
+
+describe('the connection handle', () => {
+  it('refuses a terminal session id, which is not a connection handle', async () => {
+    // The exact failure a user hit with the pane directory browser against a
+    // Linux host: "Error invoking remote method 'sftp:list': Error: This
+    // transfer connection is closed. Reopen the transfer panel." The browser
+    // passed the terminal session's id, and only the id that `open` returns
+    // names a connection — the two are different namespaces, which is why the
+    // service reports the one it does not know as closed.
+    const { service } = harness();
+    await expect(service.list('ssh:1')).rejects.toThrow('This transfer connection is closed');
+  });
+
+  it('still refuses it while a connection to that host is open', async () => {
+    // The confusion is not rescued by there being a connection: the handle is a
+    // separate namespace, so a live connection to the very same host does not
+    // make the terminal's id mean anything.
+    const { service, connection } = await connect();
+    expect(connection.id).not.toBe('ssh:1');
+    await expect(service.list('ssh:1')).rejects.toThrow('This transfer connection is closed');
+    service.closeAll();
+  });
+});

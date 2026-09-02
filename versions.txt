@@ -9,3 +9,4 @@ ZeroG Terminal version history
 0.6.0-alpha.1 - SFTP file transfer panel that opens on the active SSH session at the directory its shell is in, links opening in the system browser instead of an in-app window, and one Windows OpenSSH resolver shared by ssh and sftp
 0.7.0-alpha1 - Recursive remote-folder SFTP downloads with multi-selection, a navigation rail for common workspace actions, and layout controls that restore pane sizes before maximizing or folding views
 0.7.0-alpha2 - Follow-up 0.7 alpha release containing the current SFTP, navigation rail, and pane layout updates
+0.7.0-alpha3 - Workspaces that hold their own panes and layout, shared ports over SSH, AI command suggestions from any OpenAI-compatible endpoint, a ranked command history palette, a directory browser inside each pane, and WSL panes starting in the distribution's own home directory

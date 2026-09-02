@@ -4,7 +4,9 @@ import {
   discoverShellBackends,
   findExecutable,
   findOpenSshTool,
-  resolveShellBackend
+  ptyStartDirectory,
+  resolveShellBackend,
+  withWslStartDirectory
 } from '../src/main/shell-catalog';
 
 /** Describe a machine by the absolute paths that exist on it. */
@@ -221,7 +223,7 @@ describe('resolveShellBackend', () => {
 
   it('passes a WSL distribution as argv, and rejects an unsafe name', () => {
     const shell = resolveShellBackend('wsl', 'Ubuntu', stockWindows);
-    expect(shell.args).toEqual(['-d', 'Ubuntu']);
+    expect(shell.args).toEqual(['-d', 'Ubuntu', '--cd', '~']);
     expect(shell.label).toBe('WSL · Ubuntu');
     expect(shell.wslDistribution).toBe('Ubuntu');
     // A name reaching `wsl.exe -d` must not be able to start with a flag or
@@ -230,7 +232,79 @@ describe('resolveShellBackend', () => {
     expect(() => resolveShellBackend('wsl', '-d', stockWindows)).toThrow();
   });
 
-  it('uses the plain WSL entry when no distribution is named', () => {
-    expect(resolveShellBackend('wsl', undefined, stockWindows).args).toEqual([]);
+  it('starts a WSL shell in the distro home even with no distribution named', () => {
+    expect(resolveShellBackend('wsl', undefined, stockWindows).args).toEqual(['--cd', '~']);
+  });
+
+  it('starts every WSL shell in the distro home rather than the Windows one', () => {
+    // Without --cd, wsl.exe inherits the Windows directory it was launched from
+    // and the pane opens in /mnt/c/Users/<name>, which is almost never where the
+    // work is.
+    for (const distribution of [undefined, 'Ubuntu', 'Ubuntu-22.04']) {
+      const shell = resolveShellBackend('wsl', distribution, stockWindows);
+      const at = shell.args.indexOf('--cd');
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(shell.args[at + 1]).toBe('~');
+    }
+  });
+
+  it('names the distribution before --cd, which is the order wsl.exe wants', () => {
+    expect(resolveShellBackend('wsl', 'Ubuntu', stockWindows).args.indexOf('-d'))
+      .toBeLessThan(resolveShellBackend('wsl', 'Ubuntu', stockWindows).args.indexOf('--cd'));
+  });
+
+  it('leaves the arguments of every other backend alone', () => {
+    expect(resolveShellBackend('powershell', undefined, stockWindows).args).not.toContain('--cd');
+    expect(resolveShellBackend('cmd', undefined, stockWindows).args).not.toContain('--cd');
+  });
+});
+
+describe('withWslStartDirectory', () => {
+  it('replaces the home directory with the one asked for', () => {
+    const shell = withWslStartDirectory(resolveShellBackend('wsl', 'Ubuntu', stockWindows), '/srv/app');
+    expect(shell.args).toEqual(['-d', 'Ubuntu', '--cd', '/srv/app']);
+  });
+
+  it('adds the flag when a resolved shell somehow lacks it', () => {
+    const shell = withWslStartDirectory({ backend: 'wsl', executable: 'wsl.exe', args: [], label: 'WSL' }, '/srv/app');
+    expect(shell.args).toEqual(['--cd', '/srv/app']);
+  });
+
+  it('leaves a non-WSL shell untouched', () => {
+    const powershell = resolveShellBackend('powershell', undefined, stockWindows);
+    expect(withWslStartDirectory(powershell, '/srv/app')).toBe(powershell);
+  });
+});
+
+describe('ptyStartDirectory', () => {
+  const home = String.raw`C:\Users\dev`;
+  const windows = { platform: 'win32' as const, home };
+
+  it('keeps a directory the platform can start a process in', () => {
+    // String.raw throughout: these are Windows paths, and a halved backslash
+    // would make the test pass against a rule it is not describing.
+    expect(ptyStartDirectory(String.raw`C:\srv\app`, windows)).toBe(String.raw`C:\srv\app`);
+    expect(ptyStartDirectory('D:/srv/app', windows)).toBe('D:/srv/app');
+    expect(ptyStartDirectory(String.raw`\\server\share`, windows)).toBe(String.raw`\\server\share`);
+    expect(ptyStartDirectory('/srv/app', { platform: 'linux', home: '/home/dev' })).toBe('/srv/app');
+  });
+
+  it('falls back to home for a directory inside a distro', () => {
+    // A WSL session reports where its *shell* is. node-pty hands its cwd
+    // straight to the OS, and Windows cannot start a process in /home/dev.
+    expect(ptyStartDirectory('~', windows)).toBe(home);
+    expect(ptyStartDirectory('~/projects', windows)).toBe(home);
+    expect(ptyStartDirectory('/home/dev', windows)).toBe(home);
+    expect(ptyStartDirectory('/mnt/c/Users/dev', windows)).toBe(home);
+  });
+
+  it('falls back to home when there is no directory at all', () => {
+    expect(ptyStartDirectory(undefined, windows)).toBe(home);
+    expect(ptyStartDirectory('', windows)).toBe(home);
+  });
+
+  it('refuses a relative path, which a pty would resolve against anywhere', () => {
+    expect(ptyStartDirectory('projects', windows)).toBe(home);
+    expect(ptyStartDirectory('./projects', { platform: 'linux', home: '/home/dev' })).toBe('/home/dev');
   });
 });

@@ -4,8 +4,19 @@
 // microphone and the speech client, so the panel cannot start a second
 // recorder behind the app's back.
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import type { ShellBackend } from '../shared/types';
+import {
+  RESERVED,
+  SHORTCUTS,
+  chordFor,
+  chordFromEvent,
+  chordProblem,
+  isMoved,
+  resolveBindings,
+  type Bindings,
+  type ShortcutAction
+} from './shortcuts';
 import {
   DEFAULT_SETTINGS,
   FONT_CHOICES,
@@ -34,6 +45,7 @@ import {
 } from './speech-models';
 import type { BackdropDismissHandlers } from './backdrop-dismiss';
 import { isLoopbackEndpoint, isSupportedEndpoint, sendsKeyInClear } from './speech-server';
+import { INTEGRATION_SHELLS, integrationFile, integrationSnippet, type IntegrationShell } from './shell-integration';
 
 export type SettingsPage = SettingsSection;
 
@@ -80,15 +92,144 @@ export type SettingsPanelProps = {
   speechKey: SpeechKeyState;
   onSpeechKeySave: (key: string) => void;
   onSpeechKeyClear: () => void;
+  /** How the command history is doing, for the section that switches it on. */
+  commandHistory: CommandHistoryState;
+  onCopySnippet: (snippet: string) => void;
+  onClearCommandHistory: () => void;
+  /** The AI endpoint key, in the same shape as the speech one. */
+  aiKey: SpeechKeyState;
+  onAiKeySave: (key: string) => void;
+  onAiKeyClear: () => void;
+  /** Models the endpoint reports, so a name does not have to be remembered. */
+  aiModels: string[];
+  onAiModelsRefresh: () => void;
+  aiTest: AiTestState;
+  onAiTest: () => void;
+};
+
+/**
+ * What the panel knows about command recording.
+ *
+ * `panesReporting` answers the question someone actually has after pasting a
+ * snippet — did it work — without asking them to run something and guess.
+ */
+export type CommandHistoryState = {
+  entries: number;
+  panesReporting: number;
+  panesOpen: number;
+};
+
+/** What the panel reports about a run of the endpoint test. */
+export type AiTestState = {
+  status: 'idle' | 'testing';
+  ok?: boolean | null;
+  message?: string | null;
 };
 
 const PAGES: Array<{ id: SettingsPage; label: string; hint: string; blurb: string }> = [
   { id: 'appearance', label: 'Appearance', hint: 'Theme, font', blurb: 'How the workspace and terminal text look.' },
+  { id: 'shortcuts', label: 'Shortcuts', hint: 'Keyboard', blurb: 'Which keys do what, for when something else on the machine has taken one.' },
   { id: 'terminal', label: 'Terminal', hint: 'Scrollback, cursor', blurb: 'Behaviour of every terminal pane.' },
   { id: 'sessions', label: 'Sessions', hint: 'Defaults, layout', blurb: 'What new terminals and new windows start as.' },
   { id: 'ai', label: 'AI & voice', hint: 'Approval, insert', blurb: 'How AI suggestions and transcripts reach a terminal.' },
   { id: 'speech', label: 'Speech recognition', hint: 'Engine, model', blurb: 'Which recogniser runs, and how it is tuned.' }
 ];
+
+/**
+ * One binding, with a field that listens for the next chord.
+ *
+ * Capture is a real keydown listener rather than a text box: a chord is easier
+ * to press than to spell, and pressing it is the only way to find out whether
+ * this machine lets the app see it at all. Held in the capture phase and
+ * cancelled, so the app's own shortcuts do not fire while the user is choosing
+ * one.
+ */
+function ShortcutRow({
+  action,
+  description,
+  chord,
+  moved,
+  taken,
+  onSet,
+  onReset
+}: {
+  action: ShortcutAction;
+  description: string;
+  chord: string;
+  moved: boolean;
+  taken: Readonly<Record<string, ShortcutAction>>;
+  onSet: (chord: string) => void;
+  onReset: () => void;
+}) {
+  const [capturing, setCapturing] = React.useState(false);
+  const [problem, setProblem] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!capturing) return;
+    const onKey = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        setCapturing(false);
+        setProblem(null);
+        return;
+      }
+      // A modifier on its own means the chord is still being pressed.
+      if (['Control', 'Shift', 'Alt', 'Meta', 'OS'].includes(event.key)) return;
+      const candidate = chordFromEvent({
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey
+      });
+      const why = candidate
+        ? chordProblem(candidate, action, taken)
+        : 'A shortcut needs Ctrl and at least one of Shift or Alt, so a shell keeps Ctrl+C and Ctrl+R for itself.';
+      if (!candidate || why) {
+        setProblem(why);
+        return;
+      }
+      onSet(candidate);
+      setProblem(null);
+      setCapturing(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [capturing, action, taken, onSet]);
+
+  return (
+    <div className={problem ? 'shortcut-row invalid' : 'shortcut-row'}>
+      <span className="shortcut-what">{description}</span>
+      <button
+        type="button"
+        className={capturing ? 'shortcut-chord capturing' : 'shortcut-chord'}
+        onClick={() => {
+          setProblem(null);
+          setCapturing((value) => !value);
+        }}
+        aria-label={capturing ? `Press a new shortcut for ${description}` : `Change the shortcut for ${description}`}
+      >
+        {capturing ? <span className="shortcut-prompt">press a chord · Esc</span> : <kbd>{chord}</kbd>}
+      </button>
+      <button
+        type="button"
+        className="shortcut-reset"
+        onClick={() => {
+          setProblem(null);
+          setCapturing(false);
+          onReset();
+        }}
+        disabled={!moved}
+        title={moved ? 'Back to the shortcut this shipped with' : 'This is the shortcut it shipped with'}
+      >
+        Reset
+      </button>
+      {problem ? <small className="shortcut-problem">{problem}</small> : null}
+    </div>
+  );
+}
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -106,6 +247,20 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
  * Any http(s) host is allowed, so the hint carries the part the user cannot see
  * from the URL alone: whether the recording is about to leave this machine.
  */
+/**
+ * What to say beside the AI endpoint field.
+ *
+ * The shape is worth stating because one field serves every provider: naming
+ * chat/completions is what tells someone the base URL should end at /v1 rather
+ * than at the full path.
+ */
+function aiEndpointHint(url: string): string {
+  const shape = 'OpenAI-compatible: POST to {base}/chat/completions. Ollama, LM Studio, llama.cpp, vLLM and OpenRouter all serve this.';
+  if (!isSupportedEndpoint(url)) return `Any http:// or https:// address ending in /v1. ${shape}`;
+  if (isLoopbackEndpoint(url)) return `On this machine, so nothing leaves it. ${shape}`;
+  return `Off this machine. ${shape}`;
+}
+
 function speechServerUrlHint(url: string): string {
   const shape = 'OpenAI-compatible: POST multipart audio to /v1/audio/transcriptions.';
   if (!isSupportedEndpoint(url)) return `Any http:// or https:// address. ${shape}`;
@@ -122,11 +277,13 @@ function speechServerUrlHint(url: string): string {
  * stored.
  */
 function ServerApiKeyField({
+  label = 'Server API key',
   state,
   url,
   onSave,
   onClear
 }: {
+  label?: string;
   state: SpeechKeyState;
   url: string;
   onSave: (key: string) => void;
@@ -143,7 +300,7 @@ function ServerApiKeyField({
       : 'Sent as a Bearer token. Stored encrypted by this system, never in the settings file.';
 
   return (
-    <Field label="Server API key" hint={hint}>
+    <Field label={label} hint={hint}>
       <div className="settings-key-row">
         <input
           type="password"
@@ -178,6 +335,106 @@ function ServerApiKeyField({
       {state.error ? <small className="settings-key-error">{state.error}</small> : null}
       {!state.error && state.notice ? <small className="settings-key-notice">{state.notice}</small> : null}
     </Field>
+  );
+}
+
+/**
+ * Command recording, and the snippet that makes it work.
+ *
+ * The toggle and the snippet sit together because neither is much use alone:
+ * turning recording on without shell integration records nothing, and pasting
+ * the snippet without turning recording on records nothing either. Saying so is
+ * cheaper than letting someone discover it.
+ */
+function CommandHistorySection({
+  enabled,
+  state,
+  bindings,
+  onToggle,
+  onCopySnippet,
+  onClear
+}: {
+  enabled: boolean;
+  state: CommandHistoryState;
+  bindings: Bindings;
+  onToggle: (enabled: boolean) => void;
+  onCopySnippet: (snippet: string) => void;
+  onClear: () => void;
+}) {
+  const [shell, setShell] = useState<IntegrationShell>('bash');
+  const snippet = integrationSnippet(shell);
+  // Asked rather than written out: the palette's chord is a setting, and this
+  // hint would otherwise name the wrong key for anyone who has moved it.
+  const paletteChord = chordFor('history-palette', bindings);
+
+  return (
+    <>
+      <Toggle
+        label="Remember commands for the history palette"
+        hint={
+          enabled
+            ? `Commands you run are stored on this machine, with their directory and exit status, so ${paletteChord} can rank them. ` +
+              'Anything that looks like it carries a secret is refused rather than stored.'
+            : 'Off. Nothing about what you type is written anywhere. Turning this on stores commands on this machine so the history palette has something to search.'
+        }
+        checked={enabled}
+        onChange={onToggle}
+      />
+
+      {enabled ? (
+        <>
+          <div className="settings-note">
+            {state.panesOpen === 0
+              ? 'No panes open, so nothing is reporting yet.'
+              : state.panesReporting === 0
+                ? `None of your ${state.panesOpen} open pane${state.panesOpen === 1 ? '' : 's'} is reporting prompt marks. Add the snippet below to that shell — including on a remote host, where it has to be installed there.`
+                : `${state.panesReporting} of ${state.panesOpen} open pane${state.panesOpen === 1 ? '' : 's'} reporting prompt marks. ${state.entries} command${state.entries === 1 ? '' : 's'} remembered.`}
+          </div>
+
+          <Field
+            label="Shell integration"
+            hint={`Paste this into ${integrationFile(shell)} on whichever machine the shell runs on. It emits the standard OSC 133 marks — if you already have shell integration from VS Code, kitty or an oh-my-zsh plugin, you need none of this.`}
+          >
+            <div className="settings-key-row">
+              <select value={shell} onChange={(event) => setShell(event.target.value as IntegrationShell)}>
+                {INTEGRATION_SHELLS.map((entry) => (
+                  <option key={entry.id} value={entry.id}>{entry.label}</option>
+                ))}
+              </select>
+              <button type="button" onClick={() => onCopySnippet(snippet)}>Copy snippet</button>
+            </div>
+          </Field>
+          <pre className="settings-snippet">{snippet}</pre>
+
+          <div className="settings-test">
+            <button type="button" onClick={onClear}>Forget all remembered commands</button>
+            <small className="settings-hint">Removes the stored history and the file it lives in.</small>
+          </div>
+        </>
+      ) : null}
+    </>
+  )
+
+}
+
+/**
+ * Ask the endpoint for one token and report what came back.
+ *
+ * A real completion rather than a reachability check: a server can accept a
+ * connection and still refuse to run the model that is configured, and that is
+ * the failure worth finding here rather than mid-task.
+ */
+function AiTest({ state, onRun }: { state: AiTestState; onRun: () => void }) {
+  const testing = state.status === 'testing';
+  return (
+    <div className="settings-test">
+      <button type="button" className="primary-button" disabled={testing} onClick={onRun}>
+        {testing ? 'Testing…' : 'Test connection'}
+      </button>
+      {state.message ? (
+        <small className={state.ok ? 'settings-key-notice' : 'settings-key-error'}>{state.message}</small>
+      ) : null}
+    </div>
   );
 }
 
@@ -246,16 +503,25 @@ function Toggle({
   label,
   hint,
   checked,
+  disabled = false,
   onChange
 }: {
   label: string;
   hint?: string;
   checked: boolean;
+  /** Shown as fixed rather than hidden, so the hint can say why. */
+  disabled?: boolean;
+  checkedHint?: string;
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="settings-toggle">
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <label className={`settings-toggle ${disabled ? 'settings-toggle-fixed' : ''}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
       <span>
         <b>{label}</b>
         {hint ? <small>{hint}</small> : null}
@@ -349,9 +615,27 @@ export function SettingsPanel({
   onSpeechTest,
   speechKey,
   onSpeechKeySave,
-  onSpeechKeyClear
+  onSpeechKeyClear,
+  commandHistory,
+  onCopySnippet,
+  onClearCommandHistory,
+  aiKey,
+  onAiKeySave,
+  onAiKeyClear,
+  aiModels,
+  onAiModelsRefresh,
+  aiTest,
+  onAiTest
 }: SettingsPanelProps) {
   const [page, setPage] = useState<SettingsPage>('appearance');
+  const bindings = useMemo(() => resolveBindings(settings.shortcuts), [settings.shortcuts]);
+  // Which action owns each chord, so a row can say what it would be taking.
+  const taken = useMemo(
+    () => Object.fromEntries(
+      (Object.entries(bindings.chords) as Array<[ShortcutAction, string]>).map(([action, chord]) => [chord, action])
+    ),
+    [bindings]
+  );
   const active = PAGES.find((entry) => entry.id === page) ?? PAGES[0];
   const visible = speechFieldVisibility(settings.speech);
 
@@ -390,6 +674,52 @@ export function SettingsPanel({
 
           <div className="settings-page">
             <p className="settings-blurb">{active.blurb}</p>
+
+            {page === 'shortcuts' && (
+              <>
+                {bindings.rejected.length ? (
+                  <p className="settings-warning">
+                    {/* Reported rather than dropped in silence: a shortcut that
+                        quietly went back to a chord the user had moved would look
+                        like the app forgetting. */}
+                    {bindings.rejected.map((entry) => entry.reason).join(' ')} The default is in use instead.
+                  </p>
+                ) : null}
+                <div className="shortcut-list">
+                  {SHORTCUTS.map((entry) => (
+                    <ShortcutRow
+                      key={entry.action}
+                      action={entry.action}
+                      description={entry.description}
+                      chord={chordFor(entry.action, bindings)}
+                      moved={isMoved(entry.action, bindings)}
+                      taken={taken}
+                      onSet={(chord) => onChange('shortcuts', { [entry.action]: chord })}
+                      onReset={() => onChange('shortcuts', { [entry.action]: undefined })}
+                    />
+                  ))}
+                </div>
+                <p>
+                  A shortcut needs Ctrl and at least one of Shift or Alt: a bare Ctrl+key belongs to the shell, which
+                  keeps Ctrl+C, Ctrl+R, Ctrl+L and Ctrl+A in every pane. Ctrl+Shift+1 to 9 switch workspaces by
+                  position and cannot be moved, and the terminal keeps
+                  {RESERVED.map((entry, index) => (
+                    <React.Fragment key={entry.chord}>
+                      {index ? ' and ' : ' '}
+                      <kbd>{entry.chord}</kbd>
+                    </React.Fragment>
+                  ))}
+                  .
+                </p>
+                <p>
+                  Worth knowing if a chord seems to do nothing: nothing here can outrank the operating system. Windows
+                  uses Ctrl and Shift together to switch keyboard layout when more than one is installed, and some
+                  applications register chords globally while they are running. Moving ours out of the way is the fix,
+                  and Ctrl+Alt is usually clear — though on some layouts it behaves as AltGr, so a chord you would type
+                  in a terminal is worth avoiding.
+                </p>
+              </>
+            )}
 
             {page === 'appearance' && (
               <>
@@ -530,10 +860,78 @@ export function SettingsPanel({
 
             {page === 'ai' && (
               <>
+                <Field
+                  label="Endpoint"
+                  hint={aiEndpointHint(settings.ai.baseUrl)}
+                >
+                  <input
+                    value={settings.ai.baseUrl}
+                    placeholder={DEFAULT_SETTINGS.ai.baseUrl}
+                    spellCheck={false}
+                    onChange={(event) => onChange('ai', { baseUrl: event.target.value })}
+                  />
+                </Field>
+                <Field
+                  label="Model"
+                  hint="Any model the endpoint serves. Refresh lists what it reports having."
+                >
+                  <div className="settings-key-row">
+                    <input
+                      value={settings.ai.model}
+                      list="ai-models"
+                      placeholder="qwen2.5-coder"
+                      spellCheck={false}
+                      onChange={(event) => onChange('ai', { model: event.target.value })}
+                    />
+                    <datalist id="ai-models">
+                      {aiModels.map((model) => <option key={model} value={model} />)}
+                    </datalist>
+                    <button type="button" onClick={onAiModelsRefresh}>Refresh</button>
+                  </div>
+                </Field>
+                <ServerApiKeyField
+                  label="Endpoint API key"
+                  state={aiKey}
+                  url={settings.ai.baseUrl}
+                  onSave={onAiKeySave}
+                  onClear={onAiKeyClear}
+                />
+                <AiTest state={aiTest} onRun={onAiTest} />
+
+                <Toggle
+                  label="Send recent terminal output"
+                  hint={
+                    settings.ai.includeOutput
+                      ? isLoopbackEndpoint(settings.ai.baseUrl)
+                        ? 'Sent to an endpoint on this machine, so the output does not leave it. Suggestions can read the error you are looking at.'
+                        : 'The output of the focused pane is sent to this endpoint, which is not on this machine. Anything on screen goes with it.'
+                      : 'Off, so only the shell, directory and host are sent. Suggestions cannot see the error you are looking at.'
+                  }
+                  checked={settings.ai.includeOutput}
+                  onChange={(includeOutput) => onChange('ai', { includeOutput })}
+                />
+                {settings.ai.includeOutput ? (
+                  <RangeField
+                    label="How much output"
+                    hint="The tail of the pane, on whole lines. Enough for a stack trace is usually enough."
+                    value={settings.ai.outputChars}
+                    min={SETTING_LIMITS.outputChars.min}
+                    max={SETTING_LIMITS.outputChars.max}
+                    step={200}
+                    format={(value) => `${value} characters`}
+                    onChange={(outputChars) => onChange('ai', { outputChars })}
+                  />
+                ) : null}
+
                 <Toggle
                   label="Ask before running an AI suggestion"
-                  hint="Off means a suggested command is sent to the terminal as soon as it arrives."
-                  checked={settings.ai.requireApproval}
+                  hint={
+                    settings.ai.includeOutput
+                      ? 'Always on while terminal output is being sent: output can come from a remote host, and a command chosen from it must not run unseen.'
+                      : 'Off means a suggested command is sent to the terminal as soon as it arrives.'
+                  }
+                  checked={settings.ai.includeOutput || settings.ai.requireApproval}
+                  disabled={settings.ai.includeOutput}
                   onChange={(requireApproval) => onChange('ai', { requireApproval })}
                 />
                 <SelectField<VoiceInsert>
@@ -556,6 +954,15 @@ export function SettingsPanel({
                     onChange={(event) => onChange('ai', { proceedPhrase: event.target.value })}
                   />
                 </Field>
+
+                <CommandHistorySection
+                  enabled={settings.ai.recordCommands}
+                  state={commandHistory}
+                  bindings={bindings}
+                  onToggle={(recordCommands) => onChange('ai', { recordCommands })}
+                  onCopySnippet={onCopySnippet}
+                  onClear={onClearCommandHistory}
+                />
               </>
             )}
 

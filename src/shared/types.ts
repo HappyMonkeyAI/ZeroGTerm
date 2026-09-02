@@ -147,10 +147,221 @@ export interface SpeechApiKeyStatus {
   encryptionAvailable: boolean;
 }
 
+/**
+ * A session a workspace held, described well enough to find it again.
+ *
+ * The id alone is not enough. A local `screen` session's id is derived from its
+ * name and comes back identical after a relaunch, but an SSH session's is a
+ * fresh uuid each launch, so the durable keys travel alongside it. Never
+ * carries cwd, command arguments, or credentials.
+ */
+export interface StoredWorkspaceMember {
+  sessionId: string;
+  kind: SessionKind;
+  name: string;
+  host?: string;
+  screenName?: string;
+  sshTarget?: string;
+  backend?: string;
+}
+
+/** How a workspace was arranged, as stored. Validated on load, so loosely typed. */
+export interface StoredWorkspaceView {
+  layout: string;
+  lastSplit: string;
+  activeSessionId?: string;
+  focusedSessionId?: string;
+  maximizedSessionId?: string | null;
+  /** Directory browser state per pane, keyed by session id. */
+  browsers?: Record<string, { open: boolean; ratio?: number }>;
+}
+
+export interface StoredWorkspace {
+  id: string;
+  name: string;
+  view: StoredWorkspaceView;
+  members: StoredWorkspaceMember[];
+}
+
+export interface StoredWorkspaceFile {
+  version: number;
+  activeWorkspaceId?: string;
+  workspaces: StoredWorkspace[];
+}
+
+/**
+ * One command, in one directory, with what is known about how it went.
+ *
+ * Keyed by command *and* directory rather than command alone: running
+ * `npm test` in two projects is two facts, and keeping them apart is what lets
+ * the palette put the one from here first. The palette collapses them back
+ * together for display.
+ */
+export interface CommandHistoryEntry {
+  id: string;
+  command: string;
+  cwd?: string;
+  host?: string;
+  kind?: SessionKind;
+  /** Of the most recent run. Absent when the shell reported none. */
+  exitCode?: number;
+  lastRun: string;
+  runs: number;
+  /** Times this was chosen from the palette, which is what makes it improve. */
+  picks: number;
+}
+
+export interface StoredCommandHistoryFile {
+  version: number;
+  entries: CommandHistoryEntry[];
+}
+
+/** A command as the renderer reports it, before the store gives it an identity. */
+export interface CommandRecord {
+  command: string;
+  cwd?: string;
+  host?: string;
+  kind?: SessionKind;
+  exitCode?: number;
+}
+ 
+/**
+ * What the model is told about where the developer is working.
+ *
+ * `output` is the untrusted part: a bounded tail of the pane, included only when
+ * the setting says so, and never treated as instruction. See ai-protocol.ts.
+ */
+export interface AiSuggestionContext {
+  shell?: string;
+  cwd?: string;
+  host?: string;
+  kind?: SessionKind;
+  output?: string;
+}
+
+export interface AiSuggestionRequest {
+  prompt: string;
+  /** The pane this was asked about, so the answer cannot land in another one. */
+  sessionId?: string;
+  context: AiSuggestionContext;
+}
+
+/**
+ * A suggested command, or an explanation of why there is not one.
+ *
+ * An empty `command` is a normal outcome, not an error: it is what a reply that
+ * did not parse, named several commands, or declined produces. The dialog shows
+ * the explanation and has nothing to run.
+ */
+export interface AiSuggestion {
+  command: string;
+  explanation: string;
+}
+
+/** What the settings panel learns from testing an endpoint. */
+export interface AiTestResult {
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * Which way a tunnel runs.
+ *
+ * `local` makes a port on the remote reachable here — the common case, and what
+ * a remote dev server needs. `remote` makes a port on this machine reachable
+ * from the remote, for a webhook or an agent calling back.
+ */
+export type ForwardDirection = 'local' | 'remote';
+
+/**
+ * How widely the listening port is exposed.
+ *
+ * `loopback` is the default everywhere: the port answers only on the machine
+ * doing the listening. `all` re-exports someone else's service onto whatever
+ * network that machine is attached to, so it is never implied — only chosen.
+ */
+export type ForwardBind = 'loopback' | 'all';
+
+export type ForwardStatus = 'idle' | 'connecting' | 'open' | 'error';
+
+/**
+ * A tunnel to open.
+ *
+ * Deliberately symmetric: `listenPort`/`bind` describe the side that listens and
+ * `destinationHost`/`destinationPort` the side that receives, whichever machine
+ * each of those is. `direction` is the only thing that says which is which.
+ */
+export interface PortForwardRequest {
+  target: string;
+  direction: ForwardDirection;
+  listenPort: number;
+  destinationPort: number;
+  /** Resolved on the receiving side. Defaults to localhost there. */
+  destinationHost?: string;
+  bind: ForwardBind;
+  /** Reuses an id when reconnecting a remembered forward. */
+  id?: string;
+}
+
+export interface PortForwardInfo extends PortForwardRequest {
+  id: string;
+  status: ForwardStatus;
+  /** Why it is not open, when it is not. */
+  message?: string;
+}
+
+export type PortForwardEvent =
+  | { type: 'status'; forward: PortForwardInfo }
+  // The same three questions an SSH client can ask, so the renderer answers a
+  // tunnel's password prompt with the control it already has for a transfer's.
+  | { type: 'prompt'; forwardId: string; prompt: Pick<SftpPrompt, 'kind' | 'text'> }
+  | { type: 'closed'; forwardId: string; message: string };
+
+export interface StoredPortForwardFile {
+  version: number;
+  forwards: Array<Omit<PortForwardInfo, 'status' | 'message'>>;
+}
+
 export interface TerminalApi {
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
   removeHistory(entryId: string): Promise<boolean>;
+  /**
+   * The command history, and the three things done to it.
+   *
+   * Held in the main process like the other durable state. `recordCommand` is
+   * called only for text that passed command-redaction, and only while the
+   * setting is on; `pickCommand` notes a deliberate choice, which is what makes
+   * the ranking improve with use.
+   */
+  listCommandHistory(): Promise<CommandHistoryEntry[]>;
+  recordCommand(record: CommandRecord): Promise<CommandHistoryEntry | null>;
+  pickCommand(id: string): Promise<void>;
+  clearCommandHistory(): Promise<void>;
+  /**
+   * The stored workspace layout, and a way to replace it.
+   *
+   * Held in the main process rather than localStorage because it is durable
+   * session metadata, validated on both sides of the boundary; `saveWorkspaces`
+   * rejects a file it cannot make sense of and returns what it actually stored.
+   */
+  loadWorkspaces(): Promise<StoredWorkspaceFile>;
+  saveWorkspaces(file: StoredWorkspaceFile): Promise<StoredWorkspaceFile>;
+  /** Tunnels currently open, which outlive the Ports view being closed. */
+  listForwards(): Promise<PortForwardInfo[]>;
+  /**
+   * Open a tunnel, resolving once it is actually listening.
+   *
+   * Rejects with the client's own reason when it cannot — a port already bound,
+   * a refused key, an sshd that will not widen a remote forward. A password or
+   * host-key question arrives as a `prompt` event while this is still pending.
+   */
+  openForward(request: PortForwardRequest): Promise<PortForwardInfo>;
+  closeForward(id: string): Promise<void>;
+  answerForwardPrompt(id: string, answer: string): Promise<void>;
+  loadForwards(): Promise<StoredPortForwardFile>;
+  saveForwards(file: StoredPortForwardFile): Promise<StoredPortForwardFile>;
+  onForwardEvent(callback: (event: PortForwardEvent) => void): () => void;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;
   createLocalSession(request: CreateLocalRequest): Promise<SessionInfo>;
@@ -167,10 +378,35 @@ export interface TerminalApi {
   readText(): Promise<string>;
   onData(callback: (sessionId: string, data: string) => void): () => void;
   onStatus(callback: (sessionId: string, message: string) => void): () => void;
-  requestAiCommand(): Promise<{ command: string; explanation: string }>;
+  /**
+   * Ask the configured endpoint for a command.
+   *
+   * Made in the main process, not here: a renderer fetch is cross-origin and
+   * Ollama refuses those unless OLLAMA_ORIGINS is set, and the API key then
+   * never has to enter the renderer at all. An empty `command` in the answer is
+   * a normal outcome — see AiSuggestion.
+   */
+  requestAiCommand(config: { baseUrl: string; model: string }, request: AiSuggestionRequest): Promise<AiSuggestion>;
+  /** Model ids the endpoint reports, for the settings panel's list. */
+  listAiModels(baseUrl: string): Promise<string[]>;
+  testAiEndpoint(config: { baseUrl: string; model: string }): Promise<AiTestResult>;
+  /** Abandon a suggestion in flight, when the dialog that wanted it has gone. */
+  cancelAiRequest(): Promise<void>;
+  aiApiKeyStatus(): Promise<SpeechApiKeyStatus>;
+  saveAiApiKey(key: string): Promise<SpeechApiKeyStatus>;
+  clearAiApiKey(): Promise<SpeechApiKeyStatus>;
   /** Local filesystem browsing for the transfer panel. Listing only; no reads. */
   listLocalDirectory(path?: string): Promise<DirectoryListing>;
+  /** The running app's version, as Electron reports it from package.json. */
+  appVersion(): Promise<string>;
   localHome(): Promise<string>;
+  /**
+   * Where "~" points inside a WSL distribution, or null if it cannot be asked.
+   *
+   * Needed because a WSL pane's shell reports `~` rather than a path, and the
+   * share path a listing uses cannot be built from a symbol.
+   */
+  wslHome(distribution: string): Promise<string | null>;
   createLocalDirectory(path: string): Promise<void>;
   renameLocalEntry(from: string, to: string): Promise<void>;
   removeLocalEntry(path: string, kind: FileEntry['kind']): Promise<void>;

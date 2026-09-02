@@ -120,6 +120,8 @@ export function splitButtonTitle(target: SplitLayout, view: PaneView): string {
 
 /** The tooltip for the single-pane button, which names the split it goes back to. */
 export function singlePaneTitle(view: PaneView): string {
+  // No shortcut named here: which chord this button answers to is a setting
+  // now, and the caller appends whatever it currently is.
   if (view.maximized || view.layout === 'stack') return `Back to ${LAYOUT_NAMES[view.lastSplit].toLowerCase()}`;
   return view.sessionCount > 1 ? 'Maximize focused pane' : 'Single pane';
 }

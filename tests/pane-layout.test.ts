@@ -126,4 +126,19 @@ describe('what the buttons say they will do', () => {
     expect(singlePaneTitle(view({ sessionCount: 2 }))).toBe('Maximize focused pane');
     expect(singlePaneTitle(view({ sessionCount: 1 }))).toBe('Single pane');
   });
+
+  it('names no shortcut, because which chord it is is a setting', () => {
+    // The caller appends the chord in force. Naming one here would go stale the
+    // moment the user moved that binding in Settings.
+    const cases = [
+      view(),
+      view({ maximized: true }),
+      view({ layout: 'stack' }),
+      view({ sessionCount: 1 }),
+      view({ sessionCount: 4, layout: 'grid' })
+    ];
+    for (const candidate of cases) {
+      expect(singlePaneTitle(candidate)).not.toContain('Ctrl');
+    }
+  });
 });

@@ -16,10 +16,71 @@
 // PATHEXT, so a bare `bash` fails there with "File not found:".
 
 import { statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import type { LocalShellBackend, ShellBackend } from '../shared/types.js';
 
 /** Distro names reach `wsl.exe -d <name>`; a leading '-' would read as a flag. */
 const WSL_DISTRIBUTION = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
+
+/**
+ * Where a WSL shell should start.
+ *
+ * `wsl.exe` inherits the Windows directory it was launched from, so without this
+ * a new WSL pane opens in `/mnt/c/Users/<name>` — the Windows home seen through
+ * the mount, which is almost never where anyone wants to be working. `--cd`
+ * takes a Linux path, and `~` is the distro user's own home.
+ *
+ * Passed as a separate argv element, never through a shell, so the tilde reaches
+ * `wsl.exe` literally rather than being expanded on the way.
+ */
+export const WSL_HOME = '~';
+
+/**
+ * `--cd` needs WSL 0.51.2 or newer — Windows 11, or the Store build on Windows
+ * 10. On an older inbox WSL the flag is rejected and the pane shows that, which
+ * is visible rather than silent. Judged worth it: the flag is four years old,
+ * Windows 10 is out of support, and the alternative was a capability probe on
+ * every session for a configuration this project does not target.
+ */
+function wslStartArgs(startDirectory = WSL_HOME): string[] {
+  return ['--cd', startDirectory];
+}
+
+/**
+ * Point a resolved WSL shell at a directory other than the distro's home.
+ *
+ * Kept separate from resolveShellBackend because that is also what a reattach
+ * uses, where the right answer is the home directory again — a fresh shell, not
+ * wherever the last one wandered to.
+ */
+export function withWslStartDirectory(shell: ShellBackend, startDirectory: string): ShellBackend {
+  if (shell.backend !== 'wsl') return shell;
+  const args = [...shell.args];
+  const at = args.indexOf('--cd');
+  if (at >= 0 && at + 1 < args.length) args[at + 1] = startDirectory;
+  else args.push(...wslStartArgs(startDirectory));
+  return { ...shell, args };
+}
+
+/**
+ * A directory a pty can actually be started in.
+ *
+ * A session reports the directory its *shell* is in, which for WSL is a path
+ * inside the distro — `~`, or `/home/name` once the shell says so. node-pty
+ * hands its cwd straight to the OS, and neither of those is a directory Windows
+ * can start a process in. Where the shell itself begins is settled by its
+ * arguments, so anything unusable here falls back to the home directory rather
+ * than failing the spawn.
+ */
+export function ptyStartDirectory(cwd: string | undefined, options: ShellCatalogOptions & { home?: string } = {}): string {
+  const home = options.home ?? homedir();
+  if (!cwd) return home;
+  const windows = (options.platform ?? process.platform) === 'win32';
+  const usable = windows
+    ? /^[A-Za-z]:[\\/]/.test(cwd) || cwd.startsWith('\\\\')
+    : cwd.startsWith('/');
+  return usable ? cwd : home;
+}
 
 const LOCAL_SHELL_BACKENDS: readonly LocalShellBackend[] = [
   'bash', 'zsh', 'fish', 'sh', 'powershell', 'pwsh', 'cmd', 'wsl'
@@ -190,7 +251,7 @@ function shellCandidates(windows: boolean): ShellCandidate[] {
       { backend: 'powershell', label: 'Windows PowerShell', command: 'powershell.exe' },
       { backend: 'pwsh', label: 'PowerShell 7', command: 'pwsh.exe' },
       { backend: 'cmd', label: 'Command Prompt', command: 'cmd.exe' },
-      { backend: 'wsl', label: 'WSL', command: 'wsl.exe' },
+      { backend: 'wsl', label: 'WSL', command: 'wsl.exe', args: wslStartArgs() },
       // Git for Windows ships bash; useful, but not a login shell for the OS.
       { backend: 'bash', label: 'Git Bash', command: 'bash.exe' }
     ];
@@ -273,5 +334,5 @@ export function resolveShellBackend(
   if (!WSL_DISTRIBUTION.test(trimmed)) {
     throw new Error('WSL distribution names may contain letters, numbers, spaces, _, ., and - only.');
   }
-  return { ...match, args: ['-d', trimmed], label: `WSL · ${trimmed}`, wslDistribution: trimmed };
+  return { ...match, args: ['-d', trimmed, ...wslStartArgs()], label: `WSL · ${trimmed}`, wslDistribution: trimmed };
 }

@@ -11,6 +11,14 @@ export type FakePty = {
   writes: string[];
   /** Push output as though the shell had produced it. */
   emit: (data: string) => void;
+  /**
+   * End the process as though it had exited on its own.
+   *
+   * Distinct from `killed`, which records the service deciding to end it: a
+   * client that quits by itself is what a failed `ssh -o ExitOnForwardFailure`
+   * does, and the service has to handle that without having asked for it.
+   */
+  exit: () => void;
   killed: boolean;
 };
 
@@ -25,6 +33,7 @@ export function createFakePty(): { spawn: SpawnPty; spawned: FakePty[] } {
   const spawn: SpawnPty = (file, args, options) => {
     let onData: (data: string) => void = () => undefined;
     let onExit: () => void = () => undefined;
+    let ended = false;
 
     const record: FakePty = {
       file,
@@ -33,6 +42,11 @@ export function createFakePty(): { spawn: SpawnPty; spawned: FakePty[] } {
       resizes: [],
       writes: [],
       emit: (data) => onData(data),
+      exit: () => {
+        if (ended) return;
+        ended = true;
+        onExit();
+      },
       killed: false
     };
     spawned.push(record);
@@ -43,6 +57,8 @@ export function createFakePty(): { spawn: SpawnPty; spawned: FakePty[] } {
       kill: () => {
         if (record.killed) return;
         record.killed = true;
+        if (ended) return;
+        ended = true;
         onExit();
       },
       onData: (listener) => { onData = listener; },

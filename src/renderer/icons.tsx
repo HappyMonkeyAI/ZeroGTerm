@@ -170,6 +170,26 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
           <path d="M16 4v14M16 18l3.5-3.5M16 18l-3.5-3.5" />
         </svg>
       );
+    // Two ends and a line between them: a tunnel, rather than a plug, because a
+    // forward is a route from somewhere to somewhere and both ends matter.
+    case 'ports':
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="8.5" width="5" height="7" rx="1" />
+          <rect x="16.5" y="8.5" width="5" height="7" rx="1" />
+          <path d="M7.5 12h9M14 9.5l2.5 2.5L14 14.5" />
+        </svg>
+      );
+    // The ports glyph with a plus, as folder-plus is to folder: one opens the
+    // list, the other adds to it, and the rail shows both at once.
+    case 'port-plus':
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="8.5" width="5" height="7" rx="1" />
+          <path d="M7.5 12h7" />
+          <path d="M18.5 8v8M14.5 12h8" />
+        </svg>
+      );
     case 'folder':
       return (
         <svg {...common}>
@@ -232,6 +252,39 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
         <svg {...common}>
           <path d="M5 12l7-7 7 7" />
           <path d="M12 5v14" />
+        </svg>
+      );
+    case 'help':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          {/* A question mark drawn with the same stroke as everything else,
+              rather than set as text, so it scales with the icon box. */}
+          <path d="M9.4 9a2.7 2.7 0 1 1 3.9 2.4c-.8.5-1.3 1-1.3 1.9v.4" />
+          <path d="M12 17.2h.01" />
+        </svg>
+      );
+    case 'copy':
+      return (
+        <svg {...common}>
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M15 5.5A1.5 1.5 0 0 0 13.5 4H5.5A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15" />
+        </svg>
+      );
+    case 'send-right':
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M8 12h7" />
+          <path d="M12.5 9l2.5 3-2.5 3" />
+        </svg>
+      );
+    case 'info':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v5" />
+          <path d="M12 8h.01" />
         </svg>
       );
     default:

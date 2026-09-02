@@ -11,20 +11,23 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - A compact navigation rail for sessions, overview, settings, SSH connections, and opening a new local terminal, while keeping the sessions sidebar collapsible.
 - Layout controls that restore a split, even up its pane sizes, and maximize or restore a pane in a predictable sequence.
 - Maximize a focused pane and cycle between sessions without losing the other panes.
-- Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable.
+- Local sessions powered by Bash, PowerShell, WSL, and other supported shell backends; persistent sessions use `screen` where available, with a process-only fallback when it is unavailable. A WSL pane starts in the distribution's own home directory rather than the Windows one seen through `/mnt/c`.
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
-- SSH configuration discovery from known connections, including remote `screen` session discovery.
+- SSH configuration discovery from known connections, including remote `screen` session discovery. In the sidebar's Connections tab, clicking a saved connection opens the connect dialog with the host filled in, and double-clicking it skips the dialog and opens the host in a new pane.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
 - Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
+- Shared ports over SSH, in a Ports view opened from the rail: forward a port on a remote host so it answers on this machine, or a port here so it answers on the remote. Each tunnel is its own SSH connection, so a host needs no terminal open first. Ports bind to loopback unless you widen them, and are remembered between launches.
+- A directory browser inside a pane, opened from the folder button in its title bar: the pane splits, terminal on one side and the directories on the other, with a draggable divider. Double-click a folder to take the shell there. It works on SSH panes and on local ones, WSL included, follows a `cd` you type by hand, and is remembered per pane when you switch workspaces or relaunch.
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
-- Workspaces for grouping sessions and quickly switching between projects or tasks.
+- A ranked command palette on `Ctrl+Shift+R`, in the spirit of [McFly](https://github.com/cantino/mcfly): commands you have run, ranked by directory, host, recency, frequency, whether they worked, and whether you picked them before. Off by default — it is the one feature that stores what you typed — and it refuses anything that looks like it carries a credential.
+- Workspaces for grouping sessions and quickly switching between projects or tasks. Drag the tabs beside the wordmark to put them in the order you want; `Ctrl+Shift+1` … `9` follow that order, and it is remembered between launches. Right-click a tab to rename it, duplicate it, move it, or close it. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
 - Voice input, either with Whisper ONNX inside the app through Transformers.js or through an OpenAI-compatible transcription server you point it at — on this machine, on the LAN, or hosted; transcribed text is typed into the selected terminal without automatic execution.
 - A per-pane proceed button that sends a configurable phrase — `OK, proceed` by default — for waving an agent on without typing the same reply again.
 - A settings panel for appearance, terminal behaviour, session defaults, and speech recognition, including a built-in recognition test.
-- AI command suggestion and approval UI, keeping command execution explicit.
+- AI command suggestions from any OpenAI-compatible endpoint — Ollama, LM Studio, llama.cpp, vLLM, OpenRouter, or OpenAI itself — configured with a base URL, a model and an optional key in Settings. Ask what you want, get one command with an explanation, and approve it before it runs.
 - Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
 - Safe argument-array handling and validation around SSH and `screen` session operations.
 
@@ -34,7 +37,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.7.0-alpha2`; the version history is tracked in [versions.txt](versions.txt).
+ZeroG Terminal is currently a public alpha. The current release is `0.7.0-alpha3`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
 The npm package contains the built Electron application and project documentation. It is intended for early adopters and testing rather than production use.
 
@@ -44,11 +47,41 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+V` — paste into the active terminal
 - `Ctrl+C` remains the interrupt signal (not copy)
 - `Ctrl+Shift+N` — new workspace
+- `Ctrl+Shift+1` … `Ctrl+Shift+9` — switch to a workspace by position
 - `Ctrl+Shift+T` — new local terminal in the current workspace
+- `Ctrl+Shift+R` — ranked command history palette
+- `Ctrl+Shift+A` — ask the AI endpoint for a command
+- `Ctrl+Shift+L` — fold to a single pane, or back to the last split
 - `Ctrl+Shift+O` — session overview
 - `Ctrl+Shift+B` — toggle sessions sidebar
 - `Ctrl+Shift+,` — settings
+- `Ctrl+Shift+/` — the help panel: what is here, and this list
 - `Esc` — close overview / dialogs, cancel voice recording
+
+Every one of these can be moved: **Settings → Shortcuts** lists them, and
+pressing a new chord in a row rebinds it. A shortcut needs Ctrl and at least one
+of Shift or Alt, so a shell keeps its own bindings — `Ctrl+C` interrupts,
+`Ctrl+R` is still readline's reverse search, `Ctrl+L` still clears the screen,
+and `Ctrl+A` still reaches `screen` or `tmux`. None of these shortcuts reaches
+the shell in the pane that has focus, which was verified by asking bash to report
+the control characters it receives.
+
+Rebinding exists because nothing in the app can outrank the machine it runs on.
+`Ctrl+Shift+T` was reported already taken on Windows 11; Windows itself uses Ctrl
+and Shift together to switch keyboard layout when more than one is installed; and
+some applications — Teams, for one — register chords globally while they are
+running. `Ctrl+Alt` is usually clear, though on some layouts it behaves as AltGr,
+so a chord you would type in a terminal is worth avoiding. `Ctrl+Shift+1` … `9`
+and the clipboard pair cannot be moved.
+
+The `?` in the title bar opens the same help panel, which lists the shortcuts as
+they are currently bound rather than as they shipped.
+
+The Ports view, the SFTP transfer panel and a pane's directory browser have no
+shortcut of their own; they open from the rail, the ⇅ button above the panes, and
+the folder button in a pane's title bar. `Esc` deliberately does not close the
+directory browser: it is part of the pane rather than an overlay, and `Esc` has
+to keep reaching the shell for `vi` to be usable.
 
 Clicking a link in a pane opens it in your own browser rather than in a window
 of ZeroG. Hovering one first shows where it actually goes in the status bar,
@@ -63,6 +96,61 @@ sequence — this is how TUI tools such as CLI coding agents, tmux and Neovim pu
 text on the clipboard, including over SSH. Reading the clipboard through OSC 52
 is refused, so a program on a remote host cannot see what you last copied.
 
+## The command history palette
+
+`Ctrl+Shift+R` opens a search over the commands you have actually run, ranked so
+the one you want is usually first: same directory beats same host, recent beats
+frequent, something that worked beats something that failed, and something you
+picked from this palette before beats something you merely ran. Typing matches a
+subsequence, so `gcm` finds `git commit -m`, and the matched characters are
+highlighted so it is clear why a row is there.
+
+Enter puts the command on the prompt **without running it**. The command came out
+of a store rather than from your hands a moment ago, so pressing Enter is your
+decision — and it leaves room to change an argument, which is most of why anyone
+reaches for history.
+
+`Ctrl+R` is untouched. Your shell keeps its own reverse search; McFly can rebind
+that key because it *is* the shell, and ZeroG taking it would remove
+reverse-search from every pane including remote ones this feature cannot see.
+
+### Turning it on
+
+Recording is off until you switch it on in Settings under "AI & voice". It is the
+only part of ZeroG that stores what you typed, so it is opt-in rather than a
+default you have to find and disable.
+
+Commands are read from the standard OSC 133 prompt marks a shell emits — the same
+marks VS Code, kitty, WezTerm and Windows Terminal use. If you already have shell
+integration from any of those, or from an oh-my-zsh plugin, ZeroG reads what is
+already there and you need to add nothing. Otherwise Settings offers a snippet
+per shell to paste into your rc file, and the panel says how many of your open
+panes are actually reporting marks, so "did that work" has an answer.
+
+A remote host needs the snippet installed on the remote host: the marks come from
+the shell, and over SSH that shell is on the far side. A pane whose shell reports
+no marks records nothing, rather than guessing from the screen and recording
+something wrong.
+
+### What is stored, and what is refused
+
+Each entry holds the command, the directory and host it ran in, its exit status,
+when it last ran, how many times, and how often you picked it. It lives in
+`command-history.json` in ZeroG's profile directory, written with owner-only
+permissions. "Forget all remembered commands" empties it and deletes the file.
+
+A command that looks like it carries a credential is refused outright rather than
+stored with the value masked — a masked entry still records that you set a
+particular secret in a particular directory at a particular time. Refused shapes
+include assignments to anything named like a token, key, secret or password;
+`--password`, `--token` and `--api-key` flags; credentials inside a URL;
+`Authorization` headers; `curl -u user:pass`; vendor-shaped tokens; and long
+high-entropy words.
+
+This is not a complete defence and is not claimed to be. A secret typed as a bare
+argument to an unusual program, or piped in from `echo`, looks like ordinary text.
+See [SECURITY.md](SECURITY.md).
+
 ## Resizing panes and the sidebar
 
 Drag the line between two panes, or the sidebar's right edge, to change how the
@@ -73,6 +161,65 @@ The dividers take keyboard focus as well: the arrow keys nudge one two percent a
 a time, and Enter or a double-click puts it back in the middle. One divider
 position is shared by every layout, so a split you set up in the vertical split
 is the same split you get in the four-pane grid.
+
+## Sharing ports over SSH
+
+The Ports button in the rail opens a list of shared ports, grouped by the host
+each one runs through. "Share port" asks for a host and a port, and the port is
+then reachable as though the service were running here.
+
+Two directions are available under "More options". The default sends a port on
+the remote to this machine, which is what a remote dev server, database, or
+debugger needs. The other sends a port here to the remote, for a webhook or an
+agent on that host calling back. A row always names the side that listens first,
+so which way a tunnel runs is never left to be inferred.
+
+A shared port answers only on the machine that binds it, unless you tick "Share
+on my network" — which re-exports the service to whatever network that machine is
+attached to, and is marked `LAN` on the row so it cannot be forgotten about. A
+port sent to the remote is bound on loopback there by default; widening it also
+needs `GatewayPorts` enabled in that host's `sshd_config`, and the row says so
+when the server refuses.
+
+Each tunnel is a separate `ssh` process, which is what makes closing one exact:
+the cross stops that tunnel and nothing else. It also means a host that
+authenticates with a password asks once per tunnel, in the panel, and nothing
+typed there is stored. Hosts using a key or an agent are not asked at all.
+
+Shared ports are remembered between launches and come back listed but not
+connected. Clicking one reconnects it — the app never opens a connection to a
+host on its own at startup.
+
+## AI command suggestions
+
+Set an endpoint in Settings under "AI & voice": a base URL ending in `/v1`, a
+model, and a key if the endpoint wants one. One field serves every provider,
+because `chat/completions` is the request shape they all implement — a local
+Ollama at `http://127.0.0.1:11434/v1` needs no key at all. "Test connection"
+asks the model for a token and reports what came back, and "Refresh" lists the
+models the endpoint says it has. A key is stored encrypted by the operating
+system, never in the settings file, and is only ever read in the main process:
+it is not held in the window.
+
+Suggest asks what you want, then returns a single command with an explanation.
+Only one command, ever — a reply naming several, or answering in prose rather
+than the structure asked for, produces no command to run and says so. The
+command is written to the pane you asked from, not to whichever pane is focused
+when the answer arrives.
+
+By default the model is told only your shell, directory and host. Turning on
+"Send recent terminal output" also sends the tail of the focused pane, which is
+what lets a suggestion read the error you are actually looking at — and means
+terminal content goes to whatever endpoint you configured. The panel says which
+of those is happening.
+
+While output is being sent, approval cannot be turned off. Terminal output can
+come from a remote host, and a host can print text shaped like an instruction;
+a command chosen downstream of that must be read before it runs. The output is
+sent as clearly delimited data with the delimiter stripped out of it, and the
+answer is only believed if it arrives in the exact structure requested — but
+neither of those is trusted to hold on its own, which is why the approval step
+is not optional in that configuration.
 
 ## Transferring files over SFTP
 
@@ -104,6 +251,67 @@ are refused with a message rather than acted on. The `sftp` client re-reads its
 own arguments through a glob pass, and there is no encoding of those characters
 that is provably correct for every command — being approximately right about
 which file to delete is not good enough.
+
+### Duplicating a workspace
+
+Right-clicking a tab offers **Duplicate**, which copies the arrangement rather
+than the sessions: the layout comes across, and each SSH pane comes across as a
+pane waiting to be reconnected, so clicking it opens a *new* session to the same
+host. A local pane is not copied — its shell is a process on this machine, so a
+copy would be a different terminal rather than a duplicate of anything, and the
+status line says how many were left behind rather than letting you notice a pane
+missing.
+
+## Browsing directories inside a pane
+
+The folder button in a pane's title bar splits that pane: the terminal on one
+side, the directories where its shell is standing on the other. Drag the divider
+to change the balance, double-click it to centre it, or use the arrow keys when
+it has focus. A pane remembers whether its browser was open and where the divider
+was, per workspace and between launches.
+
+Single-click a folder to look inside it without moving the shell.
+**Double-click** it to take the shell there — ZeroG types the `cd` into the pane,
+which is deliberately visible: you asked for it, and seeing the command is how
+you know what happened. The button in the bottom-right corner does the same for
+the directory already on screen, which is how you retry after a `cd` that was
+refused because the pane was busy, or catch the shell up after browsing around.
+`..` is always the first row, except at a root the shell cannot go above.
+
+A single click waits a moment before it acts, because it has to find out whether
+it is the first half of a double-click: browsing immediately would replace the
+row under the pointer and the second press would land on a different one.
+
+The browser opens on the directory the pane's shell reports, and on the login
+directory before it has reported anything — a pane that has just connected has
+run nothing, so there is nothing to read yet. That login directory comes from the
+connection itself, never from a command typed into your session.
+
+Where it lists from depends on the pane. An SSH pane lists over an SFTP
+connection to its host, opening one if there is not already one open — the same
+client, `~/.ssh/config`, agent and `known_hosts` the transfer panel uses, and the
+same connection when both are looking at the same host. If the host asks for a
+password, a key passphrase, or a decision about its host key, the browser says
+so and the transfer panel (⇅) is where you answer: it shows the question with
+the key fingerprint beside it, and ZeroG never answers one on your behalf. The
+login directory that connection reports is also how a `~` in the pane's prompt
+becomes a path. A native local pane lists the filesystem directly. A WSL pane lists the distribution through the `\\wsl.localhost\` share
+Windows serves it on, so what you see is the distribution's own filesystem and
+not the Windows one — and `~` is resolved by asking the distribution once, never
+by typing `pwd` into your pane.
+
+Two things it will refuse, with a sentence rather than in silence:
+
+- **A pane that is not at a prompt.** A `cd` sent while `vi`, `less`, or an agent
+  has the terminal goes to that program instead. Where a shell reports the OSC 133
+  prompt marks — the same integration the command history uses — this is known
+  exactly; otherwise the shape of the last line is the best available answer.
+- **A directory name it cannot quote for that shell.** A name containing a line
+  break, or a double quote in a Command Prompt pane, is not typed at all rather
+  than approximated.
+
+The browser navigates; it does not move files. The SFTP panel is the surface for
+that.
 
 ## Settings
 
