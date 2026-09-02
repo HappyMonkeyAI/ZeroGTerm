@@ -81,8 +81,10 @@ export function createPaneListingSource(api: () => PaneListingApi | null | undef
     }
     const known = connections.get(session.id);
     if (known) return known;
+    // Compared against undefined rather than tested for truth: a Promise is
+    // always truthy, and the question here is whether one exists to join.
     const inFlight = opening.get(session.id);
-    if (inFlight) return inFlight;
+    if (inFlight !== undefined) return inFlight;
 
     const target = sftpTargetForSession(session);
     if (!target) throw new Error(`${session.name} has no SSH host to list.`);
