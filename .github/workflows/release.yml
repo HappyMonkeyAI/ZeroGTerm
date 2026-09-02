@@ -1,0 +1,49 @@
+name: Release Windows desktop build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish Windows x64 release
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify source
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Build Windows installer and portable executable
+        run: npm run package:win
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/ZeroG-Terminal-*.exe \
+            --verify-tag \
+            --title "ZeroG Terminal ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes "Windows x64 alpha build. These binaries are unsigned; Windows SmartScreen may warn on first launch. See the README for installation and host prerequisites."

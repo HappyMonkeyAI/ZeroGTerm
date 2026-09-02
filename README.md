@@ -39,7 +39,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ZeroG Terminal is currently a public alpha. The current release is `0.7.0-alpha3`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
-The npm package contains the built Electron application and project documentation. It is intended for early adopters and testing rather than production use.
+The GitHub Releases page provides a Windows x64 installer and portable executable for each desktop release. These alpha builds are intended for early adopters and testing rather than production use. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
 
 ## Terminal shortcuts
 
@@ -413,6 +413,11 @@ required whichever shell you start them from.
 for Windows and macOS, so a C/C++ toolchain is a Linux requirement rather than a
 general one — there, `npm install` compiles it.
 
+### Windows desktop release
+
+Download the latest Windows x64 installer from [GitHub Releases](https://github.com/HappyMonkeyAI/ZeroGTerm/releases). The installer adds ZeroG Terminal to the current user's applications. The portable `.exe` can be run without installation.
+
+These binaries are unsigned alpha builds, so Windows SmartScreen may show a warning on first launch. If you downloaded the release from the official repository, choose **More info → Run anyway**. Review the release notes before installing; SSH, WSL, PowerShell, Git Bash, and any remote `screen` sessions are provided by the host system rather than bundled with the app.
 ### Linux
 
 ```bash
