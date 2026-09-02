@@ -16,6 +16,7 @@ import {
   claimInto,
   closeWorkspace,
   dropPending,
+  duplicateWorkspace,
   fromStoredFile,
   isWorkspaceName,
   layoutForSessionCount,
@@ -97,6 +98,7 @@ import {
 import { SpeechClient, type SpeechWorker } from './speech';
 import { chordFor, matchShortcut, resolveBindings, topDismissTarget } from './shortcuts';
 import { dropIndexFor, indexOfId, passedThreshold, reorder } from './tab-reorder';
+import { ContextMenu, type MenuItem } from './context-menu';
 import { createCommandCapture, readBufferRange, type CapturedCommand, type CommandCapture } from './command-capture';
 import { redactionReason } from './command-redaction';
 import { rankCommands, type RankedCommand } from './command-ranking';
@@ -146,7 +148,7 @@ function memberDescriptor(member: StoredWorkspaceMember): SessionDescriptor {
 
 type VoiceStatus = 'idle' | 'listening' | 'transcribing';
 
-type ModalKind = 'workspace' | 'local' | 'ssh' | 'forward' | null;
+type ModalKind = 'workspace' | 'rename' | 'local' | 'ssh' | 'forward' | null;
 type SidebarTab = 'terminals' | 'screens' | 'connections';
 /** Which thing the sidebar is a list of. Ports are their own view, not a tab. */
 type SidebarView = 'sessions' | 'ports';
@@ -2330,6 +2332,10 @@ function App() {
     original: Workspace[];
   } | null>(null);
   const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  /** The tab whose menu is open, and where the click was. */
+  const [tabMenu, setTabMenu] = useState<{ id: string; at: { x: number; y: number } } | null>(null);
+  /** The workspace the rename dialog is for, which need not be the active one. */
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
   /** Set from the moment a drag begins until the click it produces is swallowed. */
   const suppressTabClick = useRef(false);
 
@@ -2396,6 +2402,84 @@ function App() {
     setDraggingTabId(null);
     if (drag.dragging) setWorkspaces(drag.original);
     suppressTabClick.current = false;
+  };
+
+  /** The commands on a workspace tab's menu. */
+  const tabMenuItems = (workspace: Workspace): MenuItem[] => {
+    const at = indexOfId(workspaces, workspace.id);
+    const last = workspaces.length - 1;
+    const move = (to: number) => setWorkspaces((current) => reorder(current, indexOfId(current, workspace.id), to) as Workspace[]);
+    return [
+      {
+        label: 'Rename…',
+        icon: 'pencil',
+        onSelect: () => {
+          setRenameTarget(workspace.id);
+          setWorkspaceName(workspace.name);
+          setModal('rename');
+        }
+      },
+      {
+        label: 'Duplicate',
+        icon: 'copy',
+        hint: 'Copies the layout, and each SSH pane as one to reconnect',
+        onSelect: () => duplicateWorkspaceTab(workspace)
+      },
+      {
+        label: 'Move left',
+        icon: 'chevron-left',
+        disabled: at <= 0,
+        onSelect: () => move(at - 1)
+      },
+      {
+        label: 'Move right',
+        icon: 'chevron-right',
+        disabled: at < 0 || at >= last,
+        onSelect: () => move(at + 1)
+      },
+      {
+        label: 'Close workspace',
+        icon: 'x',
+        danger: true,
+        disabled: workspaces.length < 2,
+        hint: workspaces.length < 2 ? 'The last workspace cannot be closed' : 'Its terminals keep running',
+        onSelect: () => closeWorkspaceTab(workspace.id)
+      }
+    ];
+  };
+
+  /**
+   * Copy a workspace's arrangement into a new one beside it.
+   *
+   * What comes across is said out loud, because what cannot is not obvious: a
+   * local shell is a process on this machine, so the copy would be a different
+   * terminal rather than a duplicate of anything.
+   */
+  const duplicateWorkspaceTab = (workspace: Workspace) => {
+    const name = nextWorkspaceName(workspaces);
+    const result = duplicateWorkspace(workspaces, workspace.id, sessions, name);
+    if (!result.created) return;
+    setWorkspaces(result.workspaces);
+    setActiveWorkspaceId(result.created.id);
+    setActive(null);
+    const parts = [`Workspace “${name}” copies ${workspace.name}`];
+    if (result.copied) parts.push(`${result.copied} SSH ${result.copied === 1 ? 'pane' : 'panes'} to reconnect`);
+    if (result.skipped) parts.push(`${result.skipped} local ${result.skipped === 1 ? 'pane' : 'panes'} not copied`);
+    setStatus(parts.join(' · '));
+  };
+
+  /** Rename whichever workspace the menu was opened on. */
+  const commitWorkspaceRename = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const id = renameTarget;
+    const value = workspaceName.trim();
+    setModal(null);
+    setRenameTarget(null);
+    if (!id || !isWorkspaceName(value)) return;
+    const previous = workspaces.find((workspace) => workspace.id === id)?.name;
+    if (value === previous) return;
+    setWorkspaces((current) => renameWorkspace(current, id, value));
+    setStatus(`Workspace “${previous}” is now “${value}”`);
   };
 
   const openNewWorkspace = () => {
@@ -3099,6 +3183,13 @@ function App() {
                   className={`workspace-tab ${workspace.id === activeWorkspace?.id ? 'active' : ''}`}
                   title={`Switch to ${workspace.name}${index < 9 ? ` (Ctrl+Shift+${index + 1})` : ''} · drag to reorder`}
                   onPointerDown={(event) => beginTabDrag(workspace, event)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    // A right-click is not a drag, and one that began is
+                    // abandoned rather than left holding the pointer.
+                    cancelTabDrag();
+                    setTabMenu({ id: workspace.id, at: { x: event.clientX, y: event.clientY } });
+                  }}
                   onPointerMove={moveTabDrag}
                   onPointerUp={endTabDrag}
                   onPointerCancel={cancelTabDrag}
@@ -3668,6 +3759,19 @@ function App() {
         </section>
       </div>
 
+      {tabMenu && (() => {
+        const workspace = workspaces.find((candidate) => candidate.id === tabMenu.id);
+        if (!workspace) return null;
+        return (
+          <ContextMenu
+            at={tabMenu.at}
+            label={`${workspace.name} options`}
+            items={tabMenuItems(workspace)}
+            onClose={() => setTabMenu(null)}
+          />
+        );
+      })()}
+
       {helpOpen && <HelpPanel version={appVersion} bindings={bindings} onClose={() => setHelpOpen(false)} />}
 
       {overview && (
@@ -3844,7 +3948,7 @@ function App() {
         <div className="modal-layer" role="presentation" {...dismissModal}>
           <form
             className="modal-card"
-            onSubmit={modal === 'workspace' ? createWorkspace : modal === 'forward' ? createForward : modal === 'local' ? createLocal : createSsh}
+            onSubmit={modal === 'workspace' ? createWorkspace : modal === 'rename' ? commitWorkspaceRename : modal === 'forward' ? createForward : modal === 'local' ? createLocal : createSsh}
           >
             <div className="modal-head">
               <div>
@@ -3885,6 +3989,21 @@ function App() {
                   </button>
                 ))}
               </div>
+            )}
+
+            {modal === 'rename' && (
+              <>
+                <p>Rename this workspace. Its panes, layout and shortcuts position are unaffected.</p>
+                <label>
+                  Workspace name
+                  <input
+                    autoFocus
+                    value={workspaceName}
+                    pattern={WORKSPACE_NAME_PATTERN}
+                    onChange={(event) => setWorkspaceName(event.target.value)}
+                  />
+                </label>
+              </>
             )}
 
             {modal === 'workspace' && (

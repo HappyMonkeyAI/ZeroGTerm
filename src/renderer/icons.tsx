@@ -264,6 +264,13 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
           <path d="M12 17.2h.01" />
         </svg>
       );
+    case 'copy':
+      return (
+        <svg {...common}>
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M15 5.5A1.5 1.5 0 0 0 13.5 4H5.5A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15" />
+        </svg>
+      );
     case 'send-right':
       return (
         <svg {...common}>

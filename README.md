@@ -21,7 +21,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
 - A ranked command palette on `Ctrl+Shift+R`, in the spirit of [McFly](https://github.com/cantino/mcfly): commands you have run, ranked by directory, host, recency, frequency, whether they worked, and whether you picked them before. Off by default — it is the one feature that stores what you typed — and it refuses anything that looks like it carries a credential.
-- Workspaces for grouping sessions and quickly switching between projects or tasks. Drag the tabs beside the wordmark to put them in the order you want; `Ctrl+Shift+1` … `9` follow that order, and it is remembered between launches. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
+- Workspaces for grouping sessions and quickly switching between projects or tasks. Drag the tabs beside the wordmark to put them in the order you want; `Ctrl+Shift+1` … `9` follow that order, and it is remembered between launches. Right-click a tab to rename it, duplicate it, move it, or close it. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
 - Voice input, either with Whisper ONNX inside the app through Transformers.js or through an OpenAI-compatible transcription server you point it at — on this machine, on the LAN, or hosted; transcribed text is typed into the selected terminal without automatic execution.
@@ -251,6 +251,16 @@ are refused with a message rather than acted on. The `sftp` client re-reads its
 own arguments through a glob pass, and there is no encoding of those characters
 that is provably correct for every command — being approximately right about
 which file to delete is not good enough.
+
+### Duplicating a workspace
+
+Right-clicking a tab offers **Duplicate**, which copies the arrangement rather
+than the sessions: the layout comes across, and each SSH pane comes across as a
+pane waiting to be reconnected, so clicking it opens a *new* session to the same
+host. A local pane is not copied — its shell is a process on this machine, so a
+copy would be a different terminal rather than a duplicate of anything, and the
+status line says how many were left behind rather than letting you notice a pane
+missing.
 
 ## Browsing directories inside a pane
 
