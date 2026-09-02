@@ -38,6 +38,7 @@ import {
 } from './workspace-view';
 import { PaneBrowser } from './pane-browser';
 import { createPaneListingSource } from './pane-listing';
+import { formatVersion, versionLabel } from '../shared/version';
 import {
   changeDirectoryCommand,
   listingPathFor,
@@ -908,6 +909,18 @@ function App() {
   // fingerprint beside it; a browser that has just asked a host to connect can
   // at least say why nothing is arriving instead of spinning for two minutes.
   const [sftpQuestion, setSftpQuestion] = useState<string | null>(null);
+
+  // The running version, shown beside the wordmark. Asked of the app rather than
+  // compiled in, so a packaged build cannot show the version of the checkout it
+  // was built from.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    // Optional-called: a preload from an older build has no version channel, and
+    // the title bar simply stays as it was.
+    void api()?.appVersion?.()
+      .then((version) => setAppVersion(formatVersion(version)))
+      .catch(() => undefined);
+  }, []);
   useEffect(() => {
     const currentApi = api();
     return currentApi?.onSftpEvent?.((event) => {
@@ -2945,9 +2958,10 @@ function App() {
   return (
     <main className={`app-shell ${drawerCollapsed ? 'drawer-collapsed' : ''}`}>
       <header className="window-bar">
-        <div className="window-brand">
+        <div className="window-brand" title={versionLabel(appVersion)}>
           <span className="brand-mark">ZG</span>
           <span className="brand-name">ZeroG</span>
+          {appVersion && <span className="brand-version">{appVersion}</span>}
         </div>
         <div className="workspace-tabs">
           {workspaces.map((workspace, index) => {

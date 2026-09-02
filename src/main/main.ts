@@ -341,6 +341,9 @@ function requireEntryKind(value: unknown): FileEntry['kind'] {
   throw new Error('An entry kind of file, directory, or symlink is required.');
 }
 
+// Electron's own reading of package.json, so the title bar shows what is
+// actually running rather than a string compiled in from the repo.
+ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.handle('fs:localHome', () => localHome());
 // Cached on success only, so a distribution that was not running when it was
 // first asked can answer later.

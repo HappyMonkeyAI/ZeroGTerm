@@ -397,6 +397,8 @@ export interface TerminalApi {
   clearAiApiKey(): Promise<SpeechApiKeyStatus>;
   /** Local filesystem browsing for the transfer panel. Listing only; no reads. */
   listLocalDirectory(path?: string): Promise<DirectoryListing>;
+  /** The running app's version, as Electron reports it from package.json. */
+  appVersion(): Promise<string>;
   localHome(): Promise<string>;
   /**
    * Where "~" points inside a WSL distribution, or null if it cannot be asked.
