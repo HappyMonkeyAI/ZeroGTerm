@@ -134,6 +134,29 @@ export function listingPathFor(session: SessionInfo | null | undefined, home?: s
   return reported;
 }
 
+/**
+ * Where a pane's browser should start, before its shell has said anything.
+ *
+ * A freshly connected SSH pane has reported no directory at all: nothing has
+ * run in it, so neither OSC 7 nor a prompt has been seen. The browser used to
+ * show "this pane has not said where it is yet" until a command was run, which
+ * is a poor first impression of a feature whose whole job is to save you typing
+ * one — and it was reported as exactly that.
+ *
+ * The login directory answers it without touching the user's terminal: sftp
+ * reports it on connecting, and a WSL distribution is asked directly. That is
+ * the same bargain cwd-tracker keeps — read what is volunteered, never inject a
+ * command to find out.
+ */
+export function startingListingPath(session: SessionInfo | null | undefined, home?: string): string | null {
+  const reported = listingPathFor(session, home);
+  if (reported) return reported;
+  if (!session || !home) return null;
+  // Translated the same way any other path is, so a WSL pane still gets its
+  // share path rather than a distro path Windows cannot read.
+  return listingPathFor({ ...session, cwd: home }, home);
+}
+
 /** The path to put in a `cd`, given what the browser is showing. */
 export function shellPathFor(session: SessionInfo | null | undefined, listingPath: string): string | null {
   if (!session) return null;

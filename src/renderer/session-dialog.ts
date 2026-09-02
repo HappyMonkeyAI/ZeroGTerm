@@ -11,7 +11,7 @@
 export type SessionDialogKind = 'local' | 'ssh';
 
 /** Everything the dialog can be: the two session tabs, a workspace, or a port. */
-export type DialogKind = SessionDialogKind | 'workspace' | 'forward';
+export type DialogKind = SessionDialogKind | 'workspace' | 'rename' | 'forward';
 
 export const SESSION_TABS: Array<{ kind: SessionDialogKind; label: string; hint: string }> = [
   { kind: 'local', label: 'Local terminal', hint: 'Shell on this machine' },
@@ -24,6 +24,7 @@ export function isSessionDialogKind(kind: unknown): kind is SessionDialogKind {
 
 const DIALOG_COPY: Record<DialogKind, { eyebrow: string; title: string; submit: string }> = {
   workspace: { eyebrow: 'WORKSPACE', title: 'New workspace', submit: 'Create workspace' },
+  rename: { eyebrow: 'WORKSPACE', title: 'Rename workspace', submit: 'Rename' },
   local: { eyebrow: 'NEW SESSION', title: 'Start a session', submit: 'Open terminal' },
   ssh: { eyebrow: 'NEW SESSION', title: 'Start a session', submit: 'Connect' },
   forward: { eyebrow: 'SHARED PORT', title: 'Share a port', submit: 'Share port' }

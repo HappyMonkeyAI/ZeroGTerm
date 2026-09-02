@@ -4,6 +4,7 @@ import {
   claimInto,
   closeWorkspace,
   dropPending,
+  duplicateWorkspace,
   fromStoredFile,
   isWorkspaceName,
   layoutForSessionCount,
@@ -674,5 +675,113 @@ describe('directory browser state', () => {
       workspaces: [{ id: 'ws-1', name: 'Workspace', view: { layout: 'stack', lastSplit: 'split-v' }, members: [] }]
     };
     expect(fromStoredFile(file, 'stack').workspaces[0].view.browsers).toBeUndefined();
+  });
+});
+
+describe('duplicateWorkspace', () => {
+  /** Ids that read plainly in an assertion, rather than random ones. */
+  function counter() {
+    let next = 0;
+    return () => `pending-${++next}`;
+  }
+
+  const remote = { ...session('ssh:build', 'connected'), name: 'build', kind: 'ssh' as const, host: 'build.example.com', sshTarget: 'dev@build.example.com' };
+  const local = { ...session('local:api', 'connected'), name: 'api', kind: 'local' as const, host: 'local', backend: 'bash' };
+
+  it('places the copy next to the workspace it came from', () => {
+    const workspaces = [
+      workspace('a', 'One', ['ssh:build']),
+      workspace('b', 'Two'),
+      workspace('c', 'Three')
+    ];
+    const result = duplicateWorkspace(workspaces, 'a', [remote], 'One copy', counter());
+    expect(result.workspaces.map((w) => w.name)).toEqual(['One', 'One copy', 'Two', 'Three']);
+  });
+
+  it('copies the layout, not the sessions', () => {
+    // Two workspaces naming one session would each think they owned it.
+    const workspaces = [workspace('a', 'One', ['ssh:build'], { layout: 'split-h', lastSplit: 'split-h' })];
+    const { created } = duplicateWorkspace(workspaces, 'a', [remote], 'One copy', counter());
+    expect(created?.view.layout).toBe('split-h');
+    expect(created?.view.lastSplit).toBe('split-h');
+    expect(created?.sessionIds).toEqual([]);
+  });
+
+  it('brings an SSH pane across as one waiting to be reconnected', () => {
+    const workspaces = [workspace('a', 'One', ['ssh:build'])];
+    const { created, copied, skipped } = duplicateWorkspace(workspaces, 'a', [remote], 'One copy', counter());
+    expect(copied).toBe(1);
+    expect(skipped).toBe(0);
+    expect(created?.pending).toEqual([
+      { sessionId: 'pending-1', kind: 'ssh', name: 'build', host: 'build.example.com', sshTarget: 'dev@build.example.com' }
+    ]);
+  });
+
+  it('gives the copy a fresh id and no screen name', () => {
+    // Otherwise clicking it would attach a second view of the session the
+    // original workspace is using, rather than open a new one.
+    const screened = { ...remote, screenName: 'zerog-build' };
+    const workspaces = [workspace('a', 'One', ['ssh:build'])];
+    const { created } = duplicateWorkspace(workspaces, 'a', [screened], 'One copy', counter());
+    expect(created?.pending[0].sessionId).toBe('pending-1');
+    expect(created?.pending[0].screenName).toBeUndefined();
+  });
+
+  it('does not copy a local pane, and says how many it left', () => {
+    // A local shell is a process on this machine: the copy would be a different
+    // terminal, which is not a duplicate of anything.
+    const workspaces = [workspace('a', 'One', ['local:api', 'ssh:build'])];
+    const { created, copied, skipped } = duplicateWorkspace(workspaces, 'a', [local, remote], 'One copy', counter());
+    expect(copied).toBe(1);
+    expect(skipped).toBe(1);
+    expect(created?.pending.map((member) => member.name)).toEqual(['build']);
+  });
+
+  it('copies panes the source was itself still waiting to reconnect', () => {
+    const workspaces = [workspace('a', 'One')];
+    workspaces[0].pending = [
+      { sessionId: 'ssh:old', kind: 'ssh', name: 'old', host: 'old.example.com', sshTarget: 'dev@old.example.com' }
+    ];
+    const { created, copied } = duplicateWorkspace(workspaces, 'a', [], 'One copy', counter());
+    expect(copied).toBe(1);
+    expect(created?.pending[0].host).toBe('old.example.com');
+    expect(created?.pending[0].sessionId).toBe('pending-1');
+  });
+
+  it('duplicates an empty workspace as an empty one', () => {
+    const workspaces = [workspace('a', 'One')];
+    const { created, copied, skipped } = duplicateWorkspace(workspaces, 'a', [], 'One copy', counter());
+    expect(created?.pending).toEqual([]);
+    expect(copied).toBe(0);
+    expect(skipped).toBe(0);
+  });
+
+  it('leaves everything alone when the workspace is not there', () => {
+    const workspaces = [workspace('a', 'One')];
+    const result = duplicateWorkspace(workspaces, 'gone', [], 'copy', counter());
+    expect(result.workspaces).toBe(workspaces);
+    expect(result.created).toBeNull();
+  });
+
+  it('names no session in the copy’s view', () => {
+    // Selection, focus and the maximized pane all name panes the copy does not
+    // have, and reconcileView would only have to clear them again.
+    const workspaces = [workspace('a', 'One', ['ssh:build'], {
+      activeSessionId: 'ssh:build',
+      focusedSessionId: 'ssh:build',
+      maximizedSessionId: 'ssh:build'
+    })];
+    const { created } = duplicateWorkspace(workspaces, 'a', [remote], 'One copy', counter());
+    expect(created?.view.activeSessionId).toBeUndefined();
+    expect(created?.view.focusedSessionId).toBeUndefined();
+    expect(created?.view.maximizedSessionId).toBeNull();
+    expect(created?.view.browsers).toBeUndefined();
+  });
+
+  it('gives the copy an id of its own', () => {
+    const workspaces = [workspace('a', 'One')];
+    const { created } = duplicateWorkspace(workspaces, 'a', [], 'One copy', counter());
+    expect(created?.id).not.toBe('a');
+    expect(created?.id.startsWith('ws-')).toBe(true);
   });
 });

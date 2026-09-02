@@ -20,6 +20,8 @@ const features = (bindings: Bindings): Array<{ title: string; body: string }> =>
     title: 'Workspaces',
     body:
       'The boxes beside the wordmark are workspaces, each holding its own panes, layout, focused terminal and maximized pane. ' +
+      'Drag them to reorder, which also reorders what Ctrl+Shift+1 to 9 switch to, and right-click one for rename, duplicate, move and close. ' +
+      'Duplicating copies the layout and brings each SSH pane across as one to reconnect; a local shell belongs to a process on this machine, so it is not copied. ' +
       'Switching to one restores the arrangement you left. They survive a relaunch: local terminals reattach, and SSH panes come back as ghost rows that reconnect when clicked.'
   },
   {
@@ -35,7 +37,9 @@ const features = (bindings: Bindings): Array<{ title: string; body: string }> =>
   {
     title: 'The directory browser',
     body:
-      'The folder button in a pane’s title bar splits that pane and lists where its shell is standing. Single-click to look, double-click to take the shell there. It works on SSH panes and local ones, WSL included, and follows a cd you type by hand.'
+      'The folder button in a pane’s title bar splits that pane and lists where its shell is standing. Single-click to look, ' +
+      'double-click to take the shell there, or use the button in the corner to send it to whatever is on screen. ' +
+      'It works on SSH panes and local ones, WSL included, and follows a cd you type by hand.'
   },
   {
     title: 'Shared ports',

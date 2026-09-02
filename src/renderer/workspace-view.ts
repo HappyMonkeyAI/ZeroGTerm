@@ -290,6 +290,71 @@ export function renameWorkspace(workspaces: Workspace[], workspaceId: string, na
   return workspaces.map((workspace) => (workspace.id === workspaceId ? { ...workspace, name: value } : workspace));
 }
 
+/**
+ * A copy of a workspace's arrangement, placed next to it.
+ *
+ * What can be copied is the arrangement, not the sessions: a running shell
+ * belongs to a process, and two workspaces naming one session would each think
+ * they owned it. So the layout comes across, and each SSH pane comes across as
+ * a pane waiting to be reconnected — clicking it opens a *new* session to the
+ * same host, which is what a duplicated workspace of remote hosts is for.
+ *
+ * A local pane is not copied. Its shell is either a `screen` this machine is
+ * running, in which case the copy would attach a second view of the same
+ * terminal rather than duplicate anything, or a bare pty that cannot be
+ * reproduced at all. The count comes back so the caller can say so out loud
+ * rather than leaving someone to notice a pane missing.
+ */
+export function duplicateWorkspace(
+  workspaces: Workspace[],
+  workspaceId: string,
+  sessions: SessionInfo[],
+  name: string,
+  newId: () => string = () => `pending-${crypto.randomUUID()}`
+): { workspaces: Workspace[]; created: Workspace | null; copied: number; skipped: number } {
+  const at = workspaces.findIndex((workspace) => workspace.id === workspaceId);
+  if (at < 0) return { workspaces, created: null, copied: 0, skipped: 0 };
+  const source = workspaces[at];
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+
+  // Its live panes and the ones it was still waiting to reconnect, in the order
+  // the source shows them.
+  const members: StoredWorkspaceMember[] = [
+    ...source.sessionIds
+      .map((id) => byId.get(id))
+      .filter((session): session is SessionInfo => session !== undefined)
+      .map(describeMember),
+    ...source.pending
+  ];
+
+  const remote = members.filter((member) => member.kind === 'ssh');
+  const pending = remote.map((member) => {
+    // A fresh id and no screen name: this is a new session to the same host,
+    // not a second attachment to the one the source is using.
+    const { screenName: _screenName, ...rest } = member;
+    return { ...rest, sessionId: newId() };
+  });
+
+  const created: Workspace = {
+    id: `ws-${crypto.randomUUID()}`,
+    name,
+    sessionIds: [],
+    pending,
+    view: {
+      ...makeView(source.view.layout),
+      lastSplit: source.view.lastSplit,
+      // Deliberately no session references and no browser state: they name
+      // panes this workspace does not have.
+      maximizedSessionId: null
+    }
+  };
+
+  // Next to the workspace it came from, which is where the eye looks for it.
+  const next = [...workspaces];
+  next.splice(at + 1, 0, created);
+  return { workspaces: next, created, copied: pending.length, skipped: members.length - remote.length };
+}
+
 /** The state a workspace's tab dot should show, in `.status-dot` terms. */
 export type WorkspaceDotState = 'connected' | 'detached' | 'empty';
 

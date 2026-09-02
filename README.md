@@ -21,7 +21,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
 - Session history for reconnecting to sessions after a relaunch, with bounded structured history and no stored secrets.
 - A ranked command palette on `Ctrl+Shift+R`, in the spirit of [McFly](https://github.com/cantino/mcfly): commands you have run, ranked by directory, host, recency, frequency, whether they worked, and whether you picked them before. Off by default — it is the one feature that stores what you typed — and it refuses anything that looks like it carries a credential.
-- Workspaces for grouping sessions and quickly switching between projects or tasks. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
+- Workspaces for grouping sessions and quickly switching between projects or tasks. Drag the tabs beside the wordmark to put them in the order you want; `Ctrl+Shift+1` … `9` follow that order, and it is remembered between launches. Right-click a tab to rename it, duplicate it, move it, or close it. Each workspace keeps its own panes, layout, focused terminal, and maximized pane, so switching to one restores the arrangement you left it in. Workspaces survive a relaunch: local `screen` terminals reattach on their own, and SSH panes come back as ghost rows that reconnect when clicked, rather than dialling out to a host on startup.
 - Session overview, collapsible sidebar, keyboard shortcuts, and light/dark themes.
 - xterm.js terminal rendering with scrollback preservation while changing layouts.
 - Voice input, either with Whisper ONNX inside the app through Transformers.js or through an OpenAI-compatible transcription server you point it at — on this machine, on the LAN, or hosted; transcribed text is typed into the selected terminal without automatic execution.
@@ -252,6 +252,16 @@ own arguments through a glob pass, and there is no encoding of those characters
 that is provably correct for every command — being approximately right about
 which file to delete is not good enough.
 
+### Duplicating a workspace
+
+Right-clicking a tab offers **Duplicate**, which copies the arrangement rather
+than the sessions: the layout comes across, and each SSH pane comes across as a
+pane waiting to be reconnected, so clicking it opens a *new* session to the same
+host. A local pane is not copied — its shell is a process on this machine, so a
+copy would be a different terminal rather than a duplicate of anything, and the
+status line says how many were left behind rather than letting you notice a pane
+missing.
+
 ## Browsing directories inside a pane
 
 The folder button in a pane's title bar splits that pane: the terminal on one
@@ -263,8 +273,19 @@ was, per workspace and between launches.
 Single-click a folder to look inside it without moving the shell.
 **Double-click** it to take the shell there — ZeroG types the `cd` into the pane,
 which is deliberately visible: you asked for it, and seeing the command is how
-you know what happened. `..` is always the first row, except at a root the shell
-cannot go above.
+you know what happened. The button in the bottom-right corner does the same for
+the directory already on screen, which is how you retry after a `cd` that was
+refused because the pane was busy, or catch the shell up after browsing around.
+`..` is always the first row, except at a root the shell cannot go above.
+
+A single click waits a moment before it acts, because it has to find out whether
+it is the first half of a double-click: browsing immediately would replace the
+row under the pointer and the second press would land on a different one.
+
+The browser opens on the directory the pane's shell reports, and on the login
+directory before it has reported anything — a pane that has just connected has
+run nothing, so there is nothing to read yet. That login directory comes from the
+connection itself, never from a command typed into your session.
 
 Where it lists from depends on the pane. An SSH pane lists over an SFTP
 connection to its host, opening one if there is not already one open — the same

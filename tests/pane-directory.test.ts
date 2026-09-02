@@ -4,6 +4,7 @@ import {
   isWslSession,
   joinPath,
   listingPathFor,
+  startingListingPath,
   parentOf,
   pathKindFor,
   resolveHome,
@@ -335,5 +336,36 @@ describe('joinPath', () => {
     for (const [parent, kind] of cases) {
       expect(parentOf(joinPath(parent, 'child', kind), kind)).toBe(parent);
     }
+  });
+});
+
+describe('startingListingPath', () => {
+  it('is the reported directory when there is one', () => {
+    expect(startingListingPath(ssh, '/home/stephen')).toBe('/srv/app');
+  });
+
+  it('falls back to the login directory when the shell has said nothing', () => {
+    // A freshly connected SSH pane has run nothing, so neither OSC 7 nor a
+    // prompt has been seen. Reported as the browser refusing to list until a
+    // command had been run, in a feature whose job is to save running one.
+    const fresh = session({ ...ssh, cwd: undefined });
+    expect(startingListingPath(fresh, '/home/stephen')).toBe('/home/stephen');
+    expect(startingListingPath(session({ ...ssh, cwd: '' }), '/home/stephen')).toBe('/home/stephen');
+  });
+
+  it('translates the fallback for a WSL pane', () => {
+    const fresh = session({ ...wsl, cwd: '' });
+    expect(startingListingPath(fresh, '/home/stephen')).toBe(String.raw`\\wsl.localhost\Ubuntu-22.04\home\stephen`);
+  });
+
+  it('has nothing to offer when the login directory is unknown too', () => {
+    expect(startingListingPath(session({ ...ssh, cwd: undefined }), undefined)).toBeNull();
+    expect(startingListingPath(null, '/home/stephen')).toBeNull();
+  });
+
+  it('prefers the reported directory over the login one', () => {
+    // The browser follows the shell, so once the shell has moved the login
+    // directory stops being the answer.
+    expect(startingListingPath(session({ ...ssh, cwd: '/etc/nginx' }), '/home/stephen')).toBe('/etc/nginx');
   });
 });

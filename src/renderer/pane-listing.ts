@@ -43,7 +43,7 @@ export type PaneListingSource = {
    * Stability matters: the browser reloads whenever this function's identity
    * changes, so a fresh closure per render would list in a loop.
    */
-  listerFor(session: SessionInfo): (path: string) => Promise<DirectoryListing>;
+  listerFor(session: SessionInfo): (path?: string) => Promise<DirectoryListing>;
   /** The login directory of this pane's host, once a connection has reported it. */
   homeFor(sessionId: string): string | undefined;
   /**
@@ -62,8 +62,15 @@ export type PaneListingSource = {
 
 type Connection = { handle: string; home: string };
 
-export function createPaneListingSource(api: () => PaneListingApi | null | undefined): PaneListingSource {
-  const listers = new Map<string, (path: string) => Promise<DirectoryListing>>();
+export function createPaneListingSource(
+  api: () => PaneListingApi | null | undefined,
+  /**
+   * Told the login directory as soon as a connection reports one, so a `~` the
+   * shell reports later can be resolved without a second round trip.
+   */
+  onHome?: (sessionId: string, home: string) => void
+): PaneListingSource {
+  const listers = new Map<string, (path?: string) => Promise<DirectoryListing>>();
   const connections = new Map<string, Connection>();
   /** Opens in flight, so two listings starting together share one connection. */
   const opening = new Map<string, Promise<Connection>>();
@@ -96,6 +103,7 @@ export function createPaneListingSource(api: () => PaneListingApi | null | undef
       .then((info) => {
         const connection = { handle: info.id, home: info.cwd };
         connections.set(session.id, connection);
+        onHome?.(session.id, info.cwd);
         return connection;
       })
       .finally(() => {
@@ -112,7 +120,10 @@ export function createPaneListingSource(api: () => PaneListingApi | null | undef
    * shell's prompt says, and it is what cwd-tracker faithfully reports. sftp
    * needs the real path.
    */
-  function remotePath(path: string, home: string): string | undefined {
+  function remotePath(path: string | undefined, home: string): string | undefined {
+    // Undefined asks the connection for the directory it is already in, which
+    // is the login directory until something moves it. That is how a pane that
+    // has run nothing still gets a listing.
     if (!path) return undefined;
     const start = resolveStartPath(path);
     if (start.absolute) return start.absolute;
@@ -122,7 +133,7 @@ export function createPaneListingSource(api: () => PaneListingApi | null | undef
     return home;
   }
 
-  async function listRemote(session: SessionInfo, path: string): Promise<DirectoryListing> {
+  async function listRemote(session: SessionInfo, path?: string): Promise<DirectoryListing> {
     const connection = await connect(session);
     try {
       return await required().sftpList(connection.handle, remotePath(path, connection.home));
@@ -140,7 +151,7 @@ export function createPaneListingSource(api: () => PaneListingApi | null | undef
     listerFor(session: SessionInfo) {
       const existing = listers.get(session.id);
       if (existing) return existing;
-      const lister = (path: string): Promise<DirectoryListing> =>
+      const lister = (path?: string): Promise<DirectoryListing> =>
         session.kind === 'ssh'
           ? listRemote(session, path)
           : Promise.resolve().then(() => required().listLocalDirectory(path));
