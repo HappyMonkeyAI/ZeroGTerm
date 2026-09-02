@@ -304,3 +304,47 @@ describe('AI endpoint settings', () => {
     expect(resetSection(changed, 'ai').ai).toEqual(DEFAULT_SETTINGS.ai);
   });
 });
+
+describe('shortcut overrides', () => {
+  it('keeps a chord that could be pressed', () => {
+    const settings = parseSettings({ shortcuts: { 'new-terminal': 'Ctrl+Alt+T' } });
+    expect(settings.shortcuts).toEqual({ 'new-terminal': 'Ctrl+Alt+T' });
+  });
+
+  it('drops anything that is not a chord', () => {
+    // A hand-edited file, or one from a version that stored something else.
+    const settings = parseSettings({
+      shortcuts: {
+        'new-terminal': 'Ctrl+T',
+        'new-workspace': 'banana',
+        'toggle-help': 42,
+        'toggle-overview': '',
+        'not-an-action': 'Ctrl+Shift+Z'
+      }
+    });
+    expect(settings.shortcuts).toEqual({});
+  });
+
+  it('defaults to nothing overridden', () => {
+    expect(parseSettings({}).shortcuts).toEqual({});
+    expect(parseSettings({ shortcuts: 'nope' }).shortcuts).toEqual({});
+    expect(DEFAULT_SETTINGS.shortcuts).toEqual({});
+  });
+
+  it('is reset like any other section', () => {
+    const changed = parseSettings({ shortcuts: { 'new-terminal': 'Ctrl+Alt+T' } });
+    expect(resetSection(changed, 'shortcuts').shortcuts).toEqual({});
+  });
+
+  it('survives a round trip through storage', () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key)
+    };
+    const settings = parseSettings({ shortcuts: { 'toggle-overview': 'Ctrl+Alt+O' } });
+    saveSettings(storage, settings);
+    expect(loadSettings(storage).shortcuts).toEqual({ 'toggle-overview': 'Ctrl+Alt+O' });
+  });
+});

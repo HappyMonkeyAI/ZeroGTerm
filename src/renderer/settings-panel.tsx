@@ -4,8 +4,19 @@
 // microphone and the speech client, so the panel cannot start a second
 // recorder behind the app's back.
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import type { ShellBackend } from '../shared/types';
+import {
+  RESERVED,
+  SHORTCUTS,
+  chordFor,
+  chordFromEvent,
+  chordProblem,
+  isMoved,
+  resolveBindings,
+  type Bindings,
+  type ShortcutAction
+} from './shortcuts';
 import {
   DEFAULT_SETTINGS,
   FONT_CHOICES,
@@ -117,11 +128,108 @@ export type AiTestState = {
 
 const PAGES: Array<{ id: SettingsPage; label: string; hint: string; blurb: string }> = [
   { id: 'appearance', label: 'Appearance', hint: 'Theme, font', blurb: 'How the workspace and terminal text look.' },
+  { id: 'shortcuts', label: 'Shortcuts', hint: 'Keyboard', blurb: 'Which keys do what, for when something else on the machine has taken one.' },
   { id: 'terminal', label: 'Terminal', hint: 'Scrollback, cursor', blurb: 'Behaviour of every terminal pane.' },
   { id: 'sessions', label: 'Sessions', hint: 'Defaults, layout', blurb: 'What new terminals and new windows start as.' },
   { id: 'ai', label: 'AI & voice', hint: 'Approval, insert', blurb: 'How AI suggestions and transcripts reach a terminal.' },
   { id: 'speech', label: 'Speech recognition', hint: 'Engine, model', blurb: 'Which recogniser runs, and how it is tuned.' }
 ];
+
+/**
+ * One binding, with a field that listens for the next chord.
+ *
+ * Capture is a real keydown listener rather than a text box: a chord is easier
+ * to press than to spell, and pressing it is the only way to find out whether
+ * this machine lets the app see it at all. Held in the capture phase and
+ * cancelled, so the app's own shortcuts do not fire while the user is choosing
+ * one.
+ */
+function ShortcutRow({
+  action,
+  description,
+  chord,
+  moved,
+  taken,
+  onSet,
+  onReset
+}: {
+  action: ShortcutAction;
+  description: string;
+  chord: string;
+  moved: boolean;
+  taken: Readonly<Record<string, ShortcutAction>>;
+  onSet: (chord: string) => void;
+  onReset: () => void;
+}) {
+  const [capturing, setCapturing] = React.useState(false);
+  const [problem, setProblem] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!capturing) return;
+    const onKey = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        setCapturing(false);
+        setProblem(null);
+        return;
+      }
+      // A modifier on its own means the chord is still being pressed.
+      if (['Control', 'Shift', 'Alt', 'Meta', 'OS'].includes(event.key)) return;
+      const candidate = chordFromEvent({
+        key: event.key,
+        code: event.code,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey
+      });
+      const why = candidate
+        ? chordProblem(candidate, action, taken)
+        : 'A shortcut needs Ctrl and at least one of Shift or Alt, so a shell keeps Ctrl+C and Ctrl+R for itself.';
+      if (!candidate || why) {
+        setProblem(why);
+        return;
+      }
+      onSet(candidate);
+      setProblem(null);
+      setCapturing(false);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [capturing, action, taken, onSet]);
+
+  return (
+    <div className={problem ? 'shortcut-row invalid' : 'shortcut-row'}>
+      <span className="shortcut-what">{description}</span>
+      <button
+        type="button"
+        className={capturing ? 'shortcut-chord capturing' : 'shortcut-chord'}
+        onClick={() => {
+          setProblem(null);
+          setCapturing((value) => !value);
+        }}
+        aria-label={capturing ? `Press a new shortcut for ${description}` : `Change the shortcut for ${description}`}
+      >
+        {capturing ? <span className="shortcut-prompt">press a chord · Esc</span> : <kbd>{chord}</kbd>}
+      </button>
+      <button
+        type="button"
+        className="shortcut-reset"
+        onClick={() => {
+          setProblem(null);
+          setCapturing(false);
+          onReset();
+        }}
+        disabled={!moved}
+        title={moved ? 'Back to the shortcut this shipped with' : 'This is the shortcut it shipped with'}
+      >
+        Reset
+      </button>
+      {problem ? <small className="shortcut-problem">{problem}</small> : null}
+    </div>
+  );
+}
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -241,18 +349,23 @@ function ServerApiKeyField({
 function CommandHistorySection({
   enabled,
   state,
+  bindings,
   onToggle,
   onCopySnippet,
   onClear
 }: {
   enabled: boolean;
   state: CommandHistoryState;
+  bindings: Bindings;
   onToggle: (enabled: boolean) => void;
   onCopySnippet: (snippet: string) => void;
   onClear: () => void;
 }) {
   const [shell, setShell] = useState<IntegrationShell>('bash');
   const snippet = integrationSnippet(shell);
+  // Asked rather than written out: the palette's chord is a setting, and this
+  // hint would otherwise name the wrong key for anyone who has moved it.
+  const paletteChord = chordFor('history-palette', bindings);
 
   return (
     <>
@@ -260,7 +373,8 @@ function CommandHistorySection({
         label="Remember commands for the history palette"
         hint={
           enabled
-            ? 'Commands you run are stored on this machine, with their directory and exit status, so Ctrl+Shift+R can rank them. Anything that looks like it carries a secret is refused rather than stored.'
+            ? `Commands you run are stored on this machine, with their directory and exit status, so ${paletteChord} can rank them. ` +
+              'Anything that looks like it carries a secret is refused rather than stored.'
             : 'Off. Nothing about what you type is written anywhere. Turning this on stores commands on this machine so the history palette has something to search.'
         }
         checked={enabled}
@@ -514,6 +628,14 @@ export function SettingsPanel({
   onAiTest
 }: SettingsPanelProps) {
   const [page, setPage] = useState<SettingsPage>('appearance');
+  const bindings = useMemo(() => resolveBindings(settings.shortcuts), [settings.shortcuts]);
+  // Which action owns each chord, so a row can say what it would be taking.
+  const taken = useMemo(
+    () => Object.fromEntries(
+      (Object.entries(bindings.chords) as Array<[ShortcutAction, string]>).map(([action, chord]) => [chord, action])
+    ),
+    [bindings]
+  );
   const active = PAGES.find((entry) => entry.id === page) ?? PAGES[0];
   const visible = speechFieldVisibility(settings.speech);
 
@@ -552,6 +674,52 @@ export function SettingsPanel({
 
           <div className="settings-page">
             <p className="settings-blurb">{active.blurb}</p>
+
+            {page === 'shortcuts' && (
+              <>
+                {bindings.rejected.length ? (
+                  <p className="settings-warning">
+                    {/* Reported rather than dropped in silence: a shortcut that
+                        quietly went back to a chord the user had moved would look
+                        like the app forgetting. */}
+                    {bindings.rejected.map((entry) => entry.reason).join(' ')} The default is in use instead.
+                  </p>
+                ) : null}
+                <div className="shortcut-list">
+                  {SHORTCUTS.map((entry) => (
+                    <ShortcutRow
+                      key={entry.action}
+                      action={entry.action}
+                      description={entry.description}
+                      chord={chordFor(entry.action, bindings)}
+                      moved={isMoved(entry.action, bindings)}
+                      taken={taken}
+                      onSet={(chord) => onChange('shortcuts', { [entry.action]: chord })}
+                      onReset={() => onChange('shortcuts', { [entry.action]: undefined })}
+                    />
+                  ))}
+                </div>
+                <p>
+                  A shortcut needs Ctrl and at least one of Shift or Alt: a bare Ctrl+key belongs to the shell, which
+                  keeps Ctrl+C, Ctrl+R, Ctrl+L and Ctrl+A in every pane. Ctrl+Shift+1 to 9 switch workspaces by
+                  position and cannot be moved, and the terminal keeps
+                  {RESERVED.map((entry, index) => (
+                    <React.Fragment key={entry.chord}>
+                      {index ? ' and ' : ' '}
+                      <kbd>{entry.chord}</kbd>
+                    </React.Fragment>
+                  ))}
+                  .
+                </p>
+                <p>
+                  Worth knowing if a chord seems to do nothing: nothing here can outrank the operating system. Windows
+                  uses Ctrl and Shift together to switch keyboard layout when more than one is installed, and some
+                  applications register chords globally while they are running. Moving ours out of the way is the fix,
+                  and Ctrl+Alt is usually clear — though on some layouts it behaves as AltGr, so a chord you would type
+                  in a terminal is worth avoiding.
+                </p>
+              </>
+            )}
 
             {page === 'appearance' && (
               <>
@@ -790,6 +958,7 @@ export function SettingsPanel({
                 <CommandHistorySection
                   enabled={settings.ai.recordCommands}
                   state={commandHistory}
+                  bindings={bindings}
                   onToggle={(recordCommands) => onChange('ai', { recordCommands })}
                   onCopySnippet={onCopySnippet}
                   onClear={onClearCommandHistory}

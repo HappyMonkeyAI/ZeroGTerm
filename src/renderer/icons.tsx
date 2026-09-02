@@ -254,6 +254,24 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
           <path d="M12 5v14" />
         </svg>
       );
+    case 'help':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          {/* A question mark drawn with the same stroke as everything else,
+              rather than set as text, so it scales with the icon box. */}
+          <path d="M9.4 9a2.7 2.7 0 1 1 3.9 2.4c-.8.5-1.3 1-1.3 1.9v.4" />
+          <path d="M12 17.2h.01" />
+        </svg>
+      );
+    case 'info':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v5" />
+          <path d="M12 8h.01" />
+        </svg>
+      );
     default:
       return <span className="icon" aria-hidden="true">•</span>;
   }

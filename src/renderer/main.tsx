@@ -37,6 +37,7 @@ import {
   type WorkspaceView
 } from './workspace-view';
 import { PaneBrowser } from './pane-browser';
+import { HelpPanel } from './help-panel';
 import { createPaneListingSource } from './pane-listing';
 import { formatVersion, versionLabel } from '../shared/version';
 import {
@@ -94,7 +95,7 @@ import {
   type PaneView
 } from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
-import { matchShortcut, topDismissTarget } from './shortcuts';
+import { chordFor, matchShortcut, resolveBindings, topDismissTarget } from './shortcuts';
 import { createCommandCapture, readBufferRange, type CapturedCommand, type CommandCapture } from './command-capture';
 import { redactionReason } from './command-redaction';
 import { rankCommands, type RankedCommand } from './command-ranking';
@@ -810,6 +811,11 @@ function App() {
   const [forwardAdvanced, setForwardAdvanced] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // The chords in force. Everywhere the interface names one it asks this,
+  // because a chord written into a tooltip becomes a lie the moment the user
+  // moves that shortcut in Settings.
+  const bindings = useMemo(() => resolveBindings(settings.shortcuts), [settings.shortcuts]);
   const [paletteQuery, setPaletteQuery] = useState('');
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [commandEntries, setCommandEntries] = useState<CommandHistoryEntry[]>([]);
@@ -1425,6 +1431,7 @@ function App() {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         const target = topDismissTarget({
+          help: helpOpen,
           transfer: transferOpen,
           settings: settingsOpen,
           voiceReview: Boolean(voiceReview),
@@ -1436,6 +1443,7 @@ function App() {
         });
         if (!target) return;
         event.preventDefault();
+        if (target === 'help') setHelpOpen(false);
         if (target === 'transfer') setTransferOpen(false);
         if (target === 'settings') setSettingsOpen(false);
         if (target === 'voiceReview') closeVoiceReview();
@@ -1458,12 +1466,15 @@ function App() {
         ctrlKey: event.ctrlKey,
         metaKey: event.metaKey,
         shiftKey: event.shiftKey,
+        // Needed for the Ctrl+Alt family, which is where a user moves a
+        // shortcut when something else on the machine has taken Ctrl+Shift.
+        altKey: event.altKey,
         // App chrome, not the shell: a shortcut must not fire while the user is
         // typing into one of our own fields, such as the inline workspace
         // rename. xterm's input is a textarea, so a focused terminal is
         // deliberately still covered by these.
         inTextField: event.target instanceof HTMLInputElement
-      });
+      }, bindings);
       if (!shortcut) return;
       event.preventDefault();
 
@@ -1472,6 +1483,7 @@ function App() {
         if (target) switchWorkspace(target.id);
         return;
       }
+      if (shortcut.action === 'toggle-help') setHelpOpen((value) => !value);
       if (shortcut.action === 'toggle-overview') setOverview((value) => !value);
       if (shortcut.action === 'new-workspace') {
         setWorkspaceName(nextWorkspaceName(workspaces));
@@ -1490,9 +1502,9 @@ function App() {
       }
       if (shortcut.action === 'toggle-sidebar') setDrawerCollapsed((value) => !value);
       if (shortcut.action === 'toggle-settings') setSettingsOpen((value) => !value);
-      // Ctrl+Shift+R, never Ctrl+R: McFly can rebind ctrl-r because it *is* the
-      // shell. Swallowing it here would take reverse-search away from every
-      // shell in every pane, including remote ones this feature cannot see.
+      // The Shift variant only, never bare Ctrl+R: McFly can rebind ctrl-r as it
+      // *is* the shell. Swallowing it here would take reverse-search away from
+      // every shell in every pane, including remote ones this feature cannot see.
       if (shortcut.action === 'history-palette') openPalette();
     };
     window.addEventListener('keydown', onKey);
@@ -1500,7 +1512,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -3001,7 +3013,7 @@ function App() {
             type="button"
             className="bar-button"
             onClick={() => setOverview((value) => !value)}
-            title="Session overview (Ctrl+Shift+O)"
+            title={`Session overview (${chordFor('toggle-overview', bindings)})`}
           >
             <Icon name="grid" />
             <span>Overview</span>
@@ -3010,7 +3022,7 @@ function App() {
             type="button"
             className="bar-button"
             onClick={openNewWorkspace}
-            title="New workspace (Ctrl+Shift+N)"
+            title={`New workspace (${chordFor('new-workspace', bindings)})`}
           >
             <Icon name="plus" />
             <span>Workspace</span>
@@ -3019,7 +3031,7 @@ function App() {
             type="button"
             className="bar-button"
             onClick={openSuggest}
-            title={isConfigured(settings.ai) ? 'Ask for a command (Ctrl+Shift+A)' : 'Set an AI endpoint in Settings first'}
+            title={isConfigured(settings.ai) ? `Ask for a command (${chordFor('ask-ai', bindings)})` : 'Set an AI endpoint in Settings first'}
           >
             <Icon name="spark" />
             <span>Suggest</span>
@@ -3034,6 +3046,16 @@ function App() {
           >
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
+          <button
+            type="button"
+            className={helpOpen ? 'bar-button active' : 'bar-button'}
+            onClick={() => setHelpOpen((value) => !value)}
+            title={`Features and keyboard shortcuts (${chordFor('toggle-help', bindings)})`}
+            aria-label="Help"
+            aria-pressed={helpOpen}
+          >
+            <Icon name="help" />
+          </button>
         </div>
       </header>
 
@@ -3042,7 +3064,7 @@ function App() {
           <button
             type="button"
             className="rail-button"
-            title={drawerCollapsed ? 'Show sessions sidebar (Ctrl+Shift+B)' : 'Hide sessions sidebar (Ctrl+Shift+B)'}
+            title={`${drawerCollapsed ? 'Show' : 'Hide'} sessions sidebar (${chordFor('toggle-sidebar', bindings)})`}
             onClick={() => setDrawerCollapsed((value) => !value)}
           >
             <Icon name={drawerCollapsed ? 'panel-left-open' : 'panel-left'} />
@@ -3081,7 +3103,7 @@ function App() {
             type="button"
             className="rail-button"
             onClick={openNewLocalTerminal}
-            title="New local terminal (Ctrl+Shift+T)"
+            title={`New local terminal (${chordFor('new-terminal', bindings)})`}
             aria-label="New local terminal"
           >
             <Icon name="terminal" />
@@ -3092,7 +3114,7 @@ function App() {
           <button
             type="button"
             className={`rail-button ${settingsOpen ? 'active' : ''}`}
-            title="Settings (Ctrl+Shift+,)"
+            title={`Settings (${chordFor('toggle-settings', bindings)})`}
             aria-label="Settings"
             aria-expanded={settingsOpen}
             onClick={() => setSettingsOpen((value) => !value)}
@@ -3165,7 +3187,7 @@ function App() {
                   type="button"
                   className="square-button"
                   onClick={openNewWorkspace}
-                  title="New workspace (Ctrl+Shift+N)"
+                  title={`New workspace (${chordFor('new-workspace', bindings)})`}
                   aria-label="New workspace"
                 >
                   <Icon name="plus" />
@@ -3336,7 +3358,7 @@ function App() {
                   type="button"
                   className={layout === 'stack' || maximizedPaneId ? 'layout-button active' : 'layout-button'}
                   onClick={() => applyPaneAction(singlePaneAction(paneView))}
-                  title={singlePaneTitle(paneView)}
+                  title={`${singlePaneTitle(paneView)} (${chordFor('toggle-layout', bindings)})`}
                 >
                   <Icon name="stack" />
                 </button>
@@ -3525,6 +3547,8 @@ function App() {
         </section>
       </div>
 
+      {helpOpen && <HelpPanel version={appVersion} bindings={bindings} onClose={() => setHelpOpen(false)} />}
+
       {overview && (
         <div className="overview-layer" role="presentation" {...dismissOverview}>
           <section className="overview">
@@ -3579,8 +3603,8 @@ function App() {
           own. Closing only on a press that started on the backdrop removes the
           need for the popover to stop propagation, which was a click handler on
           a non-interactive dialog element. */}
-      {/* The ranked command palette. Ctrl+Shift+R, never Ctrl+R — the shell keeps
-          its own reverse-search. */}
+      {/* The ranked command palette, on the Shift variant only — the shell keeps
+          its own reverse-search on bare Ctrl+R. */}
       {paletteOpen && (
         <div className="palette-layer" role="presentation" {...dismissPalette}>
           <div className="palette" role="dialog" aria-label="Command history">

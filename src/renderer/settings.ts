@@ -18,6 +18,7 @@ import {
   type SpeechPrecision,
   type SpeechTask
 } from './speech-models';
+import { SHORTCUTS, isChord, type ShortcutOverrides } from './shortcuts';
 
 export type Theme = 'dark' | 'light';
 export type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
@@ -146,6 +147,11 @@ export type SpeechSettings = {
 
 export type Settings = {
   appearance: AppearanceSettings;
+  /**
+   * Chords the user has moved, keyed by action. Only what was changed is stored,
+   * so a default that is improved later reaches everyone who never touched it.
+   */
+  shortcuts: ShortcutOverrides;
   terminal: TerminalSettings;
   sessions: SessionSettings;
   ai: AiSettings;
@@ -159,6 +165,7 @@ export const SETTINGS_KEY = 'zerog-settings';
 export const LEGACY_THEME_KEY = 'zerog-theme';
 
 export const DEFAULT_SETTINGS: Settings = {
+  shortcuts: {},
   appearance: {
     theme: 'dark',
     font: 'system',
@@ -258,6 +265,22 @@ export function fontStack(choice: FontChoice): string {
   return FONT_STACKS[choice] ?? FONT_STACKS.system;
 }
 
+/**
+ * Shortcut overrides out of the stored file.
+ *
+ * Only the shape is checked here — a known action, and text that could be a
+ * chord. Whether the chord is *usable* is resolveBindings' judgement, because it
+ * needs to see all of them together to spot a collision.
+ */
+function pickShortcuts(value: Record<string, unknown>): ShortcutOverrides {
+  const out: ShortcutOverrides = {};
+  for (const { action } of SHORTCUTS) {
+    const chord = value[action];
+    if (isChord(chord)) out[action] = chord as string;
+  }
+  return out;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -334,6 +357,7 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
   const sessions = isRecord(source.sessions) ? source.sessions : {};
   const ai = isRecord(source.ai) ? source.ai : {};
   const speech = isRecord(source.speech) ? source.speech : {};
+  const shortcuts = isRecord(source.shortcuts) ? source.shortcuts : {};
 
   const defaultTheme = pickEnum(legacyTheme, THEMES, DEFAULT_SETTINGS.appearance.theme);
   const engine = pickEnum(speech.engine, ENGINES, DEFAULT_SETTINGS.speech.engine);
@@ -351,6 +375,10 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
     : 'auto';
 
   return {
+    // Kept as text and judged by resolveBindings, which is also what the capture
+    // field in Settings uses: one set of rules, so a hand-edited file cannot do
+    // what the interface would refuse.
+    shortcuts: pickShortcuts(shortcuts),
     appearance: {
       theme: pickEnum(appearance.theme, THEMES, defaultTheme),
       font: pickEnum(appearance.font, FONTS, DEFAULT_SETTINGS.appearance.font),
