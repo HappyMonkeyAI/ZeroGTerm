@@ -58,11 +58,24 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+/` — the help panel: what is here, and this list
 - `Esc` — close overview / dialogs, cancel voice recording
 
-Only the `Ctrl+Shift` variants are claimed, so a shell keeps its own bindings:
-`Ctrl+C` interrupts, `Ctrl+R` is still readline's reverse search, `Ctrl+L` still
-clears the screen, and `Ctrl+A` still reaches `screen` or `tmux`. None of these
-shortcuts reaches the shell in the pane that has focus — verified by asking bash
-to report the control characters it receives.
+Every one of these can be moved: **Settings → Shortcuts** lists them, and
+pressing a new chord in a row rebinds it. A shortcut needs Ctrl and at least one
+of Shift or Alt, so a shell keeps its own bindings — `Ctrl+C` interrupts,
+`Ctrl+R` is still readline's reverse search, `Ctrl+L` still clears the screen,
+and `Ctrl+A` still reaches `screen` or `tmux`. None of these shortcuts reaches
+the shell in the pane that has focus, which was verified by asking bash to report
+the control characters it receives.
+
+Rebinding exists because nothing in the app can outrank the machine it runs on.
+`Ctrl+Shift+T` was reported already taken on Windows 11; Windows itself uses Ctrl
+and Shift together to switch keyboard layout when more than one is installed; and
+some applications — Teams, for one — register chords globally while they are
+running. `Ctrl+Alt` is usually clear, though on some layouts it behaves as AltGr,
+so a chord you would type in a terminal is worth avoiding. `Ctrl+Shift+1` … `9`
+and the clipboard pair cannot be moved.
+
+The `?` in the title bar opens the same help panel, which lists the shortcuts as
+they are currently bound rather than as they shipped.
 
 The Ports view, the SFTP transfer panel and a pane's directory browser have no
 shortcut of their own; they open from the rail, the ⇅ button above the panes, and

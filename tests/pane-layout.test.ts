@@ -118,18 +118,18 @@ describe('what the buttons say they will do', () => {
   });
 
   it('names the split the single-pane view will return to', () => {
-    expect(singlePaneTitle(view({ maximized: true, lastSplit: 'grid' }))).toBe('Back to four-pane grid (Ctrl+Shift+L)');
-    expect(singlePaneTitle(view({ layout: 'stack', lastSplit: 'split-h' }))).toBe('Back to horizontal split (Ctrl+Shift+L)');
+    expect(singlePaneTitle(view({ maximized: true, lastSplit: 'grid' }))).toBe('Back to four-pane grid');
+    expect(singlePaneTitle(view({ layout: 'stack', lastSplit: 'split-h' }))).toBe('Back to horizontal split');
   });
 
   it('says what it will do on the way in, too', () => {
-    expect(singlePaneTitle(view({ sessionCount: 2 }))).toBe('Maximize focused pane (Ctrl+Shift+L)');
-    expect(singlePaneTitle(view({ sessionCount: 1 }))).toBe('Single pane (Ctrl+Shift+L)');
+    expect(singlePaneTitle(view({ sessionCount: 2 }))).toBe('Maximize focused pane');
+    expect(singlePaneTitle(view({ sessionCount: 1 }))).toBe('Single pane');
   });
 
-  it('names the shortcut in every case, since this button is the only place it appears', () => {
-    // The keyboard equivalent for the layout toggle was documented nowhere at
-    // all — not in a tooltip, not in the README — so it is pinned here.
+  it('names no shortcut, because which chord it is is a setting', () => {
+    // The caller appends the chord in force. Naming one here would go stale the
+    // moment the user moved that binding in Settings.
     const cases = [
       view(),
       view({ maximized: true }),
@@ -138,7 +138,7 @@ describe('what the buttons say they will do', () => {
       view({ sessionCount: 4, layout: 'grid' })
     ];
     for (const candidate of cases) {
-      expect(singlePaneTitle(candidate)).toContain('Ctrl+Shift+L');
+      expect(singlePaneTitle(candidate)).not.toContain('Ctrl');
     }
   });
 });

@@ -3,27 +3,33 @@
 // This was a block of ifs inside a keydown effect in main.tsx, which is how
 // Ctrl+Shift+A came to be advertised in a tooltip for two releases without ever
 // being bound: there was nothing a test could ask. The decision is separated
-// from the acting on it here, so the bindings can be enumerated — and so the
-// list below can be checked against what the UI and the README claim.
+// from the acting on it here, so the bindings can be enumerated — and so what
+// the interface and the README claim can be checked against them.
 //
-// Only the Ctrl+Shift variants are ever claimed. A shell owns Ctrl+C, Ctrl+R,
-// Ctrl+L and Ctrl+A, and taking any of those would break every pane, local and
-// remote, for the sake of app chrome. xterm passes a Ctrl+Shift chord through to
-// the pty as nothing at all, which is what makes them free to use — verified
-// against a real bash rather than assumed.
+// The bindings are rebindable, because a chord this app is happy with can
+// already be taken on the machine it runs on: Ctrl+Shift+T was reported taken on
+// Windows 11, Teams claims Ctrl+Shift+O globally during a call, and Windows uses
+// Ctrl+Shift by itself to switch keyboard layout when more than one is
+// installed. Nothing here can win those fights, so the user gets to move ours
+// out of the way instead.
+//
+// A chord is text — `Ctrl+Shift+T` — in one canonical order, and matching works
+// by turning the event back into that text. That gives one rule for letters,
+// digits and punctuation, in a form that can be stored in settings, shown in a
+// tooltip, and compared against what the user pressed.
 
 /** The parts of a keyboard event a binding is decided from. */
 export type ShortcutEvent = {
   key: string;
   /**
-   * Needed as well as `key` for the chords whose character changes under Shift:
-   * Shift+comma reports as `<` and Shift+1 as `!` on most layouts, so `key`
-   * alone can never match them.
+   * The physical key, which is what a chord is written in terms of: Shift turns
+   * a comma into `<` and a `1` into `!`, so `key` alone can never name them.
    */
   code: string;
   ctrlKey: boolean;
   metaKey: boolean;
   shiftKey: boolean;
+  altKey?: boolean;
   /**
    * Whether the keypress landed in one of the app's own text fields, such as the
    * inline workspace rename. A focused terminal is deliberately *not* one of
@@ -46,52 +52,215 @@ export type ShortcutAction =
 
 export type Shortcut =
   | { action: ShortcutAction }
-  /** Ctrl+Shift+1 … Ctrl+Shift+9, one-based as the tab order reads. */
+  /** Ctrl+Shift+1 … Ctrl+Shift+9, one-based as the tab strip reads. */
   | { action: 'switch-workspace'; position: number };
 
-/**
- * Every fixed binding, with the chord exactly as the UI writes it.
- *
- * The chord text is part of the contract, not decoration: tooltips and the
- * README are checked against these strings, so a binding cannot be advertised
- * under a name nothing answers to.
- */
+/** What each action does, and the chord it answers to unless it has been moved. */
 export const SHORTCUTS: ReadonlyArray<{
-  chord: string;
   action: ShortcutAction;
+  chord: string;
   description: string;
-  /**
-   * The `event.code` to match on, for a chord whose character changes under
-   * Shift: a comma reports as `<` and a slash as `?` on most layouts, so `key`
-   * can never match them.
-   */
-  code?: string;
 }> = [
-  { chord: 'Ctrl+Shift+/', action: 'toggle-help', description: 'this help panel', code: 'Slash' },
-  { chord: 'Ctrl+Shift+O', action: 'toggle-overview', description: 'session overview' },
-  { chord: 'Ctrl+Shift+N', action: 'new-workspace', description: 'new workspace' },
-  { chord: 'Ctrl+Shift+T', action: 'new-terminal', description: 'new local terminal in the current workspace' },
-  { chord: 'Ctrl+Shift+A', action: 'ask-ai', description: 'ask the AI endpoint for a command' },
-  { chord: 'Ctrl+Shift+L', action: 'toggle-layout', description: 'fold to a single pane, or back to the last split' },
-  { chord: 'Ctrl+Shift+B', action: 'toggle-sidebar', description: 'toggle sessions sidebar' },
-  { chord: 'Ctrl+Shift+,', action: 'toggle-settings', description: 'settings', code: 'Comma' },
-  { chord: 'Ctrl+Shift+R', action: 'history-palette', description: 'ranked command history palette' }
+  { action: 'toggle-help', chord: 'Ctrl+Shift+/', description: 'this help panel' },
+  { action: 'new-terminal', chord: 'Ctrl+Shift+T', description: 'new local terminal in the current workspace' },
+  { action: 'new-workspace', chord: 'Ctrl+Shift+N', description: 'new workspace' },
+  { action: 'toggle-overview', chord: 'Ctrl+Shift+O', description: 'session overview' },
+  { action: 'toggle-layout', chord: 'Ctrl+Shift+L', description: 'fold to a single pane, or back to the last split' },
+  { action: 'toggle-sidebar', chord: 'Ctrl+Shift+B', description: 'toggle sessions sidebar' },
+  { action: 'history-palette', chord: 'Ctrl+Shift+R', description: 'ranked command history palette' },
+  { action: 'ask-ai', chord: 'Ctrl+Shift+A', description: 'ask the AI endpoint for a command' },
+  { action: 'toggle-settings', chord: 'Ctrl+Shift+,', description: 'settings' }
 ];
 
-/** The letter chords, indexed by the lower-case letter they answer to. */
-const BY_LETTER = new Map(
-  SHORTCUTS.filter((entry) => /^Ctrl\+Shift\+[A-Z]$/.test(entry.chord)).map((entry) => [
-    entry.chord.slice(-1).toLowerCase(),
-    entry.action
-  ])
-);
+/** Chords that are not the app's to give away. */
+export const RESERVED: ReadonlyArray<{ chord: string; description: string; reason: string }> = [
+  { chord: 'Ctrl+Shift+C', description: 'copy the terminal selection', reason: 'the terminal uses it to copy' },
+  { chord: 'Ctrl+Shift+V', description: 'paste into the focused terminal', reason: 'the terminal uses it to paste' }
+];
 
-/** The chords matched by their code rather than their character. */
-const BY_CODE = new Map(
-  SHORTCUTS.filter((entry) => entry.code).map((entry) => [entry.code as string, entry.action])
-);
+/**
+ * Chords other software takes first, so the help panel can say so.
+ *
+ * A user whose shortcut does nothing has no way to tell a bug here from a
+ * conflict out there, and these are the ones worth naming: they were either
+ * reported on this project or are documented global hotkeys. The panel checks
+ * them against the bindings in force, so it can point at the one that is
+ * actually affected rather than listing trivia.
+ */
+export const FOREIGN_CLAIMS: ReadonlyArray<{ chord: string; owner: string }> = [
+  { chord: 'Ctrl+Shift+O', owner: 'Teams, for its camera toggle while a call is running' },
+  { chord: 'Ctrl+Shift+M', owner: 'Teams, for mute while a call is running' }
+];
 
-const WORKSPACE_DIGIT = /^Digit([1-9])$/;
+/**
+ * How a key is written in a chord.
+ *
+ * Codes rather than characters, so a chord means the same physical key on every
+ * layout, and only keys that can be read back: a chord nobody can recognise in
+ * a tooltip is not one worth storing.
+ */
+const KEY_NAMES: ReadonlyArray<[RegExp, (match: RegExpExecArray) => string]> = [
+  [/^Key([A-Z])$/, (match) => match[1]],
+  [/^Digit([0-9])$/, (match) => match[1]],
+  [/^F([1-9]|1[0-2])$/, (match) => `F${match[1]}`],
+  [/^Comma$/, () => ','],
+  [/^Period$/, () => '.'],
+  [/^Slash$/, () => '/'],
+  [/^Semicolon$/, () => ';'],
+  [/^Quote$/, () => "'"],
+  [/^BracketLeft$/, () => '['],
+  [/^BracketRight$/, () => ']'],
+  [/^Minus$/, () => '-'],
+  [/^Equal$/, () => '='],
+  [/^Backquote$/, () => '`'],
+  [/^(Space|Enter|Tab|Backspace|Home|End|PageUp|PageDown|Insert|Delete)$/, (match) => match[1]],
+  [/^Arrow(Up|Down|Left|Right)$/, (match) => match[1]]
+];
+
+function keyName(code: string): string | null {
+  for (const [pattern, name] of KEY_NAMES) {
+    const match = pattern.exec(code);
+    if (match) return name(match);
+  }
+  return null;
+}
+
+/**
+ * The chord a keypress is, or null for one that cannot be a chord here.
+ *
+ * Ctrl is required, and Shift or Alt with it. A bare Ctrl+key belongs to the
+ * shell — Ctrl+C interrupts, Ctrl+R searches history, Ctrl+A reaches screen and
+ * tmux — and this application does not get to take those from every pane, local
+ * and remote, for the sake of its own chrome.
+ */
+export function chordFromEvent(event: ShortcutEvent): string | null {
+  const ctrl = event.ctrlKey || event.metaKey;
+  const alt = Boolean(event.altKey);
+  if (!ctrl || !(event.shiftKey || alt)) return null;
+  const key = keyName(event.code);
+  if (!key) return null;
+  return ['Ctrl', ...(alt ? ['Alt'] : []), ...(event.shiftKey ? ['Shift'] : []), key].join('+');
+}
+
+/** The key names a chord may end in — the ones an event can produce. */
+const KEY_PATTERN = /^([A-Z]|[0-9]|F([1-9]|1[0-2])|[,./;'\[\]\-=`]|Space|Enter|Tab|Backspace|Home|End|PageUp|PageDown|Insert|Delete|Up|Down|Left|Right)$/;
+
+/**
+ * Is this text a chord this module could match?
+ *
+ * Checked rather than trusted because a chord arrives from stored settings,
+ * where it may have been hand-edited into something no keypress can produce.
+ */
+export function isChord(chord: unknown): boolean {
+  if (typeof chord !== 'string' || !chord || chord.length > 40) return false;
+  const parts = chord.split('+');
+  const key = parts.pop() as string;
+  if (!KEY_PATTERN.test(key)) return false;
+  if (parts[0] !== 'Ctrl') return false;
+  const modifiers = parts.slice(1).join('+');
+  // Ctrl alone is the shell's; Alt then Shift is the order chordFromEvent writes.
+  return modifiers === 'Shift' || modifiers === 'Alt' || modifiers === 'Alt+Shift';
+}
+
+export type ShortcutOverrides = Partial<Record<ShortcutAction, string>>;
+
+export type Bindings = {
+  /** The chord each action answers to, defaults included. */
+  chords: Readonly<Record<ShortcutAction, string>>;
+  /** Overrides that could not be honoured, with the reason, for Settings to show. */
+  rejected: ReadonlyArray<{ action: ShortcutAction; chord: string; reason: string }>;
+};
+
+const DEFAULT_CHORDS = Object.freeze(
+  Object.fromEntries(SHORTCUTS.map((entry) => [entry.action, entry.chord]))
+) as Record<ShortcutAction, string>;
+
+/** The workspace positions, which are a family rather than a single binding. */
+const WORKSPACE_CHORD = /^Ctrl\+Shift\+([1-9])$/;
+
+/**
+ * Why a chord cannot be used for an action, or null when it can.
+ *
+ * The same rules the capture field in Settings applies and the stored file is
+ * checked against, so a hand-edited setting cannot do what the interface would
+ * refuse.
+ */
+export function chordProblem(
+  chord: string,
+  action: ShortcutAction,
+  taken: Readonly<Record<string, ShortcutAction>> = {}
+): string | null {
+  if (!isChord(chord)) {
+    return 'A shortcut needs Ctrl and at least one of Shift or Alt, so a shell keeps Ctrl+C and Ctrl+R for itself.';
+  }
+  const reserved = RESERVED.find((entry) => entry.chord === chord);
+  if (reserved) return `${chord} is reserved: ${reserved.reason}.`;
+  if (WORKSPACE_CHORD.test(chord)) return `${chord} switches to a workspace by position.`;
+  const owner = taken[chord];
+  if (owner && owner !== action) {
+    const name = SHORTCUTS.find((entry) => entry.action === owner)?.description ?? owner;
+    return `${chord} is already ${name}.`;
+  }
+  return null;
+}
+
+/**
+ * The bindings in force, given what was stored.
+ *
+ * An override that cannot be honoured leaves the default in place and is
+ * reported rather than dropped in silence: a shortcut quietly returning to a
+ * chord the user had moved would look like the app forgetting.
+ */
+export function resolveBindings(overrides: ShortcutOverrides | undefined = {}): Bindings {
+  const chords: Record<ShortcutAction, string> = { ...DEFAULT_CHORDS };
+  const rejected: Array<{ action: ShortcutAction; chord: string; reason: string }> = [];
+
+  // Two passes, because a user swapping two shortcuts is asking for something
+  // reasonable: taken one at a time, the first move would collide with the
+  // second action's old chord and be refused. So the shape of each override is
+  // checked first, then collisions are judged against where everything ends up.
+  const wanted = new Map<ShortcutAction, string>();
+  for (const { action } of SHORTCUTS) {
+    const chord = overrides?.[action];
+    if (typeof chord !== 'string' || !chord || chord === chords[action]) continue;
+    const problem = chordProblem(chord, action);
+    if (problem) {
+      rejected.push({ action, chord, reason: problem });
+      continue;
+    }
+    wanted.set(action, chord);
+  }
+
+  for (const [action, chord] of wanted) chords[action] = chord;
+
+  // Anything doubled up now is a genuine clash. The action declared later gives
+  // way, so the outcome does not depend on how the stored file was written.
+  for (const { action } of [...SHORTCUTS].reverse()) {
+    const chord = chords[action];
+    const clash = (Object.entries(chords) as Array<[ShortcutAction, string]>)
+      .find(([other, otherChord]) => other !== action && otherChord === chord);
+    if (!clash) continue;
+    // Only an override gives way; a binding the user never touched stays put.
+    if (!wanted.has(action)) continue;
+    chords[action] = DEFAULT_CHORDS[action];
+    const name = SHORTCUTS.find((entry) => entry.action === clash[0])?.description ?? clash[0];
+    rejected.push({ action, chord, reason: `${chord} is already ${name}.` });
+  }
+
+  return { chords, rejected };
+}
+
+export const DEFAULT_BINDINGS: Bindings = resolveBindings();
+
+/** The chord to show for an action, wherever the interface names one. */
+export function chordFor(action: ShortcutAction, bindings: Bindings = DEFAULT_BINDINGS): string {
+  return bindings.chords[action] ?? DEFAULT_CHORDS[action];
+}
+
+/** Whether this action is on a chord other than the one it shipped with. */
+export function isMoved(action: ShortcutAction, bindings: Bindings = DEFAULT_BINDINGS): boolean {
+  return chordFor(action, bindings) !== DEFAULT_CHORDS[action];
+}
 
 /**
  * The binding a keypress asks for, or null for one this app does not claim.
@@ -99,20 +268,17 @@ const WORKSPACE_DIGIT = /^Digit([1-9])$/;
  * Returning null rather than acting is the point: a chord with no binding must
  * reach the shell untouched.
  */
-export function matchShortcut(event: ShortcutEvent): Shortcut | null {
-  if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return null;
+export function matchShortcut(event: ShortcutEvent, bindings: Bindings = DEFAULT_BINDINGS): Shortcut | null {
   if (event.inTextField) return null;
+  const chord = chordFromEvent(event);
+  if (!chord) return null;
 
-  const letter = BY_LETTER.get(event.key.toLowerCase());
-  if (letter) return { action: letter };
+  const workspace = WORKSPACE_CHORD.exec(chord);
+  if (workspace) return { action: 'switch-workspace', position: Number(workspace[1]) };
 
-  // Matched on code for the same reason the comment on `code` gives: under Shift
-  // these keys no longer report the character in the chord.
-  const byCode = BY_CODE.get(event.code);
-  if (byCode) return { action: byCode };
-  const digit = WORKSPACE_DIGIT.exec(event.code);
-  if (digit) return { action: 'switch-workspace', position: Number(digit[1]) };
-
+  for (const [action, bound] of Object.entries(bindings.chords) as Array<[ShortcutAction, string]>) {
+    if (bound === chord) return { action };
+  }
   return null;
 }
 
@@ -146,19 +312,17 @@ export function topDismissTarget(open: Partial<Record<DismissTarget, boolean>>):
 /**
  * The keyboard reference the help panel shows.
  *
- * Built from the bindings above rather than written out again, so the panel
- * cannot describe a chord the app does not answer to — the failure this list's
- * tests exist to prevent. The two families that are not fixed bindings are
- * added here: the clipboard pair, which the terminal handles rather than
- * matchShortcut, and the workspace positions, which are one row rather than
- * nine.
+ * Built from the bindings in force rather than written out again, so the panel
+ * describes the keys this copy of the app answers to, including ones the user
+ * has moved. The two families that are not single bindings are added here: the
+ * clipboard pair, which the terminal handles rather than matchShortcut, and the
+ * workspace positions, which are one row rather than nine.
  */
-export function shortcutRows(): Array<{ chord: string; description: string }> {
+export function shortcutRows(bindings: Bindings = DEFAULT_BINDINGS): Array<{ chord: string; description: string }> {
   return [
-    ...SHORTCUTS.map(({ chord, description }) => ({ chord, description })),
+    ...SHORTCUTS.map(({ action, description }) => ({ chord: chordFor(action, bindings), description })),
     { chord: 'Ctrl+Shift+1 … 9', description: 'switch to a workspace by position' },
-    { chord: 'Ctrl+Shift+C', description: 'copy the terminal selection' },
-    { chord: 'Ctrl+Shift+V', description: 'paste into the focused terminal' },
+    ...RESERVED.map((entry) => ({ chord: entry.chord, description: entry.description })),
     { chord: 'Esc', description: 'close whatever is open, or cancel a recording' }
   ];
 }

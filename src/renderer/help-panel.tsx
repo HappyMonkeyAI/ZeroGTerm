@@ -1,21 +1,21 @@
 // What the app does and what the keyboard does, in one place.
 //
 // The keyboard half is not written out here: it comes from the bindings in
-// shortcuts.ts, so this panel cannot promise a chord nothing answers to. That
-// failure has already happened once — a tooltip advertised Ctrl+Shift+A for two
-// releases with nothing bound to it — and a help panel is a far louder place to
-// make it.
+// force, so the panel names the keys this copy of the app answers to, including
+// ones the user has moved in Settings. Writing them out was how a tooltip came
+// to advertise a chord for two releases with nothing bound to it, and a help
+// panel is a far louder place to make that mistake.
 //
 // The features half is prose, and deliberately short. It is a reminder of what
 // is here and where to click, not a manual; the README is the manual.
 
 import React from 'react';
 import { Icon } from './icons';
-import { shortcutRows } from './shortcuts';
+import { FOREIGN_CLAIMS, chordFor, shortcutRows, type Bindings } from './shortcuts';
 import { versionLabel } from '../shared/version';
 
 /** What a reader wants to be told exists, in the order they would meet it. */
-const FEATURES: Array<{ title: string; body: string }> = [
+const features = (bindings: Bindings): Array<{ title: string; body: string }> => [
   {
     title: 'Workspaces',
     body:
@@ -50,7 +50,8 @@ const FEATURES: Array<{ title: string; body: string }> = [
   {
     title: 'Command history',
     body:
-      'Ctrl+Shift+R ranks the commands you have run by directory, host, recency, frequency and whether they worked. Off until you turn it on in Settings, and it refuses to store anything that looks like a credential.'
+      `${chordFor('history-palette', bindings)} ranks the commands you have run by directory, host, recency, frequency and whether they worked. ` +
+      'Off until you turn it on in Settings, and it refuses to store anything that looks like a credential.'
   },
   {
     title: 'AI suggestions and voice',
@@ -64,7 +65,21 @@ const FEATURES: Array<{ title: string; body: string }> = [
   }
 ];
 
-export function HelpPanel({ version, onClose }: { version: string | null; onClose: () => void }) {
+export function HelpPanel({
+  version,
+  bindings,
+  onClose
+}: {
+  version: string | null;
+  bindings: Bindings;
+  onClose: () => void;
+}) {
+  // Named only when it is a chord this app currently answers to: a warning about
+  // a key nothing here uses is trivia, and the point is to explain a shortcut
+  // that appeared to do nothing.
+  const contested = FOREIGN_CLAIMS.filter((claim) =>
+    Object.values(bindings.chords).includes(claim.chord)
+  );
   return (
     <div className="modal-layer" role="dialog" aria-modal="true" aria-label="Help">
       <div className="help-card">
@@ -81,7 +96,7 @@ export function HelpPanel({ version, onClose }: { version: string | null; onClos
             <h3>Keyboard</h3>
             <table>
               <tbody>
-                {shortcutRows().map((row) => (
+                {shortcutRows(bindings).map((row) => (
                   <tr key={row.chord}>
                     <th scope="row"><kbd>{row.chord}</kbd></th>
                     <td>{row.description}</td>
@@ -93,17 +108,27 @@ export function HelpPanel({ version, onClose }: { version: string | null; onClos
               <Icon name="info" />
               {/* The reason a chord can appear to do nothing, which is otherwise
                   indistinguishable from a bug in this app. */}
-              Only these Ctrl+Shift chords are claimed, so a shell keeps Ctrl+C, Ctrl+R, Ctrl+L and Ctrl+A for itself.
-              If one of them does nothing, something outside ZeroG has taken it first: Windows uses Ctrl+Shift by itself
-              to switch keyboard layout when more than one is installed, and Teams claims Ctrl+Shift+O globally while a
-              call is running. Every shortcut here has a button or a menu that does the same job.
+              <span>
+                Only chords with Ctrl and Shift or Alt are claimed, so a shell keeps Ctrl+C, Ctrl+R, Ctrl+L and Ctrl+A
+                for itself. If one of these does nothing, something outside ZeroG has taken it first — Windows uses
+                Ctrl and Shift together to switch keyboard layout when more than one is installed
+                {contested.length ? ', and ' : '. '}
+                {contested.map((claim, index) => (
+                  <React.Fragment key={claim.chord}>
+                    {index > 0 ? '; ' : ''}
+                    <kbd>{claim.chord}</kbd> is also {claim.owner}
+                  </React.Fragment>
+                ))}
+                {contested.length ? '. ' : ''}
+                Any of them can be moved in Settings, and every one has a button that does the same job.
+              </span>
             </p>
           </section>
 
           <section className="help-features" aria-label="Features">
             <h3>What is here</h3>
             <dl>
-              {FEATURES.map((feature) => (
+              {features(bindings).map((feature) => (
                 <React.Fragment key={feature.title}>
                   <dt>{feature.title}</dt>
                   <dd>{feature.body}</dd>

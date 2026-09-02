@@ -1337,6 +1337,90 @@ input:focus-visible {
   font: 10px JetBrains Mono, monospace;
 }
 
+/* The shortcuts page: one row per binding, chord in the middle. */
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 16px;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid #1b222c;
+}
+
+.shortcut-what {
+  color: #c0c8d8;
+  font-size: 12px;
+}
+
+.shortcut-chord {
+  padding: 3px 6px;
+  border: 1px solid #2a3340;
+  border-radius: 5px;
+  background: #161d27;
+  color: #c0c8d8;
+  min-width: 118px;
+}
+
+.shortcut-chord:hover {
+  border-color: #3b82f6;
+}
+
+.shortcut-chord.capturing {
+  border-color: #7aa2f7;
+  background: #16213a;
+}
+
+.shortcut-chord kbd {
+  font: 10px JetBrains Mono, monospace;
+}
+
+.shortcut-prompt {
+  color: #7aa2f7;
+  font: 10px JetBrains Mono, monospace;
+}
+
+.shortcut-reset {
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #697386;
+  font-size: 11px;
+}
+
+.shortcut-reset:hover:not(:disabled) {
+  color: #d8dee9;
+  background: #1a202a;
+  border-color: #2a3340;
+}
+
+.shortcut-reset:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.shortcut-problem {
+  grid-column: 1 / -1;
+  color: #e0af68;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.settings-warning {
+  padding: 9px 11px;
+  border: 1px solid rgba(224, 175, 104, 0.4);
+  border-radius: 6px;
+  background: rgba(224, 175, 104, 0.08);
+  color: #e0af68 !important;
+}
+
 /*
  * The help panel. Two columns on a normal window — the keyboard reference is a
  * table people scan, the features are prose people read — collapsing to one when
