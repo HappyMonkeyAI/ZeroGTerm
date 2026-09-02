@@ -20,6 +20,7 @@ const features = (bindings: Bindings): Array<{ title: string; body: string }> =>
     title: 'Workspaces',
     body:
       'The boxes beside the wordmark are workspaces, each holding its own panes, layout, focused terminal and maximized pane. ' +
+      'Drag them to reorder, which also reorders what Ctrl+Shift+1 to 9 switch to. ' +
       'Switching to one restores the arrangement you left. They survive a relaunch: local terminals reattach, and SSH panes come back as ghost rows that reconnect when clicked.'
   },
   {

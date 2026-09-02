@@ -96,6 +96,7 @@ import {
 } from './pane-layout';
 import { SpeechClient, type SpeechWorker } from './speech';
 import { chordFor, matchShortcut, resolveBindings, topDismissTarget } from './shortcuts';
+import { dropIndexFor, indexOfId, passedThreshold, reorder } from './tab-reorder';
 import { createCommandCapture, readBufferRange, type CapturedCommand, type CommandCapture } from './command-capture';
 import { redactionReason } from './command-redaction';
 import { rankCommands, type RankedCommand } from './command-ranking';
@@ -1439,6 +1440,13 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // A drag in flight is the most immediate thing Escape can undo, and it
+        // is not an overlay, so it is handled before the stack of them.
+        if (tabDrag.current) {
+          event.preventDefault();
+          cancelTabDrag();
+          return;
+        }
         const target = topDismissTarget({
           help: helpOpen,
           transfer: transferOpen,
@@ -2300,6 +2308,96 @@ function App() {
     }
   }, [sessions, activeWorkspace?.view.browsers, wslHomes, sshHomes, resolveWslHome, resolveSshHome]);
 
+  /**
+   * Dragging a workspace tab into a different position.
+   *
+   * The strip reorders as the pointer moves rather than showing an insertion
+   * marker: the tabs are the only thing on that row, so watching them move is
+   * clearer than a line between them, and the order is state the app already
+   * keeps.
+   *
+   * A tab is also the button that switches workspace, so a press is a click
+   * until it has travelled far enough to be a drag. Once it has, the click that
+   * follows the release is suppressed — switching to a workspace someone was
+   * only rearranging is exactly the kind of surprise this should not cause.
+   */
+  const tabDrag = useRef<{
+    id: string;
+    pointerId: number;
+    startX: number;
+    dragging: boolean;
+    /** The order to go back to if the drag is abandoned. */
+    original: Workspace[];
+  } | null>(null);
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  /** Set from the moment a drag begins until the click it produces is swallowed. */
+  const suppressTabClick = useRef(false);
+
+  const tabBoxes = (): Array<{ id: string; left: number; width: number }> =>
+    [...document.querySelectorAll('.workspace-tab-slot')].map((slot) => {
+      const box = slot.getBoundingClientRect();
+      return { id: (slot as HTMLElement).dataset.workspaceId ?? '', left: box.left, width: box.width };
+    });
+
+  const beginTabDrag = (workspace: Workspace, event: React.PointerEvent) => {
+    // Left button only, and never from the close cross.
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest('.workspace-tab-close')) return;
+    tabDrag.current = {
+      id: workspace.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      dragging: false,
+      original: workspaces
+    };
+    // Captured so the drag survives the pointer leaving the tab, which it does
+    // immediately: the tab moves out from under it.
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const moveTabDrag = (event: React.PointerEvent) => {
+    const drag = tabDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.dragging) {
+      if (!passedThreshold(drag.startX, event.clientX)) return;
+      drag.dragging = true;
+      suppressTabClick.current = true;
+      setDraggingTabId(drag.id);
+    }
+    const boxes = tabBoxes();
+    const from = boxes.findIndex((box) => box.id === drag.id);
+    if (from < 0) return;
+    const to = dropIndexFor(boxes, event.clientX);
+    setWorkspaces((current) => {
+      const at = indexOfId(current, drag.id);
+      if (at < 0) return current;
+      // reorder returns the same array when nothing would move, so holding a
+      // tab still does not re-render the strip.
+      return reorder(current, at, to) as Workspace[];
+    });
+  };
+
+  const endTabDrag = (event: React.PointerEvent) => {
+    const drag = tabDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    tabDrag.current = null;
+    setDraggingTabId(null);
+    // The click arrives after the release, so the flag has to outlive this
+    // handler by a moment. Cleared on a timer rather than in the click handler
+    // so a drag that somehow produces no click cannot leave clicks swallowed.
+    if (drag.dragging) window.setTimeout(() => { suppressTabClick.current = false; }, 0);
+  };
+
+  const cancelTabDrag = () => {
+    const drag = tabDrag.current;
+    if (!drag) return;
+    tabDrag.current = null;
+    setDraggingTabId(null);
+    if (drag.dragging) setWorkspaces(drag.original);
+    suppressTabClick.current = false;
+  };
+
   const openNewWorkspace = () => {
     setWorkspaceName(nextWorkspaceName(workspaces));
     setModal('workspace');
@@ -2991,12 +3089,23 @@ function App() {
             const closable = workspaces.length > 1;
             const dot = workspaceDotState(workspace, sessions);
             return (
-              <span className={`workspace-tab-slot ${closable ? 'closable' : ''}`} key={workspace.id}>
+              <span
+                className={`workspace-tab-slot ${closable ? 'closable' : ''} ${draggingTabId === workspace.id ? 'dragging' : ''}`}
+                key={workspace.id}
+                data-workspace-id={workspace.id}
+              >
                 <button
                   type="button"
                   className={`workspace-tab ${workspace.id === activeWorkspace?.id ? 'active' : ''}`}
-                  title={`Switch to ${workspace.name}${index < 9 ? ` (Ctrl+Shift+${index + 1})` : ''}`}
-                  onClick={() => switchWorkspace(workspace.id)}
+                  title={`Switch to ${workspace.name}${index < 9 ? ` (Ctrl+Shift+${index + 1})` : ''} · drag to reorder`}
+                  onPointerDown={(event) => beginTabDrag(workspace, event)}
+                  onPointerMove={moveTabDrag}
+                  onPointerUp={endTabDrag}
+                  onPointerCancel={cancelTabDrag}
+                  onClick={() => {
+                    if (suppressTabClick.current) return;
+                    switchWorkspace(workspace.id);
+                  }}
                 >
                   <span className={`status-dot ${dot === 'empty' ? '' : dot}`} />
                   {workspace.name}

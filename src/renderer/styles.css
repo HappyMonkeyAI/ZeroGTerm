@@ -122,6 +122,28 @@ input:focus-visible {
   padding-right: 26px;
 }
 
+/*
+ * The tab being dragged. Lifted rather than hidden, because the strip reorders
+ * live and the tab under the pointer is the thing being placed — losing sight of
+ * it would leave nothing to aim with.
+ */
+.workspace-tab-slot.dragging {
+  z-index: 3;
+}
+
+.workspace-tab-slot.dragging .workspace-tab {
+  background: #1b2536;
+  border-color: #7aa2f7;
+  box-shadow: 0 6px 18px #0007;
+  cursor: grabbing;
+}
+
+/* Only while a drag is possible: a grab cursor on every hover would suggest the
+   tabs are handles rather than buttons. */
+.workspace-tab:active {
+  cursor: grabbing;
+}
+
 .workspace-tab-close {
   position: absolute;
   right: 5px;
