@@ -263,8 +263,19 @@ was, per workspace and between launches.
 Single-click a folder to look inside it without moving the shell.
 **Double-click** it to take the shell there — ZeroG types the `cd` into the pane,
 which is deliberately visible: you asked for it, and seeing the command is how
-you know what happened. `..` is always the first row, except at a root the shell
-cannot go above.
+you know what happened. The button in the bottom-right corner does the same for
+the directory already on screen, which is how you retry after a `cd` that was
+refused because the pane was busy, or catch the shell up after browsing around.
+`..` is always the first row, except at a root the shell cannot go above.
+
+A single click waits a moment before it acts, because it has to find out whether
+it is the first half of a double-click: browsing immediately would replace the
+row under the pointer and the second press would land on a different one.
+
+The browser opens on the directory the pane's shell reports, and on the login
+directory before it has reported anything — a pane that has just connected has
+run nothing, so there is nothing to read yet. That login directory comes from the
+connection itself, never from a command typed into your session.
 
 Where it lists from depends on the pane. An SSH pane lists over an SFTP
 connection to its host, opening one if there is not already one open — the same

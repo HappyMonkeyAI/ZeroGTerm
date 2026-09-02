@@ -42,7 +42,7 @@ import { createPaneListingSource } from './pane-listing';
 import { formatVersion, versionLabel } from '../shared/version';
 import {
   changeDirectoryCommand,
-  listingPathFor,
+  startingListingPath,
   pathKindFor,
   shellFamily,
   shellPathFor
@@ -2167,7 +2167,7 @@ function App() {
    * cwd-tracker already maintains that from OSC 7 or the prompt.
    */
   const browserPathFor = (session: SessionInfo): string | null =>
-    browserPaths[session.id] || listingPathFor(session, paneHome(session));
+    browserPaths[session.id] || startingListingPath(session, paneHome(session));
 
   /**
    * What `~` means for this pane, when anything does.

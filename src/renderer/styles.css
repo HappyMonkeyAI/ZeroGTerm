@@ -906,10 +906,40 @@ input:focus-visible {
 
 .pane-browser-foot {
   flex: none;
-  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 4px 3px 8px;
   border-top: 1px solid #202630;
   color: #5d6675;
   font-size: 10px;
+}
+
+/* Send the shell to the directory on screen: the double-click, as a button, for
+   when the double-click was refused because the pane was busy. */
+.pane-browser-send {
+  flex: none;
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  color: #7aa2f7;
+  background: #141a23;
+}
+
+.pane-browser-send:hover:not(:disabled) {
+  color: #9ece6a;
+  background: rgba(158, 206, 106, 0.14);
+  border-color: rgba(158, 206, 106, 0.45);
+}
+
+.pane-browser-send:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .pane-browse.active {

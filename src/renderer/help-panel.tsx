@@ -35,7 +35,9 @@ const features = (bindings: Bindings): Array<{ title: string; body: string }> =>
   {
     title: 'The directory browser',
     body:
-      'The folder button in a pane’s title bar splits that pane and lists where its shell is standing. Single-click to look, double-click to take the shell there. It works on SSH panes and local ones, WSL included, and follows a cd you type by hand.'
+      'The folder button in a pane’s title bar splits that pane and lists where its shell is standing. Single-click to look, ' +
+      'double-click to take the shell there, or use the button in the corner to send it to whatever is on screen. ' +
+      'It works on SSH panes and local ones, WSL included, and follows a cd you type by hand.'
   },
   {
     title: 'Shared ports',

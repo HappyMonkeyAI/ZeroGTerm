@@ -12,6 +12,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Icon } from './icons';
+import { useRowActivation } from './row-activation';
 import { isNavigable } from './sftp-view';
 import { joinPath, parentOf, type PathKind } from './pane-directory';
 import type { DirectoryListing, FileEntry, SessionInfo } from '../shared/types';
@@ -141,20 +142,29 @@ export function PaneBrowser({
             {/* Always offered, and absent only at a root — which for a WSL pane
                 is the distribution, not the list of distributions above it. */}
             {parent ? (
-              <button
-                type="button"
-                className="pane-browser-row pane-browser-parent"
-                onDoubleClick={() => onOpen(parent)}
-                onClick={() => onBrowse(parent)}
-                title="Up one directory — double-click to take the shell there"
-              >
-                <Icon name="level-up" />
-                <span className="pane-browser-name">..</span>
-              </button>
+              <BrowserRow
+                key=".."
+                label=".."
+                icon="level-up"
+                target={parent}
+                navigable
+                className="pane-browser-parent"
+                onOpen={onOpen}
+                onBrowse={onBrowse}
+              />
             ) : null}
 
             {sorted.map((entry) => (
-              <BrowserRow key={entry.name} entry={entry} path={path ?? ''} pathKind={pathKind} onOpen={onOpen} onBrowse={onBrowse} />
+              <BrowserRow
+                key={entry.name}
+                label={entry.name}
+                icon={isNavigable(entry) ? 'folder' : 'file'}
+                target={joinPath(path ?? '', entry.name, pathKind)}
+                navigable={isNavigable(entry)}
+                link={entry.kind === 'symlink'}
+                onOpen={onOpen}
+                onBrowse={onBrowse}
+              />
             ))}
 
             {state.phase === 'ready' && !sorted.length ? (
@@ -165,43 +175,74 @@ export function PaneBrowser({
         )}
       </div>
 
-      <small className="pane-browser-foot">Double-click a folder to take the shell there.</small>
+      <div className="pane-browser-foot">
+        <small>Double-click a folder to take the shell there.</small>
+        {/* The same action as a double-click, on the directory already open.
+            Worth having as a button: a double-click can be refused because the
+            pane was busy at that moment, and this is how it is retried without
+            navigating away and back. */}
+        <button
+          type="button"
+          className="pane-browser-send"
+          disabled={!path}
+          onClick={() => path && onOpen(path)}
+          title="Take the shell to this directory"
+          aria-label="Take the shell to this directory"
+        >
+          <Icon name="send-right" />
+        </button>
+      </div>
     </div>
   );
 }
 
 function BrowserRow({
-  entry,
-  path,
-  pathKind,
+  label,
+  icon,
+  target,
+  navigable,
+  link,
+  className = '',
   onOpen,
   onBrowse
 }: {
-  entry: FileEntry;
-  path: string;
-  pathKind: PathKind;
+  label: string;
+  icon: string;
+  target: string;
+  navigable: boolean;
+  link?: boolean;
+  className?: string;
   onOpen: (path: string) => void;
   onBrowse: (path: string) => void;
 }) {
-  const navigable = isNavigable(entry);
-  const child = joinPath(path, entry.name, pathKind);
+  // The single click is held back until a double-click could no longer arrive.
+  // Acting on it at once broke the gesture rather than pre-empting it: browsing
+  // replaces the list, so the second press landed on a different row and the
+  // dblclick never reached this one. Reported as "double-click does the same as
+  // single click", which is exactly what it looked like.
+  const activation = useRowActivation(
+    () => navigable && onBrowse(target),
+    () => navigable && onOpen(target)
+  );
   return (
     <button
       type="button"
-      className={`pane-browser-row ${navigable ? '' : 'pane-browser-file'}`}
+      className={`pane-browser-row ${navigable ? '' : 'pane-browser-file'} ${className}`.trim()}
       disabled={!navigable}
-      onDoubleClick={() => navigable && onOpen(child)}
-      onClick={() => navigable && onBrowse(child)}
+      onClick={activation.onClick}
+      onDoubleClick={activation.onDoubleClick}
       onKeyDown={(event) => {
         if (event.key !== 'Enter' || !navigable) return;
+        // Enter is unambiguous, so it goes straight to taking the shell there.
         event.preventDefault();
-        onOpen(child);
+        activation.cancel();
+        onOpen(target);
       }}
-      title={navigable ? `${entry.name} — double-click to take the shell there` : entry.name}
+      title={navigable ? `${label} — double-click to take the shell there` : label}
     >
-      <Icon name={navigable ? 'folder' : 'file'} />
-      <span className="pane-browser-name">{entry.name}</span>
-      {entry.kind === 'symlink' ? <span className="pane-browser-kind">link</span> : null}
+      <Icon name={icon} />
+      <span className="pane-browser-name">{label}</span>
+      {link ? <span className="pane-browser-kind">link</span> : null}
     </button>
   );
 }
