@@ -41,8 +41,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          assets=(dist/*Setup*.exe)
+          for file in dist/*.exe; do
+            if [[ "$file" != *Setup* && "$file" != *__uninstaller* ]]; then
+              assets+=("$file")
+            fi
+          done
+          ((${#assets[@]} == 2))
           gh release create "${GITHUB_REF_NAME}" \
-            dist/ZeroG-Terminal-*.exe \
+            "${assets[@]}" \
             --verify-tag \
             --title "ZeroG Terminal ${GITHUB_REF_NAME}" \
             --generate-notes \
