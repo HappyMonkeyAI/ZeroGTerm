@@ -5,6 +5,7 @@ import {
   DISMISS_ORDER,
   SHORTCUTS,
   matchShortcut,
+  shortcutRows,
   topDismissTarget,
   type DismissTarget,
   type ShortcutEvent
@@ -17,10 +18,9 @@ function press(overrides: Partial<ShortcutEvent> & { key: string }): ShortcutEve
 /** The event a chord like `Ctrl+Shift+O` produces, as a browser reports it. */
 function chordEvent(chord: string): ShortcutEvent {
   const last = chord.slice(chord.lastIndexOf('+') + 1);
-  if (last === ',') {
-    // Shift turns the comma into `<`, so only the code still names the key.
-    return { key: '<', code: 'Comma', ctrlKey: true, metaKey: false, shiftKey: true };
-  }
+  // Shift turns these into `<` and `?`, so only the code still names the key.
+  if (last === ',') return { key: '<', code: 'Comma', ctrlKey: true, metaKey: false, shiftKey: true };
+  if (last === '/') return { key: '?', code: 'Slash', ctrlKey: true, metaKey: false, shiftKey: true };
   return press({ key: last.toLowerCase() });
 }
 
@@ -65,6 +65,14 @@ describe('matchShortcut', () => {
       .toEqual({ action: 'switch-workspace', position: 1 });
     expect(matchShortcut({ key: '(', code: 'Digit9', ctrlKey: true, metaKey: false, shiftKey: true }))
       .toEqual({ action: 'switch-workspace', position: 9 });
+  });
+
+  it('opens help on the slash, whatever character Shift makes of it', () => {
+    // `?` on a UK or US layout, but something else elsewhere — the code is the
+    // only part that is the same everywhere.
+    expect(matchShortcut({ key: '?', code: 'Slash', ctrlKey: true, metaKey: false, shiftKey: true }))
+      .toEqual({ action: 'toggle-help' });
+    expect(matchShortcut({ key: '/', code: 'Slash', ctrlKey: true, metaKey: false, shiftKey: false })).toBeNull();
   });
 
   it('has no tenth workspace', () => {
@@ -125,7 +133,7 @@ describe('topDismissTarget', () => {
  * sitting in a tooltip for two releases.
  */
 describe('what the app claims matches what it binds', () => {
-  const CHORD = /Ctrl\+Shift\+([A-Za-z],?|,)/g;
+  const CHORD = /Ctrl\+Shift\+([A-Za-z],?|,|\/)/g;
   /** xterm's, handled in terminal-clipboard.ts rather than by matchShortcut. */
   const CLIPBOARD = ['Ctrl+Shift+C', 'Ctrl+Shift+V'];
 
@@ -170,5 +178,35 @@ describe('what the app claims matches what it binds', () => {
     for (const chord of listed) {
       expect(known.has(chord), `the README lists ${chord}, which nothing binds`).toBe(true);
     }
+  });
+});
+
+describe('the help panel’s keyboard reference', () => {
+  it('lists every binding, so the panel cannot describe a chord that does nothing', () => {
+    const listed = new Set(shortcutRows().map((row) => row.chord));
+    for (const { chord } of SHORTCUTS) {
+      expect(listed.has(chord), `${chord} is bound but not in the help panel`).toBe(true);
+    }
+  });
+
+  it('includes the two families that are not fixed bindings', () => {
+    // The clipboard pair belongs to the terminal rather than to matchShortcut,
+    // and the workspace positions are one row rather than nine.
+    const chords = shortcutRows().map((row) => row.chord);
+    expect(chords).toContain('Ctrl+Shift+C');
+    expect(chords).toContain('Ctrl+Shift+V');
+    expect(chords).toContain('Ctrl+Shift+1 … 9');
+    expect(chords).toContain('Esc');
+  });
+
+  it('describes each row', () => {
+    for (const row of shortcutRows()) {
+      expect(row.description.length, row.chord).toBeGreaterThan(3);
+    }
+  });
+
+  it('names each chord once', () => {
+    const chords = shortcutRows().map((row) => row.chord);
+    expect(new Set(chords).size).toBe(chords.length);
   });
 });

@@ -37,6 +37,7 @@ import {
   type WorkspaceView
 } from './workspace-view';
 import { PaneBrowser } from './pane-browser';
+import { HelpPanel } from './help-panel';
 import { createPaneListingSource } from './pane-listing';
 import { formatVersion, versionLabel } from '../shared/version';
 import {
@@ -810,6 +811,7 @@ function App() {
   const [forwardAdvanced, setForwardAdvanced] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState('');
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [commandEntries, setCommandEntries] = useState<CommandHistoryEntry[]>([]);
@@ -1425,6 +1427,7 @@ function App() {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         const target = topDismissTarget({
+          help: helpOpen,
           transfer: transferOpen,
           settings: settingsOpen,
           voiceReview: Boolean(voiceReview),
@@ -1436,6 +1439,7 @@ function App() {
         });
         if (!target) return;
         event.preventDefault();
+        if (target === 'help') setHelpOpen(false);
         if (target === 'transfer') setTransferOpen(false);
         if (target === 'settings') setSettingsOpen(false);
         if (target === 'voiceReview') closeVoiceReview();
@@ -1472,6 +1476,7 @@ function App() {
         if (target) switchWorkspace(target.id);
         return;
       }
+      if (shortcut.action === 'toggle-help') setHelpOpen((value) => !value);
       if (shortcut.action === 'toggle-overview') setOverview((value) => !value);
       if (shortcut.action === 'new-workspace') {
         setWorkspaceName(nextWorkspaceName(workspaces));
@@ -1500,7 +1505,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -3034,6 +3039,16 @@ function App() {
           >
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
           </button>
+          <button
+            type="button"
+            className={helpOpen ? 'bar-button active' : 'bar-button'}
+            onClick={() => setHelpOpen((value) => !value)}
+            title="Features and keyboard shortcuts (Ctrl+Shift+/)"
+            aria-label="Help"
+            aria-pressed={helpOpen}
+          >
+            <Icon name="help" />
+          </button>
         </div>
       </header>
 
@@ -3524,6 +3539,8 @@ function App() {
           </footer>
         </section>
       </div>
+
+      {helpOpen && <HelpPanel version={appVersion} onClose={() => setHelpOpen(false)} />}
 
       {overview && (
         <div className="overview-layer" role="presentation" {...dismissOverview}>

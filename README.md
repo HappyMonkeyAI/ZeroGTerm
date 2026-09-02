@@ -55,6 +55,7 @@ The npm package contains the built Electron application and project documentatio
 - `Ctrl+Shift+O` — session overview
 - `Ctrl+Shift+B` — toggle sessions sidebar
 - `Ctrl+Shift+,` — settings
+- `Ctrl+Shift+/` — the help panel: what is here, and this list
 - `Esc` — close overview / dialogs, cancel voice recording
 
 Only the `Ctrl+Shift` variants are claimed, so a shell keeps its own bindings:

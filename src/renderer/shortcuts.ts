@@ -34,6 +34,7 @@ export type ShortcutEvent = {
 };
 
 export type ShortcutAction =
+  | 'toggle-help'
   | 'toggle-overview'
   | 'new-workspace'
   | 'new-terminal'
@@ -55,14 +56,25 @@ export type Shortcut =
  * README are checked against these strings, so a binding cannot be advertised
  * under a name nothing answers to.
  */
-export const SHORTCUTS: ReadonlyArray<{ chord: string; action: ShortcutAction; description: string }> = [
+export const SHORTCUTS: ReadonlyArray<{
+  chord: string;
+  action: ShortcutAction;
+  description: string;
+  /**
+   * The `event.code` to match on, for a chord whose character changes under
+   * Shift: a comma reports as `<` and a slash as `?` on most layouts, so `key`
+   * can never match them.
+   */
+  code?: string;
+}> = [
+  { chord: 'Ctrl+Shift+/', action: 'toggle-help', description: 'this help panel', code: 'Slash' },
   { chord: 'Ctrl+Shift+O', action: 'toggle-overview', description: 'session overview' },
   { chord: 'Ctrl+Shift+N', action: 'new-workspace', description: 'new workspace' },
   { chord: 'Ctrl+Shift+T', action: 'new-terminal', description: 'new local terminal in the current workspace' },
   { chord: 'Ctrl+Shift+A', action: 'ask-ai', description: 'ask the AI endpoint for a command' },
   { chord: 'Ctrl+Shift+L', action: 'toggle-layout', description: 'fold to a single pane, or back to the last split' },
   { chord: 'Ctrl+Shift+B', action: 'toggle-sidebar', description: 'toggle sessions sidebar' },
-  { chord: 'Ctrl+Shift+,', action: 'toggle-settings', description: 'settings' },
+  { chord: 'Ctrl+Shift+,', action: 'toggle-settings', description: 'settings', code: 'Comma' },
   { chord: 'Ctrl+Shift+R', action: 'history-palette', description: 'ranked command history palette' }
 ];
 
@@ -72,6 +84,11 @@ const BY_LETTER = new Map(
     entry.chord.slice(-1).toLowerCase(),
     entry.action
   ])
+);
+
+/** The chords matched by their code rather than their character. */
+const BY_CODE = new Map(
+  SHORTCUTS.filter((entry) => entry.code).map((entry) => [entry.code as string, entry.action])
 );
 
 const WORKSPACE_DIGIT = /^Digit([1-9])$/;
@@ -91,7 +108,8 @@ export function matchShortcut(event: ShortcutEvent): Shortcut | null {
 
   // Matched on code for the same reason the comment on `code` gives: under Shift
   // these keys no longer report the character in the chord.
-  if (event.code === 'Comma') return { action: 'toggle-settings' };
+  const byCode = BY_CODE.get(event.code);
+  if (byCode) return { action: byCode };
   const digit = WORKSPACE_DIGIT.exec(event.code);
   if (digit) return { action: 'switch-workspace', position: Number(digit[1]) };
 
@@ -107,6 +125,7 @@ export function matchShortcut(event: ShortcutEvent): Shortcut | null {
  * reaching the shell for `vi` to be usable.
  */
 export const DISMISS_ORDER = [
+  'help',
   'transfer',
   'settings',
   'voiceReview',
@@ -122,4 +141,24 @@ export type DismissTarget = (typeof DISMISS_ORDER)[number];
 /** Which overlay Escape should close, given what is open. */
 export function topDismissTarget(open: Partial<Record<DismissTarget, boolean>>): DismissTarget | null {
   return DISMISS_ORDER.find((target) => open[target]) ?? null;
+}
+
+/**
+ * The keyboard reference the help panel shows.
+ *
+ * Built from the bindings above rather than written out again, so the panel
+ * cannot describe a chord the app does not answer to — the failure this list's
+ * tests exist to prevent. The two families that are not fixed bindings are
+ * added here: the clipboard pair, which the terminal handles rather than
+ * matchShortcut, and the workspace positions, which are one row rather than
+ * nine.
+ */
+export function shortcutRows(): Array<{ chord: string; description: string }> {
+  return [
+    ...SHORTCUTS.map(({ chord, description }) => ({ chord, description })),
+    { chord: 'Ctrl+Shift+1 … 9', description: 'switch to a workspace by position' },
+    { chord: 'Ctrl+Shift+C', description: 'copy the terminal selection' },
+    { chord: 'Ctrl+Shift+V', description: 'paste into the focused terminal' },
+    { chord: 'Esc', description: 'close whatever is open, or cancel a recording' }
+  ];
 }
