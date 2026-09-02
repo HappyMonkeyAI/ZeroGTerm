@@ -47,7 +47,7 @@ input:focus-visible {
 }
 
 .window-brand {
-  width: 120px;
+  width: 205px;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -69,6 +69,16 @@ input:focus-visible {
   font-size: 13px;
   font-weight: 650;
   letter-spacing: .01em;
+}
+
+/* Beside the name rather than inside it: the same information a title bar
+   usually keeps in an About box, at a size that reads as a footnote. */
+.brand-version {
+  margin-left: -3px;
+  color: #697386;
+  font: 10px JetBrains Mono, monospace;
+  letter-spacing: .01em;
+  white-space: nowrap;
 }
 
 .workspace-tabs {
@@ -1448,7 +1458,8 @@ input:focus-visible {
      give way on a narrow window, not the width. */
   .session-drawer { max-width: 30vw; }
   .window-brand { width: 90px; }
-  .brand-name { display: none; }
+  .brand-name,
+  .brand-version { display: none; }
   .bar-button span { display: none; }
   .thumbnail-grid { grid-template-columns: repeat(2, 1fr); }
 }
