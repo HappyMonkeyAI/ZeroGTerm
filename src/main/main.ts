@@ -143,8 +143,17 @@ function createWindow() {
   win.webContents.on('preload-error', (_event, path, error) => {
     console.error('[zerog] preload-error', path, error);
   });
-  win.webContents.on('console-message', (_event, _level, message) => {
-    console.log('[renderer]', message);
+  // The renderer's console, copied into this one — which is the only way a
+  // warning from the workspace reaches a log at all.
+  //
+  // Read from the event object rather than from the positional arguments that
+  // used to carry it. Electron still passes those, and says so on every start:
+  // "'console-message' arguments are deprecated and will be removed". When they
+  // go, a handler reading them would keep being called and print nothing, so the
+  // renderer would fall silent without anything appearing to break — the exact
+  // failure this logging exists to rule out.
+  win.webContents.on('console-message', (details) => {
+    console.log('[renderer]', details.message);
   });
 
   // The two ends of the symptom this instrumentation exists for. `unresponsive`

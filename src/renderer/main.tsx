@@ -667,10 +667,14 @@ function TerminalView({
     let addon: WebglAddon;
     try {
       addon = new WebglAddon();
-    } catch {
+    } catch (error) {
       // No WebGL on this machine — a remote desktop, a stripped driver, a user
       // who turned it off. xterm keeps its own renderer and the pane still
       // works, which is the whole reason this is an addon and not the default.
+      //
+      // Said out loud, because falling back silently makes a pane that is still
+      // being drawn the slow way indistinguishable from one that is not.
+      console.warn('[zerog] pane fell back to the DOM renderer', error);
       return;
     }
     // A context is not recovered, it is replaced. Dropping the addon lets xterm
