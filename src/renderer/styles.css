@@ -2966,3 +2966,67 @@ input:focus-visible {
 :root[data-theme='light'] .sftp-progress-fill { background: #d6efdd; }
 :root[data-theme='light'] .sftp-progress span { color: #16803c; }
 :root[data-theme='light'] .sftp-danger-button { color: #ffffff; background: #c53030; }
+
+/*
+ * The pane browser in light theme.
+ *
+ * Every colour in this stylesheet is written dark first and corrected here, so a
+ * component is themed only when someone remembers to write its correction. The
+ * browser arrived without one and was dark against a light workspace whatever
+ * the setting said. Values are taken from the light palette already in use above
+ * rather than invented: #ffffff for the raised surface, #dbe2ec for its edges,
+ * #253044 for text that is read and #68768a for text that is merely present.
+ */
+:root[data-theme='light'] .pane-browser {
+  background: #ffffff;
+  color: #68768a;
+}
+
+:root[data-theme='light'] .pane-browser-head { border-color: #dbe2ec; }
+
+:root[data-theme='light'] .pane-browser-path,
+:root[data-theme='light'] .pane-browser-row { color: #253044; }
+
+:root[data-theme='light'] .pane-browser-icon { color: #5c687b; }
+
+:root[data-theme='light'] .pane-browser-icon:hover:not(:disabled) {
+  color: #253044;
+  background: #eef2f7;
+  border-color: #dbe2ec;
+}
+
+:root[data-theme='light'] .pane-browser-row:hover:not(:disabled) { background: #eef2f7; }
+
+/* Not a directory, so not somewhere the row can go: dimmer, but still legible. */
+:root[data-theme='light'] .pane-browser-row.pane-browser-file,
+:root[data-theme='light'] .pane-browser-kind { color: #68768a; }
+
+:root[data-theme='light'] .pane-browser-parent { color: #2459a6; }
+
+:root[data-theme='light'] .pane-browser-note { color: #536176; }
+:root[data-theme='light'] .pane-browser-error { color: #b3213b; }
+:root[data-theme='light'] .pane-browser-asking { color: #8a5d00; }
+
+:root[data-theme='light'] .pane-browser-foot {
+  border-color: #dbe2ec;
+  color: #68768a;
+}
+
+:root[data-theme='light'] .pane-browser-send {
+  color: #2459a6;
+  background: #eef2f7;
+  border-color: #dbe2ec;
+}
+
+:root[data-theme='light'] .pane-browser-send:hover:not(:disabled) {
+  color: #16803c;
+  background: rgba(22, 128, 60, 0.12);
+  border-color: rgba(22, 128, 60, 0.4);
+}
+
+/* The pane header's toggle, while the browser it opens is on screen. */
+:root[data-theme='light'] .pane-browse.active {
+  color: #2459a6;
+  background: #dbe7f5;
+  border-color: #dbe2ec;
+}
