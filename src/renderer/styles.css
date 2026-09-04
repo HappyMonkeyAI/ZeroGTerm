@@ -3030,3 +3030,178 @@ input:focus-visible {
   background: #dbe7f5;
   border-color: #dbe2ec;
 }
+
+/*
+ * The rest of the light theme.
+ *
+ * Same omission as the pane browser above, in every component that arrived
+ * without its correction: the help panel, the shortcut editor, the context menu,
+ * the thumbnails, and a long tail of dots, separators and borders. Sixty-one
+ * rules, none of which chose a colour freely — each takes the light value this
+ * sheet already pairs with the dark one it is replacing (#d8dee9 and #c0c8d8
+ * become #253044, #7aa2f7 becomes #2459a6, #9ece6a becomes #16803c, #f7768e
+ * becomes #b3213b, #e0af68 becomes #8a5d00, borders become #dbe2ec, raised
+ * surfaces become #ffffff).
+ */
+
+/* Title bar, tabs and the drawer. */
+:root[data-theme='light'] .brand-version { color: #68768a; }
+
+:root[data-theme='light'] .workspace-tab-slot.dragging .workspace-tab {
+  background: #dbe7f5;
+  border-color: #2459a6;
+  box-shadow: 0 6px 18px #25304433;
+}
+
+:root[data-theme='light'] .connection-dot,
+:root[data-theme='light'] .pane-live { background: #16803c; }
+
+:root[data-theme='light'] .drawer-tools,
+:root[data-theme='light'] .drawer-bottom { border-color: #dbe2ec; }
+
+:root[data-theme='light'] .session-group-label { color: #536176; }
+:root[data-theme='light'] .session-ghosted { border-color: #c7d5e8; }
+:root[data-theme='light'] .session-error b { color: #b3213b; }
+
+/* A session's state, which is the one place colour carries the meaning. */
+:root[data-theme='light'] .status-dot { background: #68768a; }
+:root[data-theme='light'] .status-dot.connected { background: #16803c; }
+:root[data-theme='light'] .status-dot.detached { background: #b7791f; }
+:root[data-theme='light'] .status-dot.error { background: #c53030; }
+
+/* Panes, their chrome and the handles between them. */
+:root[data-theme='light'] .slash { color: #b8c6d8; }
+:root[data-theme='light'] .control-label { color: #68768a; }
+:root[data-theme='light'] .pane-body-split,
+:root[data-theme='light'] .status-separator { background: #dbe2ec; }
+:root[data-theme='light'] .terminal-pane { outline-color: #dbe2ec; }
+:root[data-theme='light'] .terminal-pane.focused { outline-color: #2459a6; }
+
+:root[data-theme='light'] .sidebar-resizer:hover,
+:root[data-theme='light'] .pane-resizer:hover,
+:root[data-theme='light'] .sidebar-resizer.dragging,
+:root[data-theme='light'] .pane-resizer.dragging { background: rgba(36, 89, 166, 0.35); }
+
+:root[data-theme='light'] .sidebar-resizer:focus-visible,
+:root[data-theme='light'] .pane-resizer:focus-visible { background: #2459a6; }
+
+:root[data-theme='light'] .pane-nav,
+:root[data-theme='light'] .pane-maximize,
+:root[data-theme='light'] .pane-close,
+:root[data-theme='light'] .pane-proceed,
+:root[data-theme='light'] .pane-mic { color: #68768a; }
+
+:root[data-theme='light'] .pane-nav:hover,
+:root[data-theme='light'] .pane-maximize:hover,
+:root[data-theme='light'] .pane-browse:hover:not(:disabled),
+:root[data-theme='light'] .pane-mic:hover {
+  color: #253044;
+  background: #eef2f7;
+  border-color: #dbe2ec;
+}
+
+/* The overview's thumbnails, which stand in for a pane's content. */
+:root[data-theme='light'] .thumbnail-line { background: #c7d5e8; }
+:root[data-theme='light'] .thumbnail-line.cyan { background: #2459a6; }
+:root[data-theme='light'] .thumbnail-line.green,
+:root[data-theme='light'] .thumbnail-cursor { background: #16803c; }
+
+/* The shortcut editor. */
+:root[data-theme='light'] .shortcut-row { border-color: #dbe2ec; }
+:root[data-theme='light'] .shortcut-what { color: #253044; }
+
+:root[data-theme='light'] .shortcut-chord {
+  border-color: #dbe2ec;
+  background: #eef2f7;
+  color: #253044;
+}
+
+:root[data-theme='light'] .shortcut-chord:hover { border-color: #2459a6; }
+
+:root[data-theme='light'] .shortcut-chord.capturing {
+  border-color: #2459a6;
+  background: #dbe7f5;
+}
+
+:root[data-theme='light'] .shortcut-prompt { color: #2459a6; }
+:root[data-theme='light'] .shortcut-reset { color: #68768a; }
+
+:root[data-theme='light'] .shortcut-reset:hover:not(:disabled) {
+  color: #253044;
+  background: #eef2f7;
+  border-color: #dbe2ec;
+}
+
+:root[data-theme='light'] .shortcut-problem,
+:root[data-theme='light'] .warning-text { color: #8a5d00; }
+
+/*
+ * Also `!important`, because the base rule is. Specificity does not decide
+ * against an important declaration, so a correction without it would be ignored.
+ */
+:root[data-theme='light'] .settings-warning {
+  border-color: rgba(176, 125, 26, 0.45);
+  background: rgba(224, 175, 104, 0.16);
+  color: #8a5d00 !important;
+}
+
+/* The right-click menu. */
+:root[data-theme='light'] .context-menu {
+  background: #ffffff;
+  border-color: #c7d5e8;
+  box-shadow: 0 14px 44px #25304433;
+}
+
+:root[data-theme='light'] .context-menu-item { color: #253044; }
+:root[data-theme='light'] .context-menu-item:hover:not(:disabled) { background: #eef2f7; }
+:root[data-theme='light'] .context-menu-item:focus-visible { outline-color: #2459a6; }
+
+:root[data-theme='light'] .context-menu-item.danger:hover:not(:disabled) {
+  color: #b3213b;
+  background: rgba(197, 48, 48, 0.1);
+}
+
+:root[data-theme='light'] .context-menu-item .icon-svg { color: #536176; }
+
+/* The help panel. */
+:root[data-theme='light'] .help-card {
+  background: #ffffff;
+  border-color: #c7d5e8;
+  box-shadow: 0 20px 80px #25304433;
+}
+
+:root[data-theme='light'] .help-body h3,
+:root[data-theme='light'] .help-keys td,
+:root[data-theme='light'] .help-features dd { color: #536176; }
+
+:root[data-theme='light'] .help-keys tr:not(:last-child) th,
+:root[data-theme='light'] .help-keys tr:not(:last-child) td { border-color: #dbe2ec; }
+
+:root[data-theme='light'] .help-keys kbd {
+  border-color: #dbe2ec;
+  background: #eef2f7;
+  color: #253044;
+}
+
+:root[data-theme='light'] .help-note {
+  border-color: #dbe2ec;
+  background: #f2f5fa;
+  color: #536176;
+}
+
+:root[data-theme='light'] .help-note .icon-svg { color: #2459a6; }
+:root[data-theme='light'] .help-features dt { color: #253044; }
+:root[data-theme='light'] .help-foot { color: #68768a; }
+
+/* The command palette, settings and transfers. */
+:root[data-theme='light'] .palette-meta,
+:root[data-theme='light'] .palette-empty,
+:root[data-theme='light'] .palette-note { color: #536176; }
+
+:root[data-theme='light'] .palette-empty b,
+:root[data-theme='light'] .settings-toggle-fixed b { color: #253044; }
+
+:root[data-theme='light'] .history-button { color: #2459a6; }
+
+:root[data-theme='light'] .settings-test-error,
+:root[data-theme='light'] .sftp-error b { color: #b3213b; }
