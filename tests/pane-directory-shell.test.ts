@@ -87,9 +87,20 @@ describeShell('a POSIX shell reads the generated cd as one command', () => {
         if (!('command' in built)) continue;
 
         // `pwd -P` so a symlinked temp directory does not read as a mismatch.
-        const output = execFileSync(sh as string, ['-c', `${built.command} && pwd -P`], { encoding: 'utf8' }).trim();
+        //
+        // Started in `root` rather than wherever the test runner was launched:
+        // two of the names above are `touch pwned`, and a shell that ran one
+        // would create that file in its working directory. Pinned here, that is
+        // a directory this test deletes and checks below. Unpinned, it was the
+        // repository — which is how an empty file called `pwned` once ended up
+        // committed to the project root.
+        const output = execFileSync(sh as string, ['-c', `${built.command} && pwd -P`], { cwd: root, encoding: 'utf8' }).trim();
         expect(output.endsWith(name), `${name} -> ${output}`).toBe(true);
       }
+      // Compared exactly rather than by substring: two of the directory names
+      // *contain* `pwned`, so a substring check would match the name and pass
+      // whatever the shell did.
+      expect(readdirSync(root), 'a name ran the command inside it').not.toContain('pwned');
       // A silent zero would mean the loop proved nothing.
       expect(attempted).toBeGreaterThan(5);
     } finally {
@@ -112,7 +123,7 @@ describeShell('a POSIX shell reads the generated cd as one command', () => {
         }
         const built = changeDirectoryCommand('posix', `${posix(root)}/${name}`);
         if (!('command' in built)) continue;
-        execFileSync(sh as string, ['-c', `${built.command} && pwd -P`], { encoding: 'utf8' });
+        execFileSync(sh as string, ['-c', `${built.command} && pwd -P`], { cwd: root, encoding: 'utf8' });
       }
       // Compared exactly, not by substring: every directory name here *contains*
       // its sentinel, so a substring check would match the name it created and
@@ -121,7 +132,10 @@ describeShell('a POSIX shell reads the generated cd as one command', () => {
       for (const sentinel of sentinels) {
         expect(entries, `${sentinel} was created`).not.toContain(sentinel);
       }
-      // And nothing was created in the working directory the shell started in.
+      // And nothing was created in the repository, which is where the test
+      // runner was started. The shell above is pinned to `root`, so this can
+      // only fail if that pinning is lost — which is the regression worth
+      // holding, because losing it is what put a stray file in the project.
       expect(readdirSync(process.cwd()).filter((name) => sentinels.includes(name))).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
