@@ -10,3 +10,4 @@ ZeroG Terminal version history
 0.7.0-alpha1 - Recursive remote-folder SFTP downloads with multi-selection, a navigation rail for common workspace actions, and layout controls that restore pane sizes before maximizing or folding views
 0.7.0-alpha2 - Follow-up 0.7 alpha release containing the current SFTP, navigation rail, and pane layout updates
 0.7.0-alpha3 - Workspaces that hold their own panes and layout, shared ports over SSH, AI command suggestions from any OpenAI-compatible endpoint, a ranked command history palette, a directory browser inside each pane, and WSL panes starting in the distribution's own home directory
+0.8.0-alpha - Current 0.8 alpha release

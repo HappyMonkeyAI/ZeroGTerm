@@ -37,7 +37,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.7.0-alpha3`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
+ZeroG Terminal is currently a public alpha. The current release is `0.8.0-alpha`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
 The GitHub Releases page provides a Windows x64 installer and portable executable for each desktop release. These alpha builds are intended for early adopters and testing rather than production use. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
 
