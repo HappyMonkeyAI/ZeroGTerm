@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
@@ -277,6 +278,56 @@ function sessionBackendTag(session: SessionInfo): string {
  */
 const PTY_RESIZE_SETTLE_MS = 120;
 
+/**
+ * How long a hidden pane keeps its GPU renderer.
+ *
+ * A browser allows a limited number of live WebGL contexts and drops the oldest
+ * to make room, so a pane in every workspace cannot each hold one — the panes
+ * being looked at would be the ones to lose theirs. Releasing on a delay rather
+ * than on the switch itself means flicking between two workspaces, which is what
+ * people actually do, never pays for the renderer twice.
+ */
+const WEBGL_RELEASE_MS = 10_000;
+
+/**
+ * How long one task may hold the renderer's only thread before it is worth
+ * saying so.
+ *
+ * The browser reports every task over 50ms as long; that is a slow frame and
+ * there is nothing to learn from it. 200ms is the point where a person notices
+ * the interface stop, and several of those back to back is what the desktop
+ * eventually greys the window out for.
+ */
+const RENDERER_STALL_MS = 200;
+
+/**
+ * Report tasks that blocked the renderer.
+ *
+ * Everything the workspace does — every pane's rendering, every keystroke, every
+ * React update for every workspace that has ever been opened — runs on this one
+ * thread, and a frozen window is that thread being busy. This says how long, and
+ * the main process copies renderer console output to its own, so the answer is
+ * in the same log as the main-loop stalls it might have caused.
+ */
+function watchLongTasks(): void {
+  if (typeof PerformanceObserver === 'undefined') return;
+  try {
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.duration >= RENDERER_STALL_MS) {
+          console.warn(`[zerog] renderer blocked for ${Math.round(entry.duration)}ms`);
+        }
+      }
+    });
+    observer.observe({ entryTypes: ['longtask'] });
+  } catch {
+    // An engine without the long-task entry type. Losing the warning is not a
+    // reason to fail to start.
+  }
+}
+
+watchLongTasks();
+
 function TerminalView({
   sessionId,
   focused,
@@ -330,6 +381,18 @@ function TerminalView({
   const terminalSettingsRef = useRef(terminalSettings);
   terminalSettingsRef.current = terminalSettings;
   const refitRef = useRef<(() => void) | null>(null);
+  /** This pane's GPU renderer, while it has one. Absent means xterm's DOM one. */
+  const webglRef = useRef<WebglAddon | null>(null);
+  /**
+   * The settings this pane's Terminal is already carrying.
+   *
+   * Assigning an xterm option is not free even when the value is unchanged — a
+   * theme drops the render cache, a font size re-measures the cell — and the
+   * settings object is replaced whenever *any* setting changes. Without this,
+   * one theme click re-applied eight options to every pane in every workspace
+   * that had ever been opened.
+   */
+  const appliedRef = useRef<Partial<AppearanceSettings & TerminalSettings>>({});
   // Read through a ref by the OSC handler: the setup effect is keyed on
   // sessionId, and rebuilding the Terminal to pick up a new callback would drop
   // the pane's scrollback.
@@ -378,6 +441,19 @@ function TerminalView({
       // "down one row, same column" — turning that into a carriage return moves
       // its output to column 0 and leaves fragments of the old frame behind.
     });
+    // What the Terminal was just built with, so the settings effect has nothing
+    // to do on its first run.
+    appliedRef.current = {
+      theme: appearanceRef.current.theme,
+      font: appearanceRef.current.font,
+      fontSize: appearanceRef.current.fontSize,
+      lineHeight: appearanceRef.current.lineHeight,
+      letterSpacing: appearanceRef.current.letterSpacing,
+      scrollback: terminalSettingsRef.current.scrollback,
+      cursorStyle: terminalSettingsRef.current.cursorStyle,
+      cursorBlink: terminalSettingsRef.current.cursorBlink
+    };
+
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(host);
@@ -455,6 +531,9 @@ function TerminalView({
         disposed = true;
         cancelAnimationFrame(fitFrame);
         terminalRef.current = null;
+        // Disposing the Terminal disposes the addons it is carrying, so the
+        // reference is dropped rather than disposed a second time.
+        webglRef.current = null;
         terminal.dispose();
       };
     }
@@ -553,9 +632,63 @@ function TerminalView({
       window.removeEventListener('resize', scheduleFit);
       refitRef.current = null;
       terminalRef.current = null;
+      // As above: the Terminal takes its addons with it.
+      webglRef.current = null;
       terminal.dispose();
     };
   }, [sessionId]);
+
+  /**
+   * Draw this pane on the GPU while it is on screen.
+   *
+   * xterm's fallback renderer builds a DOM element per run of styled text, per
+   * row, and the browser then lays all of that out on the same thread as the
+   * rest of the interface. That is affordable for one terminal and is not
+   * affordable for a dozen: it is the other half, with software rasterisation,
+   * of why a window full of panes could stall long enough to be greyed out.
+   *
+   * Held only by panes that are visible. See WEBGL_RELEASE_MS for why hidden
+   * ones give theirs back, and why not immediately.
+   */
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+
+    if (dormant) {
+      const timer = window.setTimeout(() => {
+        const addon = webglRef.current;
+        webglRef.current = null;
+        addon?.dispose();
+      }, WEBGL_RELEASE_MS);
+      return () => window.clearTimeout(timer);
+    }
+
+    if (webglRef.current) return;
+    let addon: WebglAddon;
+    try {
+      addon = new WebglAddon();
+    } catch {
+      // No WebGL on this machine — a remote desktop, a stripped driver, a user
+      // who turned it off. xterm keeps its own renderer and the pane still
+      // works, which is the whole reason this is an addon and not the default.
+      return;
+    }
+    // A context is not recovered, it is replaced. Dropping the addon lets xterm
+    // fall back rather than leaving a pane that has stopped painting — and the
+    // pane becomes eligible to try again the next time it is revealed.
+    const lost = addon.onContextLoss(() => {
+      if (webglRef.current === addon) webglRef.current = null;
+      addon.dispose();
+    });
+    try {
+      terminal.loadAddon(addon);
+    } catch {
+      addon.dispose();
+      return;
+    }
+    webglRef.current = addon;
+    return () => lost.dispose();
+  }, [sessionId, dormant]);
 
   /**
    * Repaint a pane that has just come back on screen.
@@ -583,21 +716,68 @@ function TerminalView({
   // Appearance and terminal behaviour are mutable xterm options. Rebuilding the
   // Terminal to apply them would dispose the renderer and drop the pane's
   // scrollback — the same content loss the layout code deliberately avoids.
+  //
+  // Applied one option at a time, and only where it changed. Every assignment
+  // here does real work inside xterm: a theme invalidates the render cache and
+  // marks every row dirty, a font change re-measures the cell and reflows, a
+  // scrollback change reallocates the buffer. Doing all of that for values that
+  // did not change, across every pane of every workspace ever opened, is what
+  // turned one click on the theme button into seconds of frozen window.
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
-    terminal.options.theme = terminalTheme(appearance.theme);
-    terminal.options.fontFamily = fontStack(appearance.font);
-    terminal.options.fontSize = appearance.fontSize;
-    terminal.options.lineHeight = appearance.lineHeight;
-    terminal.options.letterSpacing = appearance.letterSpacing;
-    terminal.options.scrollback = terminalSettings.scrollback;
-    terminal.options.cursorStyle = terminalSettings.cursorStyle;
-    terminal.options.cursorBlink = terminalSettings.cursorBlink;
+    // A hidden pane is not being painted, so there is nothing to paint
+    // correctly. This effect is keyed on `dormant`, so the settings land at the
+    // moment the pane is revealed — off the switch's critical path, and only
+    // for the workspace actually being shown.
+    if (dormant) return;
+
+    const applied = appliedRef.current;
+    // Only these change the size of a cell, and so the number of rows and
+    // columns the pty should be told about.
+    let metricsChanged = false;
+
+    if (applied.theme !== appearance.theme) {
+      applied.theme = appearance.theme;
+      terminal.options.theme = terminalTheme(appearance.theme);
+    }
+    if (applied.font !== appearance.font) {
+      applied.font = appearance.font;
+      terminal.options.fontFamily = fontStack(appearance.font);
+      metricsChanged = true;
+    }
+    if (applied.fontSize !== appearance.fontSize) {
+      applied.fontSize = appearance.fontSize;
+      terminal.options.fontSize = appearance.fontSize;
+      metricsChanged = true;
+    }
+    if (applied.lineHeight !== appearance.lineHeight) {
+      applied.lineHeight = appearance.lineHeight;
+      terminal.options.lineHeight = appearance.lineHeight;
+      metricsChanged = true;
+    }
+    if (applied.letterSpacing !== appearance.letterSpacing) {
+      applied.letterSpacing = appearance.letterSpacing;
+      terminal.options.letterSpacing = appearance.letterSpacing;
+      metricsChanged = true;
+    }
+    if (applied.scrollback !== terminalSettings.scrollback) {
+      applied.scrollback = terminalSettings.scrollback;
+      terminal.options.scrollback = terminalSettings.scrollback;
+    }
+    if (applied.cursorStyle !== terminalSettings.cursorStyle) {
+      applied.cursorStyle = terminalSettings.cursorStyle;
+      terminal.options.cursorStyle = terminalSettings.cursorStyle;
+    }
+    if (applied.cursorBlink !== terminalSettings.cursorBlink) {
+      applied.cursorBlink = terminalSettings.cursorBlink;
+      terminal.options.cursorBlink = terminalSettings.cursorBlink;
+    }
+
     // Font changes resize the cell, so the pane holds a different number of
     // rows and columns than the pty was last told about.
-    refitRef.current?.();
-  }, [appearance, terminalSettings]);
+    if (metricsChanged) refitRef.current?.();
+  }, [appearance, terminalSettings, dormant]);
 
   useEffect(() => {
     if (focused) terminalRef.current?.focus();
