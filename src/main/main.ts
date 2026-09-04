@@ -46,9 +46,52 @@ function parsePtySize(value: unknown): PtySize | undefined {
   return { cols: cols as number, rows: rows as number };
 }
 
-// GPU is unstable under Toolbox/Wayland on this host; allow override.
-if (process.env.ZEROG_ENABLE_GPU !== '1') {
+/**
+ * Software rendering, on the one platform that needs it.
+ *
+ * The GPU is unstable under Toolbox/Wayland, which is where this was found and
+ * why the switch exists. It was applied everywhere, though, and on Windows that
+ * is a straight loss: every pane is then rasterised on the CPU, and a window
+ * holding a dozen terminals can stall long enough for the compositor to grey it
+ * out — which reads to the user as a crash. Scoped to Linux, with an override in
+ * each direction so a machine that disagrees can say so.
+ */
+if (process.env.ZEROG_DISABLE_GPU === '1') {
   app.disableHardwareAcceleration();
+} else if (process.platform === 'linux' && process.env.ZEROG_ENABLE_GPU !== '1') {
+  app.disableHardwareAcceleration();
+}
+
+/**
+ * How long the main process may block before it is worth saying so.
+ *
+ * Every pty write, every IPC reply and every window event goes through this one
+ * loop, so a stall here freezes the whole application however many panes are
+ * open. 250ms is well past a slow frame and well short of anything a person
+ * would call a hang, which makes it a warning rather than a report.
+ */
+const LOOP_STALL_MS = 250;
+const LOOP_SAMPLE_MS = 500;
+
+/**
+ * Watch the main process for stalls.
+ *
+ * A timer that knows when it should have fired is the whole instrument: the
+ * difference between that and when it did fire is time the loop spent unable to
+ * run anything. It cannot say what blocked — only that something did, and for
+ * how long, which is the fact that was missing when a frozen window had to be
+ * explained from a screenshot.
+ */
+function watchEventLoop(): void {
+  let due = Date.now() + LOOP_SAMPLE_MS;
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - due;
+    due = now + LOOP_SAMPLE_MS;
+    if (lag >= LOOP_STALL_MS) console.warn(`[zerog] main process blocked for ${Math.round(lag)}ms`);
+  }, LOOP_SAMPLE_MS);
+  // Diagnostics must never be the reason the process stays alive.
+  timer.unref();
 }
 
 function createWindow() {
@@ -100,8 +143,33 @@ function createWindow() {
   win.webContents.on('preload-error', (_event, path, error) => {
     console.error('[zerog] preload-error', path, error);
   });
-  win.webContents.on('console-message', (_event, _level, message) => {
-    console.log('[renderer]', message);
+  // The renderer's console, copied into this one — which is the only way a
+  // warning from the workspace reaches a log at all.
+  //
+  // Read from the event object rather than from the positional arguments that
+  // used to carry it. Electron still passes those, and says so on every start:
+  // "'console-message' arguments are deprecated and will be removed". When they
+  // go, a handler reading them would keep being called and print nothing, so the
+  // renderer would fall silent without anything appearing to break — the exact
+  // failure this logging exists to rule out.
+  win.webContents.on('console-message', (details) => {
+    console.log('[renderer]', details.message);
+  });
+
+  // The two ends of the symptom this instrumentation exists for. `unresponsive`
+  // is the window the desktop has started greying out; `render-process-gone` is
+  // the renderer having actually died, which is a different failure that looks
+  // similar from the outside. Only recorded here: what to *do* about either —
+  // offer a reload, reattach the panes — is a decision about the interface, not
+  // about diagnostics.
+  win.on('unresponsive', () => {
+    console.warn('[zerog] window unresponsive');
+  });
+  win.on('responsive', () => {
+    console.warn('[zerog] window responsive again');
+  });
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[zerog] render-process-gone', details);
   });
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -426,6 +494,7 @@ app.whenReady().then(() => {
   // Keep the normal window chrome, but let the ZeroG UI occupy the full
   // client area instead of showing Electron's default File/Edit/etc. menu.
   Menu.setApplicationMenu(null);
+  watchEventLoop();
   createWindow();
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();
