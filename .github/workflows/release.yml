@@ -52,5 +52,6 @@ jobs:
             "${assets[@]}" \
             --verify-tag \
             --title "ZeroG Terminal ${GITHUB_REF_NAME}" \
+            --prerelease \
             --generate-notes \
             --notes "Windows x64 alpha build. These binaries are unsigned; Windows SmartScreen may warn on first launch. See the README for installation and host prerequisites."
