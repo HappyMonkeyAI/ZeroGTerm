@@ -64,8 +64,14 @@ export function findConnection(host: string | undefined, connections: KnownConne
  * A session recorded before it had a screen name still says `backend: 'screen'`,
  * and for those the session name *is* the screen name — that is how
  * createLocal names them.
+ *
+ * Exported so a workspace deciding what is worth remembering across a relaunch
+ * (see fromStoredFile in workspace-view.ts) uses this exact same rule for "can
+ * this actually be reconnected" — a plain SSH or local pty has nothing on the
+ * far end to reattach to, so it is not a resumable pane and must not be judged
+ * by a second copy of this logic that could drift from the restore planner's.
  */
-function screenNameFor(descriptor: SessionDescriptor): string | undefined {
+export function screenNameFor(descriptor: SessionDescriptor): string | undefined {
   if (descriptor.screenName) return descriptor.screenName;
   return descriptor.backend === 'screen' ? descriptor.name : undefined;
 }
