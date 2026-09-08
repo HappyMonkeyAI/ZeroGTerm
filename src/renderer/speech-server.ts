@@ -115,6 +115,17 @@ export function parseTranscriptionText(payload: unknown): string | null {
       .trim();
     if (joined) return joined;
   }
+  const choices = record.choices;
+  if (Array.isArray(choices) && choices.length > 0) {
+    const choice = choices[0];
+    if (typeof choice === 'object' && choice !== null) {
+      const message = (choice as Record<string, unknown>).message;
+      if (typeof message === 'object' && message !== null) {
+        const text = (message as Record<string, unknown>).content;
+        if (typeof text === 'string' && text.trim()) return text.trim();
+      }
+    }
+  }
   if (typeof record.error === 'string') throw new Error(record.error);
   return null;
 }
@@ -130,6 +141,53 @@ export function buildTranscriptionForm(request: ServerTranscriptionRequest): For
   // validate the field reject the request.
   if (request.language && request.language !== 'auto') form.set('language', request.language);
   return form;
+}
+
+/**
+ * Some local OpenAI-compatible runtimes (notably LM Studio) put a JSON-only
+ * middleware in front of their audio route.  Their JSON variant accepts the
+ * audio as a data URL rather than as a multipart file.
+ */
+export function buildTranscriptionJson(request: ServerTranscriptionRequest): string {
+  const wav = new Uint8Array(encodeWav(request.audio, request.sampleRate ?? WHISPER_SAMPLE_RATE));
+  let binary = '';
+  for (const byte of wav) binary += String.fromCharCode(byte);
+  const payload: Record<string, unknown> = {
+    file: `data:audio/wav;base64,${btoa(binary)}`,
+    model: request.model,
+    response_format: 'json'
+  };
+  if (request.language && request.language !== 'auto') payload.language = request.language;
+  return JSON.stringify(payload);
+}
+
+/** JSON chat-completions request used by LM Studio's Qwen3-ASR endpoint. */
+export function buildChatCompletionJson(request: ServerTranscriptionRequest): string {
+  const wav = new Uint8Array(encodeWav(request.audio, request.sampleRate ?? WHISPER_SAMPLE_RATE));
+  let binary = '';
+  for (const byte of wav) binary += String.fromCharCode(byte);
+  const content: Array<Record<string, unknown>> = [
+    { type: 'text', text: request.language && request.language !== 'auto' ? `Transcribe this ${request.language} audio. Return only the transcript.` : 'Transcribe this audio. Return only the transcript.' },
+    { type: 'input_audio', input_audio: { data: btoa(binary), format: 'wav' } }
+  ];
+  return JSON.stringify({
+    model: request.model,
+    messages: [{ role: 'user', content }],
+    temperature: 0,
+    stream: false
+  });
+}
+
+function isChatCompletionEndpoint(url: string): boolean {
+  try {
+    return new URL(url).pathname.replace(/\/+$/, '') === '/v1/chat/completions';
+  } catch {
+    return false;
+  }
+}
+
+function isJsonRequired415(response: Response, body: string): boolean {
+  return response.status === 415 && /POST requests must use ['"]application\/json['"]/.test(body);
 }
 
 function timeoutSignal(): AbortSignal | undefined {
@@ -158,16 +216,52 @@ export async function transcribeViaServer(
   }
 
   const key = request.apiKey?.trim();
-  const response = await fetchImpl(request.url, {
+  if (isChatCompletionEndpoint(request.url)) {
+    const response = await fetchImpl(request.url, {
+      method: 'POST',
+      headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json' },
+      body: buildChatCompletionJson(request),
+      signal: timeoutSignal()
+    });
+    const body = await response.text();
+    if (!response.ok) {
+      const detail = body.slice(0, ERROR_BODY_CHARS).trim();
+      throw new Error(`Speech server returned ${response.status}${detail ? `: ${detail}` : ''}`);
+    }
+    let payload: unknown = body;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      // Not JSON: a plain-text transcript is still accepted below.
+    }
+    const text = parseTranscriptionText(payload);
+    if (text === null) throw new Error('Speech server returned no transcript');
+    return text;
+  }
+
+  const fetchOptions = {
     method: 'POST',
     // Bearer is what every OpenAI-compatible server reads, including the ones
     // that ignore it. No Content-Type: fetch sets the multipart boundary.
     headers: key ? { Authorization: `Bearer ${key}` } : undefined,
     body: buildTranscriptionForm(request),
     signal: timeoutSignal()
-  });
+  } satisfies RequestInit;
+  let response = await fetchImpl(request.url, fetchOptions);
+  let body = await response.text();
 
-  const body = await response.text();
+  // LM Studio can reject the standard multipart request in middleware before
+  // the route sees it. Retry only for that explicit response, never for a
+  // generic 415 where retrying could duplicate an upload.
+  if (isJsonRequired415(response, body)) {
+    response = await fetchImpl(request.url, {
+      ...fetchOptions,
+      headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json' },
+      body: buildTranscriptionJson(request)
+    });
+    body = await response.text();
+  }
+
   if (!response.ok) {
     const detail = body.slice(0, ERROR_BODY_CHARS).trim();
     // 401 with no key is the commonest way a hosted endpoint fails, and the
