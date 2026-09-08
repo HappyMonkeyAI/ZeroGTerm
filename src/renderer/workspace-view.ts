@@ -9,6 +9,7 @@
 import type { SessionInfo, StoredWorkspaceFile, StoredWorkspaceMember } from '../shared/types';
 import type { Layout } from './settings';
 import type { SplitLayout } from './pane-layout';
+import { screenNameFor } from './session-restore';
 
 /**
  * How a workspace is arranged, as opposed to what it contains.
@@ -61,6 +62,9 @@ export type Workspace = {
    * as a ghost row until clicked. Kept on the workspace rather than beside it so
    * that closing a workspace disposes of its unreconnected panes too, and so a
    * pane still waiting is saved again on the next quit.
+   *
+   * Only ever holds members `fromStoredFile` judged resumable — see there for
+   * why a plain SSH or local pty never becomes one of these.
    */
   pending: StoredWorkspaceMember[];
   view: WorkspaceView;
@@ -555,6 +559,24 @@ function readBrowsers(value: unknown): Record<string, PaneBrowserState> | undefi
   return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * Is this member worth holding as a pending, click-to-reconnect ghost across a
+ * relaunch?
+ *
+ * Only a `screen` session actually has something on the far end still running:
+ * reconnecting attaches to it. A plain SSH or local pty ended the moment the
+ * app closed — screenNameFor finds no screen to name — so "reconnecting" it
+ * would only ever dial a fresh connection, indistinguishable from just opening
+ * a new one. Keeping it pending anyway bought nothing but an invisible slot
+ * against the four-pane cap that never clears itself: it counts against every
+ * future connection to that host until the user happens to notice the ghost
+ * row and clicks it, which is a bug wearing "remembers where you were" as a
+ * disguise.
+ */
+function isResumableMember(member: StoredWorkspaceMember): boolean {
+  return screenNameFor(member) !== undefined;
+}
+
 export function fromStoredFile(
   file: StoredWorkspaceFile,
   fallbackLayout: Layout
@@ -566,7 +588,7 @@ export function fromStoredFile(
       id: stored.id,
       name: stored.name,
       sessionIds: [],
-      pending: [...(stored.members ?? [])],
+      pending: (stored.members ?? []).filter(isResumableMember),
       view: {
         ...base,
         lastSplit: SPLITS.find((candidate) => candidate === stored.view?.lastSplit) ?? base.lastSplit,

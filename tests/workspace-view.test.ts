@@ -613,6 +613,32 @@ describe('fromStoredFile', () => {
     expect(adopted[0].sessionIds).toEqual(['local:api']);
     expect(adopted[0].pending).toEqual([]);
   });
+
+  it('does not bring back a plain SSH or local pty as a pending ghost', () => {
+    // Neither one has anything left running on the far end once the app that
+    // held it closes, so "reconnecting" it would only ever dial a fresh
+    // connection — no different from opening a new one, except that it also
+    // sits there forever counting against the four-pane cap since nothing ever
+    // resolves it. A `screen` session is the one exception: something really is
+    // still running, and clicking the ghost row genuinely reattaches to it.
+    const noScreen: StoredWorkspaceFile = {
+      version: 1,
+      workspaces: [
+        {
+          id: 'ws-1',
+          name: 'Workspace',
+          view: { layout: 'grid', lastSplit: 'grid' },
+          members: [
+            { sessionId: 'ssh:1', kind: 'ssh', name: 'dev', host: '192.168.5.215', sshTarget: '192.168.5.215', backend: 'ssh' },
+            { sessionId: 'local:1', kind: 'local', name: 'shell', host: 'local', backend: 'powershell' },
+            { sessionId: 'ssh:2', kind: 'ssh', name: 'web', host: '192.168.5.80', sshTarget: '192.168.5.80', screenName: 'web' }
+          ]
+        }
+      ]
+    };
+    const { workspaces } = fromStoredFile(noScreen, 'stack');
+    expect(workspaces[0].pending.map((m) => m.sessionId)).toEqual(['ssh:2']);
+  });
 });
 
 describe('directory browser state', () => {
