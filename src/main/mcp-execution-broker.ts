@@ -83,10 +83,10 @@ export class McpExecutionBroker {
     return item.result!;
   }
 
-  cancelFromUser(requestId: string, now = Date.now()): McpExecutionResult {
+  cancelFromUser(requestId: string, message = 'Cancelled by the user.', now = Date.now()): McpExecutionResult {
     const item = this.pending.get(requestId);
     if (!item) throw new Error('Unknown command request.');
-    this.finish(item, 'cancelled', 'Cancelled by the user.', now);
+    this.finish(item, 'cancelled', message, now);
     return item.result!;
   }
 

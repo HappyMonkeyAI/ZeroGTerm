@@ -20,6 +20,7 @@ import { AiService } from './ai-service.js';
 import { McpControl } from './mcp-control.js';
 import { McpServerHost } from './mcp-server.js';
 import { McpExecutionBroker } from './mcp-execution-broker.js';
+import { classifyMcpPrompt } from './prompt-classifier.js';
 import { requireWorkspaceName } from './mcp-protocol.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
@@ -44,6 +45,7 @@ const sftp = new SftpService({ onEvent: (event) => win?.webContents.send('sftp:e
 const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('userData')), crypto: safeStorage });
 const mcpControl = new McpControl({ onChange: (status) => win?.webContents.send('mcp:status', status) });
 const mcpExecutions = new McpExecutionBroker();
+const mcpActiveExecutions = new Map<string, string>();
 let mcpHost: McpServerHost | undefined;
 
 async function restoreWorkspace(workspaceId: string): Promise<unknown> {
@@ -313,6 +315,7 @@ ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
     const session = sessions.find((item) => item.id === result.sessionId);
     if (!session || session.kind !== 'local') throw new Error('Only attached local sessions may execute approved commands.');
     const running = mcpExecutions.start(requestId);
+    mcpActiveExecutions.set(session.id, requestId);
     service.write(session.id, `${running.command}\n`);
     win?.webContents.send('mcp:execution', running);
     return running;
@@ -406,7 +409,19 @@ ipcMain.handle('sessions:attach', (_event, id: unknown, size: unknown) => {
   if (typeof id !== 'string' || !id) throw new Error('attachSession requires a session id');
   return service.attach(
     id,
-    (data) => win?.webContents.send('terminal:data', id, data),
+    (data) => {
+      const requestId = mcpActiveExecutions.get(id);
+      if (requestId) {
+        const prompt = classifyMcpPrompt(data);
+        if (prompt.kind !== 'unknown') {
+          const result = mcpExecutions.cancelFromUser(requestId, `Execution paused for a ${prompt.kind} prompt; MCP cannot answer prompts.`);
+          mcpActiveExecutions.delete(id);
+          win?.webContents.send('mcp:execution', result);
+          win?.webContents.send('terminal:status', id, `MCP execution paused: ${prompt.kind} prompt requires user input.`);
+        }
+      }
+      win?.webContents.send('terminal:data', id, data);
+    },
     (message) => win?.webContents.send('terminal:status', id, message),
     parsePtySize(size)
   );
