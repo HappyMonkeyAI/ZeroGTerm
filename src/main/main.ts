@@ -16,6 +16,8 @@ import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
 import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
 import { AiService } from './ai-service.js';
+import { McpControl } from './mcp-control.js';
+import { McpServerHost } from './mcp-server.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -37,6 +39,8 @@ const sftp = new SftpService({ onEvent: (event) => win?.webContents.send('sftp:e
 // API keys for speech servers. safeStorage is only usable after the app is
 // ready, which every IPC call here already is.
 const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('userData')), crypto: safeStorage });
+const mcpControl = new McpControl({ onChange: (status) => win?.webContents.send('mcp:status', status) });
+let mcpHost: McpServerHost | undefined;
 
 /** A pane's measured size, as it arrives from the renderer. */
 function parsePtySize(value: unknown): PtySize | undefined {
@@ -242,6 +246,17 @@ ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(fil
 
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
+ipcMain.handle('mcp:status', () => mcpControl.status());
+ipcMain.handle('mcp:revoke', () => mcpControl.revoke());
+ipcMain.handle('mcp:start', async () => {
+  mcpHost ??= new McpServerHost({
+    control: mcpControl,
+    providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list() },
+    version: app.getVersion()
+  });
+  return mcpHost.start();
+});
+ipcMain.handle('mcp:stop', async () => { await mcpHost?.stop(); });
 
 ipcMain.handle('sessions:backends', () => discoverShellBackends());
 ipcMain.handle('sessions:wslDistributions', async () => {
@@ -496,6 +511,14 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   watchEventLoop();
   createWindow();
+  if (process.env.ZEROG_MCP_ENABLED === '1') {
+    mcpHost ??= new McpServerHost({
+      control: mcpControl,
+      providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list() },
+      version: app.getVersion()
+    });
+    void mcpHost.start();
+  }
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();
   });

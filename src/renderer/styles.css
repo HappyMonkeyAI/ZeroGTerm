@@ -413,6 +413,11 @@ input:focus-visible {
 .status-dot.detached { background: #e0af68; }
 .status-dot.error { background: #f7768e; }
 
+.mcp-stop-button {
+  color: #f7768e;
+  border-color: rgba(247, 118, 142, .45);
+}
+
 .session-copy {
   min-width: 0;
   display: flex;

@@ -21,6 +21,15 @@ const api = {
   },
   loadWorkspaces: () => ipcRenderer.invoke('workspaces:load'),
   saveWorkspaces: (file) => ipcRenderer.invoke('workspaces:save', file),
+  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  revokeMcpControl: () => ipcRenderer.invoke('mcp:revoke'),
+  startMcp: () => ipcRenderer.invoke('mcp:start'),
+  stopMcp: () => ipcRenderer.invoke('mcp:stop'),
+  onMcpStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:status', listener);
+    return () => ipcRenderer.removeListener('mcp:status', listener);
+  },
   listBackends: () => ipcRenderer.invoke('sessions:backends'),
   listWslDistributions: () => ipcRenderer.invoke('sessions:wslDistributions'),
   createLocalSession: (request) => ipcRenderer.invoke('sessions:createLocal', request),

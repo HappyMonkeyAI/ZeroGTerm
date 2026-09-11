@@ -264,6 +264,25 @@ export interface AiTestResult {
   message: string;
 }
 
+/** The user-visible state of ZeroG's optional local MCP control channel. */
+export type McpConnectionState = 'disabled' | 'listening' | 'connected' | 'revoked' | 'error';
+
+export type McpCapability =
+  | 'workspace:read'
+  | 'workspace:restore'
+  | 'workspace:write'
+  | 'session:read'
+  | 'session:create'
+  | 'session:close';
+
+export interface McpControlStatus {
+  state: McpConnectionState;
+  endpoint?: string;
+  clientName?: string;
+  leaseExpiresAt?: number;
+  capabilities: McpCapability[];
+}
+
 /**
  * Which way a tunnel runs.
  *
@@ -347,6 +366,13 @@ export interface TerminalApi {
    */
   loadWorkspaces(): Promise<StoredWorkspaceFile>;
   saveWorkspaces(file: StoredWorkspaceFile): Promise<StoredWorkspaceFile>;
+  /** Current local MCP listener/lease state. */
+  mcpStatus(): Promise<McpControlStatus>;
+  startMcp(): Promise<{ endpoint: string; token: string }>;
+  stopMcp(): Promise<void>;
+  /** Emergency takeover: revoke AI control without closing panes. */
+  revokeMcpControl(): Promise<void>;
+  onMcpStatus(callback: (status: McpControlStatus) => void): () => void;
   /** Tunnels currently open, which outlive the Ports view being closed. */
   listForwards(): Promise<PortForwardInfo[]>;
   /**

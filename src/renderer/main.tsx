@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -982,6 +982,7 @@ function App() {
   ]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
   const [status, setStatus] = useState('Ready');
+  const [mcpStatus, setMcpStatus] = useState<McpControlStatus>({ state: 'disabled', capabilities: [] });
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
@@ -1119,6 +1120,11 @@ function App() {
     void api()?.appVersion?.()
       .then((version) => setAppVersion(formatVersion(version)))
       .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const currentApi = api();
+    void currentApi?.mcpStatus?.().then(setMcpStatus).catch(() => undefined);
+    return currentApi?.onMcpStatus?.(setMcpStatus);
   }, []);
   useEffect(() => {
     const currentApi = api();
@@ -3402,6 +3408,15 @@ function App() {
           })}
         </div>
         <div className="window-actions">
+          {mcpStatus.state === 'connected' && (
+            <button type="button" className="bar-button mcp-stop-button" onClick={() => {
+              void api()?.revokeMcpControl?.();
+              setStatus('AI control revoked · panes remain available manually');
+            }} title="Stop AI control and take over manually" aria-label="Stop AI control and take over manually">
+              <Icon name="stop" />
+              <span>Take over</span>
+            </button>
+          )}
           <button
             type="button"
             className="bar-button"
