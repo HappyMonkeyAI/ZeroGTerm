@@ -77,6 +77,14 @@ export class McpExecutionBroker {
     return { ...item.request, policy: { ...item.request.policy } };
   }
 
+  finishRunning(requestId: string, state: 'completed' | 'timed-out' | 'failed', output: string, truncated: boolean, message: string, now = Date.now()): McpExecutionResult {
+    const item = this.pending.get(requestId);
+    if (!item) throw new Error('Unknown command request.');
+    if (item.request.state !== 'running') throw new Error('Command is not running.');
+    this.finish(item, state, message, now, output, truncated);
+    return item.result!;
+  }
+
   cancel(requestId: string, clientId: string, message = 'Cancelled by the user.', now = Date.now()): McpExecutionResult {
     const item = this.owned(requestId, clientId);
     this.finish(item, 'cancelled', message, now);
@@ -116,8 +124,8 @@ export class McpExecutionBroker {
     if (!item.result && item.request.state === 'pending' && item.request.expiresAt <= now) this.finish(item, 'timed-out', 'Approval expired.', now);
   }
 
-  private finish(item: Pending, state: McpExecutionResult['state'], message: string, now: number): void {
+  private finish(item: Pending, state: McpExecutionResult['state'], message: string, now: number, output?: string, truncated = false): void {
     item.request.state = state;
-    item.result = { requestId: item.request.requestId, state, message, completedAt: now };
+    item.result = { requestId: item.request.requestId, state, ...(output ? { output } : {}), ...(truncated ? { truncated: true } : {}), message, completedAt: now };
   }
 }

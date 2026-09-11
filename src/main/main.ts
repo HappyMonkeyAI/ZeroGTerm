@@ -46,6 +46,22 @@ const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('user
 const mcpControl = new McpControl({ onChange: (status) => win?.webContents.send('mcp:status', status) });
 const mcpExecutions = new McpExecutionBroker();
 const mcpActiveExecutions = new Map<string, string>();
+const mcpExecutionOutput = new Map<string, string>();
+const mcpExecutionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearMcpExecution(requestId: string, sessionId?: string): void {
+  const timer = mcpExecutionTimers.get(requestId);
+  if (timer) clearTimeout(timer);
+  mcpExecutionTimers.delete(requestId);
+  mcpExecutionOutput.delete(requestId);
+  if (sessionId) {
+    if (mcpActiveExecutions.get(sessionId) === requestId) mcpActiveExecutions.delete(sessionId);
+  } else {
+    for (const [activeSessionId, activeRequestId] of Array.from(mcpActiveExecutions.entries())) {
+      if (activeRequestId === requestId) mcpActiveExecutions.delete(activeSessionId);
+    }
+  }
+}
 let mcpHost: McpServerHost | undefined;
 
 async function restoreWorkspace(workspaceId: string): Promise<unknown> {
@@ -305,7 +321,7 @@ ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(fil
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
 ipcMain.handle('mcp:status', () => mcpControl.status());
-ipcMain.handle('mcp:revoke', () => { mcpControl.revoke(); mcpExecutions.revokeAll(); win?.webContents.send('mcp:execution', mcpExecutions.listAll()); });
+ipcMain.handle('mcp:revoke', () => { mcpControl.revoke(); mcpExecutions.revokeAll(); for (const requestId of Array.from(mcpExecutionTimers.keys())) clearMcpExecution(requestId); win?.webContents.send('mcp:execution', mcpExecutions.listAll()); });
 ipcMain.handle('mcp:executions:list', () => mcpExecutions.listAll());
 ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
@@ -316,6 +332,14 @@ ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
     if (!session || session.kind !== 'local') throw new Error('Only attached local sessions may execute approved commands.');
     const running = mcpExecutions.start(requestId);
     mcpActiveExecutions.set(session.id, requestId);
+    mcpExecutionOutput.set(requestId, '');
+    mcpExecutionTimers.set(requestId, setTimeout(() => {
+      const output = mcpExecutionOutput.get(requestId) ?? '';
+      const result = mcpExecutions.finishRunning(requestId, 'timed-out', output, output.length >= running.policy.maxOutputBytes, 'Execution timed out.');
+      clearMcpExecution(requestId, session.id);
+      win?.webContents.send('mcp:execution', result);
+      win?.webContents.send('terminal:status', session.id, 'MCP command timed out.');
+    }, running.policy.maxRuntimeMs));
     service.write(session.id, `${running.command}\n`);
     win?.webContents.send('mcp:execution', running);
     return running;
@@ -324,12 +348,14 @@ ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
 ipcMain.handle('mcp:execution:reject', (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
   const result = mcpExecutions.decideFromUser(requestId, 'reject');
+  clearMcpExecution(requestId);
   win?.webContents.send('mcp:execution', result);
   return result;
 });
 ipcMain.handle('mcp:execution:cancel', (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
   const result = mcpExecutions.cancelFromUser(requestId);
+  clearMcpExecution(requestId);
   win?.webContents.send('mcp:execution', result);
   return result;
 });
@@ -350,7 +376,11 @@ ipcMain.handle('mcp:start', async () => {
         return result;
       },
       getCommandResult: async (request) => mcpExecutions.get(request.requestId, request.clientId),
-      cancelCommand: async (request) => mcpExecutions.cancel(request.requestId, request.clientId)
+      cancelCommand: async (request) => {
+        const result = mcpExecutions.cancel(request.requestId, request.clientId);
+        clearMcpExecution(request.requestId);
+        return result;
+      }
     },
     version: app.getVersion()
   });
@@ -412,10 +442,12 @@ ipcMain.handle('sessions:attach', (_event, id: unknown, size: unknown) => {
     (data) => {
       const requestId = mcpActiveExecutions.get(id);
       if (requestId) {
+        const existing = mcpExecutionOutput.get(requestId) ?? '';
+        mcpExecutionOutput.set(requestId, `${existing}${data}`.slice(0, 16 * 1024));
         const prompt = classifyMcpPrompt(data);
         if (prompt.kind !== 'unknown') {
           const result = mcpExecutions.cancelFromUser(requestId, `Execution paused for a ${prompt.kind} prompt; MCP cannot answer prompts.`);
-          mcpActiveExecutions.delete(id);
+          clearMcpExecution(requestId, id);
           win?.webContents.send('mcp:execution', result);
           win?.webContents.send('terminal:status', id, `MCP execution paused: ${prompt.kind} prompt requires user input.`);
         }
@@ -640,7 +672,11 @@ app.whenReady().then(() => {
         return result;
       },
       getCommandResult: async (request) => mcpExecutions.get(request.requestId, request.clientId),
-      cancelCommand: async (request) => mcpExecutions.cancel(request.requestId, request.clientId)
+      cancelCommand: async (request) => {
+        const result = mcpExecutions.cancel(request.requestId, request.clientId);
+        clearMcpExecution(request.requestId);
+        return result;
+      }
     },
       version: app.getVersion()
     });

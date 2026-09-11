@@ -47,4 +47,15 @@ describe('MCP execution broker', () => {
     expect(() => broker.get(request.requestId, 'other')).toThrow(/Unknown/);
     expect(() => broker.decide(request.requestId, 'other', 'approve')).toThrow(/Unknown/);
   });
+  it('stores bounded execution output in the final result', () => {
+    const broker = new McpExecutionBroker();
+    const request = broker.create({ clientId: 'owner', sessionId: 'local:one', sessionKind: 'local', command: 'echo one' });
+    broker.decide(request.requestId, 'owner', 'approve');
+    broker.start(request.requestId);
+    expect(broker.finishRunning(request.requestId, 'completed', 'hello\n', false, 'Command completed.', 2000)).toMatchObject({
+      requestId: request.requestId,
+      state: 'completed',
+      output: 'hello\n'
+    });
+  });
 });
