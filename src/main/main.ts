@@ -305,11 +305,18 @@ ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save
 ipcMain.handle('mcp:status', () => mcpControl.status());
 ipcMain.handle('mcp:revoke', () => { mcpControl.revoke(); mcpExecutions.revokeAll(); win?.webContents.send('mcp:execution', mcpExecutions.listAll()); });
 ipcMain.handle('mcp:executions:list', () => mcpExecutions.listAll());
-ipcMain.handle('mcp:execution:approve', (_event, requestId: unknown) => {
+ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
   const result = mcpExecutions.decideFromUser(requestId, 'approve');
-  win?.webContents.send('mcp:execution', result);
-  return result;
+  mcpControl.require(result.clientId, 'session:execute');
+  return service.list().then((sessions) => {
+    const session = sessions.find((item) => item.id === result.sessionId);
+    if (!session || session.kind !== 'local') throw new Error('Only attached local sessions may execute approved commands.');
+    const running = mcpExecutions.start(requestId);
+    service.write(session.id, `${running.command}\n`);
+    win?.webContents.send('mcp:execution', running);
+    return running;
+  });
 });
 ipcMain.handle('mcp:execution:reject', (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');

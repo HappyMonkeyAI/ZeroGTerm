@@ -68,6 +68,15 @@ export class McpExecutionBroker {
     return { ...item.request, policy: { ...item.request.policy } };
   }
 
+  start(requestId: string, now = Date.now()): McpExecutionRequest {
+    const item = this.pending.get(requestId);
+    if (!item) throw new Error('Unknown command request.');
+    this.expire(item, now);
+    if (item.request.state !== 'approved') throw new Error('Command must be approved before execution.');
+    item.request.state = 'running';
+    return { ...item.request, policy: { ...item.request.policy } };
+  }
+
   cancel(requestId: string, clientId: string, message = 'Cancelled by the user.', now = Date.now()): McpExecutionResult {
     const item = this.owned(requestId, clientId);
     this.finish(item, 'cancelled', message, now);
