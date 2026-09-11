@@ -42,6 +42,31 @@ const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('user
 const mcpControl = new McpControl({ onChange: (status) => win?.webContents.send('mcp:status', status) });
 let mcpHost: McpServerHost | undefined;
 
+async function restoreWorkspace(workspaceId: string): Promise<unknown> {
+  const file = await workspaceStore.load();
+  const workspace = file.workspaces.find((item) => item.id === workspaceId);
+  if (!workspace) throw new Error(`Unknown workspace: ${workspaceId}`);
+  const existing = await service.list();
+  const restored = [];
+  for (const member of workspace.members) {
+    const match = existing.find((session) =>
+      session.id === member.sessionId ||
+      (member.kind === 'ssh' && Boolean(member.sshTarget) && session.sshTarget === member.sshTarget) ||
+      (member.kind === 'local' && Boolean(member.screenName) && session.screenName === member.screenName)
+    );
+    if (match) {
+      restored.push({ session: match, action: 'reused' });
+      continue;
+    }
+    const session = member.kind === 'ssh' && member.sshTarget
+      ? await service.createSsh(member.sshTarget, member.name)
+      : await service.createLocal({ name: member.name });
+    restored.push({ session, action: 'created' });
+  }
+  win?.webContents.send('mcp:workspace-restored', { workspaceId, restored });
+  return { workspaceId, workspaceName: workspace.name, restored };
+}
+
 /** A pane's measured size, as it arrives from the renderer. */
 function parsePtySize(value: unknown): PtySize | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -251,7 +276,7 @@ ipcMain.handle('mcp:revoke', () => mcpControl.revoke());
 ipcMain.handle('mcp:start', async () => {
   mcpHost ??= new McpServerHost({
     control: mcpControl,
-    providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list() },
+    providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace },
     version: app.getVersion()
   });
   return mcpHost.start();
@@ -514,7 +539,7 @@ app.whenReady().then(() => {
   if (process.env.ZEROG_MCP_ENABLED === '1') {
     mcpHost ??= new McpServerHost({
       control: mcpControl,
-      providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list() },
+      providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace },
       version: app.getVersion()
     });
     void mcpHost.start();

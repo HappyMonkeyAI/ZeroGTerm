@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import { McpControl } from './mcp-control.js';
 import type { McpCapability, McpControlStatus } from '../shared/types.js';
+import { requireWorkspaceId } from './mcp-protocol.js';
 
 export interface McpServerProviders {
   listWorkspaces: () => Promise<unknown>;
@@ -133,6 +134,14 @@ export class McpServerHost {
     }, async ({ clientId }) => {
       this.control.require(clientId, 'session:read');
       return text(await this.providers.listSessions());
+    });
+    server.registerTool('zerog_restore_workspace', {
+      description: 'Restore a saved workspace and recreate only missing sessions. SSH authentication remains user-controlled.',
+      inputSchema: z.object({ clientId: z.string().min(1), workspaceId: z.string().min(1).max(64) })
+    }, async ({ clientId, workspaceId }) => {
+      this.control.require(clientId, 'workspace:restore');
+      if (!this.providers.restoreWorkspace) throw new Error('Workspace restoration is not available.');
+      return text(await this.providers.restoreWorkspace(requireWorkspaceId(workspaceId)));
     });
     server.registerTool('zerog_acquire_control', {
       description: 'Acquire the single AI control lease for this local ZeroG instance.',
