@@ -983,6 +983,7 @@ function App() {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
   const [status, setStatus] = useState('Ready');
   const [mcpStatus, setMcpStatus] = useState<McpControlStatus>({ state: 'disabled', capabilities: [] });
+  const [mcpInfo, setMcpInfo] = useState<{ endpoint: string; token: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
@@ -4433,6 +4434,13 @@ function App() {
           onAiModelsRefresh={() => void refreshAiModels()}
           aiTest={aiTest}
           onAiTest={() => void runAiTest()}
+          mcpStatus={mcpStatus}
+          mcpInfo={mcpInfo}
+          onMcpStart={() => {
+            void api()?.startMcp?.().then((info) => { setMcpInfo(info); setStatus('MCP enabled'); }).catch((error) => setStatus(ipcMessage(error)));
+          }}
+          onMcpStop={() => { void api()?.stopMcp?.().then(() => { setMcpInfo(null); setStatus('MCP disabled'); }).catch((error) => setStatus(ipcMessage(error))); }}
+          onMcpCopyToken={() => { if (mcpInfo) void api()?.copyText?.(mcpInfo.token).then(() => setStatus('MCP bearer token copied.')); }}
         />
       )}
 
