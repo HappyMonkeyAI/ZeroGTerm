@@ -44,6 +44,8 @@ Command execution is request-only. An agent may submit a single bounded local co
 
 The MCP surface never provides terminal keystroke injection, credential entry, prompt approval, or SSH secret transport. Password, passphrase, verification-code, host-key, and uncertain interactive prompts fail closed and remain user-owned. Cancellation and takeover revoke tracking and send an interrupt to the local PTY when applicable. Because a PTY does not expose trustworthy command boundaries, an otherwise non-interactive command is reported as timed out unless a future supervised runner supplies an explicit exit signal.
 
+The selected execution model is interactive-pane execution. Approved commands run in the existing local shell so the user sees the same cwd, environment, and terminal state. ZeroG deliberately does not infer completion from shell prompts or command output: output can contain arbitrary text that resembles a prompt. Timeout is therefore the authoritative upper bound, not a claim that the command exited with a particular status. Use the returned output and visible pane state for interpretation.
+
 Workspace and session responses contain metadata only. They do not include terminal output, passwords, private keys, bearer tokens, or API keys.
 
 ## Restart behavior
