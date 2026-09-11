@@ -20,6 +20,7 @@ import { AiService } from './ai-service.js';
 import { McpControl } from './mcp-control.js';
 import { McpServerHost } from './mcp-server.js';
 import { McpExecutionBroker } from './mcp-execution-broker.js';
+import { McpAudit } from './mcp-audit.js';
 import { classifyMcpPrompt } from './prompt-classifier.js';
 import { requireWorkspaceName } from './mcp-protocol.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
@@ -45,6 +46,7 @@ const sftp = new SftpService({ onEvent: (event) => win?.webContents.send('sftp:e
 const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('userData')), crypto: safeStorage });
 const mcpControl = new McpControl({ onChange: (status) => win?.webContents.send('mcp:status', status) });
 const mcpExecutions = new McpExecutionBroker();
+const mcpAudit = new McpAudit();
 const mcpActiveExecutions = new Map<string, string>();
 const mcpExecutionOutput = new Map<string, string>();
 const mcpExecutionTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -335,6 +337,7 @@ ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
     mcpExecutionOutput.set(requestId, '');
     mcpExecutionTimers.set(requestId, setTimeout(() => {
       const output = mcpExecutionOutput.get(requestId) ?? '';
+      service.write(session.id, '\u0003');
       const result = mcpExecutions.finishRunning(requestId, 'timed-out', output, output.length >= running.policy.maxOutputBytes, 'Execution timed out.');
       clearMcpExecution(requestId, session.id);
       win?.webContents.send('mcp:execution', result);
@@ -372,12 +375,16 @@ ipcMain.handle('mcp:start', async () => {
         const session = sessions.find((item) => item.id === request.sessionId);
         if (!session) throw new Error('Unknown session.');
         const result = mcpExecutions.create({ clientId: request.clientId, sessionId: request.sessionId, sessionKind: session.kind, command: request.command, policy: { maxRuntimeMs: request.timeoutMs, maxOutputBytes: request.outputBytes } });
+        mcpAudit.record({ at: Date.now(), requestId: result.requestId, clientId: result.clientId, capability: 'session:execute', sessionId: result.sessionId, state: 'requested', command: result.displayCommand });
         win?.webContents.send('mcp:execution', result);
         return result;
       },
       getCommandResult: async (request) => mcpExecutions.get(request.requestId, request.clientId),
       cancelCommand: async (request) => {
+        const current = mcpExecutions.get(request.requestId, request.clientId);
         const result = mcpExecutions.cancel(request.requestId, request.clientId);
+        const session = 'sessionId' in current ? (await service.list()).find((item) => item.id === current.sessionId) : undefined;
+        if (session?.kind === 'local') service.write(session.id, '\u0003');
         clearMcpExecution(request.requestId);
         return result;
       }
@@ -443,7 +450,16 @@ ipcMain.handle('sessions:attach', (_event, id: unknown, size: unknown) => {
       const requestId = mcpActiveExecutions.get(id);
       if (requestId) {
         const existing = mcpExecutionOutput.get(requestId) ?? '';
-        mcpExecutionOutput.set(requestId, `${existing}${data}`.slice(0, 16 * 1024));
+        const next = `${existing}${data}`;
+        mcpExecutionOutput.set(requestId, next.slice(0, 16 * 1024));
+        if (next.length >= 16 * 1024) {
+          service.write(id, '\u0003');
+          const result = mcpExecutions.finishRunning(requestId, 'failed', next.slice(0, 16 * 1024), true, 'Execution stopped after reaching the output limit.');
+          clearMcpExecution(requestId, id);
+          win?.webContents.send('mcp:execution', result);
+          win?.webContents.send('terminal:status', id, 'MCP execution stopped: output limit reached.');
+          return;
+        }
         const prompt = classifyMcpPrompt(data);
         if (prompt.kind !== 'unknown') {
           const result = mcpExecutions.cancelFromUser(requestId, `Execution paused for a ${prompt.kind} prompt; MCP cannot answer prompts.`);
@@ -668,12 +684,16 @@ app.whenReady().then(() => {
         const session = sessions.find((item) => item.id === request.sessionId);
         if (!session) throw new Error('Unknown session.');
         const result = mcpExecutions.create({ clientId: request.clientId, sessionId: request.sessionId, sessionKind: session.kind, command: request.command, policy: { maxRuntimeMs: request.timeoutMs, maxOutputBytes: request.outputBytes } });
+        mcpAudit.record({ at: Date.now(), requestId: result.requestId, clientId: result.clientId, capability: 'session:execute', sessionId: result.sessionId, state: 'requested', command: result.displayCommand });
         win?.webContents.send('mcp:execution', result);
         return result;
       },
       getCommandResult: async (request) => mcpExecutions.get(request.requestId, request.clientId),
       cancelCommand: async (request) => {
+        const current = mcpExecutions.get(request.requestId, request.clientId);
         const result = mcpExecutions.cancel(request.requestId, request.clientId);
+        const session = 'sessionId' in current ? (await service.list()).find((item) => item.id === current.sessionId) : undefined;
+        if (session?.kind === 'local') service.write(session.id, '\u0003');
         clearMcpExecution(request.requestId);
         return result;
       }

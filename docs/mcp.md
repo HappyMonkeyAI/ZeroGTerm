@@ -19,6 +19,7 @@ Capabilities:
 - `workspace:write` — create or replace a workspace
 - `session:create` — create local sessions as part of an orchestration operation
 - `session:close` — reserved for a future explicit close operation
+- `session:execute` — request a bounded local command; every request requires renderer approval
 
 ## Available tools
 
@@ -29,6 +30,9 @@ Capabilities:
 - `zerog_list_sessions`
 - `zerog_restore_workspace`
 - `zerog_create_project_workspace`
+- `zerog_request_command`
+- `zerog_get_command_result`
+- `zerog_cancel_command`
 
 `zerog_create_project_workspace` accepts one to four explicit local project directories, creates or reuses matching local sessions, persists the project directories for later restoration, and emits a renderer event so panes appear in the open workspace. It never runs a command.
 
@@ -36,7 +40,9 @@ Capabilities:
 
 ## Security boundary
 
-The MCP surface does not provide terminal keystroke injection, arbitrary command execution, shell access, credential entry, prompt approval, or SSH secret transport. This is intentional. A future command feature would require a separate design with per-pane approval, visible command confirmation, bounded output, cancellation, timeouts, and protections for interactive prompts.
+Command execution is request-only. An agent may submit a single bounded local command, but ZeroG does not write it until the user approves the exact command in the renderer. Commands are limited to 512 characters, 30 seconds, and 16 KiB of retained output by default. Shell operators, control/ANSI bytes, credential-shaped content, and SSH targets are rejected.
+
+The MCP surface never provides terminal keystroke injection, credential entry, prompt approval, or SSH secret transport. Password, passphrase, verification-code, host-key, and uncertain interactive prompts fail closed and remain user-owned. Cancellation and takeover revoke tracking and send an interrupt to the local PTY when applicable. Because a PTY does not expose trustworthy command boundaries, an otherwise non-interactive command is reported as timed out unless a future supervised runner supplies an explicit exit signal.
 
 Workspace and session responses contain metadata only. They do not include terminal output, passwords, private keys, bearer tokens, or API keys.
 
@@ -49,5 +55,5 @@ Saved local `screen` sessions can be reattached by their stable screen name. Exp
 1. Confirm `ZEROG_MCP_ENABLED=1` is present in the environment of the process that launches ZeroGTerm.
 2. Restart ZeroGTerm after changing the environment.
 3. Read the current endpoint and token from Settings; endpoints change when an ephemeral port is used.
-4. Acquire a lease with the required capabilities before calling a write or restore tool.
+4. Acquire a lease with the required capabilities before calling a write, restore, or command-request tool.
 5. If a workspace was created before the durable project-directory support, recreate it once with explicit project paths.
