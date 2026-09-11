@@ -152,8 +152,9 @@ export interface SpeechApiKeyStatus {
  *
  * The id alone is not enough. A local `screen` session's id is derived from its
  * name and comes back identical after a relaunch, but an SSH session's is a
- * fresh uuid each launch, so the durable keys travel alongside it. Never
- * carries cwd, command arguments, or credentials.
+ * fresh uuid each launch, so the durable keys travel alongside it. Project
+ * members may additionally carry an explicitly supplied cwd; this never
+ * carries command arguments or credentials.
  */
 export interface StoredWorkspaceMember {
   sessionId: string;
@@ -163,6 +164,8 @@ export interface StoredWorkspaceMember {
   screenName?: string;
   sshTarget?: string;
   backend?: string;
+  /** Set only for explicitly created local project panes. */
+  cwd?: string;
 }
 
 /** How a workspace was arranged, as stored. Validated on load, so loosely typed. */

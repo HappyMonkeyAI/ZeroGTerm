@@ -62,7 +62,7 @@ async function restoreWorkspace(workspaceId: string): Promise<unknown> {
     }
     const session = member.kind === 'ssh' && member.sshTarget
       ? await service.createSsh(member.sshTarget, member.name)
-      : await service.createLocal({ name: member.name });
+      : await service.createLocal({ name: member.name, ...(member.cwd ? { cwd: member.cwd } : {}) });
     restored.push({ member, session, action: 'created' });
   }
   win?.webContents.send('mcp:workspace-restored', { workspaceId, workspaceName: workspace.name, restored });
@@ -73,10 +73,12 @@ async function createProjectWorkspace(request: { name: string; projects: Array<{
   const name = requireWorkspaceName(request.name);
   const file = await workspaceStore.load();
   const existing = file.workspaces.find((item) => item.name === name);
+  const running = await service.list();
   const workspaceId = existing?.id ?? `ws-${randomUUID()}`;
   const sessions = [];
   for (const project of request.projects) {
-    const session = await service.createLocal({ name: project.name, cwd: project.cwd, ...(project.backend ? { backend: project.backend as any } : {}) });
+    const reused = running.find((session) => session.kind === 'local' && session.name === project.name && session.cwd === project.cwd);
+    const session = reused ?? await service.createLocal({ name: project.name, cwd: project.cwd, ...(project.backend ? { backend: project.backend as any } : {}) });
     sessions.push(session);
   }
   const members = sessions.map((session) => ({
@@ -85,11 +87,12 @@ async function createProjectWorkspace(request: { name: string; projects: Array<{
     name: session.name,
     ...(session.host ? { host: session.host } : {}),
     ...(session.screenName ? { screenName: session.screenName } : {}),
-    ...(session.backend ? { backend: session.backend } : {})
+    ...(session.backend ? { backend: session.backend } : {}),
+    ...(session.kind === 'local' && session.cwd ? { cwd: session.cwd } : {})
   }));
   const workspace = { id: workspaceId, name, members, view: { layout: 'grid', lastSplit: 'grid', maximizedSessionId: null } };
   await workspaceStore.save({ version: 1, workspaces: [...file.workspaces.filter((item) => item.id !== workspaceId), workspace], activeWorkspaceId: workspaceId });
-  win?.webContents.send('mcp:workspace-restored', { workspaceId, restored: sessions.map((session, index) => ({ member: members[index], session, action: 'created' })) });
+  win?.webContents.send('mcp:workspace-restored', { workspaceId, workspaceName: name, restored: sessions.map((session, index) => ({ member: members[index], session, action: 'created' })) });
   return { workspaceId, workspaceName: name, restored: sessions };
 }
 

@@ -30,6 +30,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - AI command suggestions from any OpenAI-compatible endpoint — Ollama, LM Studio, llama.cpp, vLLM, OpenRouter, or OpenAI itself — configured with a base URL, a model and an optional key in Settings. Ask what you want, get one command with an explanation, and approve it before it runs.
 - Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
 - Safe argument-array handling and validation around SSH and `screen` session operations.
+- Optional local MCP control for inspecting and restoring workspaces, and creating explicit project workspaces. It is loopback-only, bearer-authenticated, lease-controlled, and never executes terminal commands; see [docs/mcp.md](docs/mcp.md).
 
 The project is particularly useful for terminal-based AI development workflows: start an agent in a persistent session, disconnect or suffer an interrupted connection, and reconnect later to see what it has done and continue working.
 
