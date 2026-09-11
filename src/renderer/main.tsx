@@ -3474,7 +3474,15 @@ function App() {
             </button>
           )}
           {mcpExecutions.length > 0 && (
-            <span className="mcp-pending-count" title="Commands waiting for explicit approval">{mcpExecutions.length} pending</span>
+            <span className="mcp-pending-count" title="Commands waiting for explicit approval">
+              {mcpExecutions.map((request) => (
+                <span key={request.requestId} className="mcp-pending-request">
+                  <span title={request.displayCommand}>{request.displayCommand}</span>
+                  <button type="button" className="bar-button" onClick={() => { void api()?.approveMcpExecution?.(request.requestId); }} aria-label={`Approve command ${request.displayCommand}`}>Approve</button>
+                  <button type="button" className="bar-button" onClick={() => { void api()?.rejectMcpExecution?.(request.requestId); }} aria-label={`Reject command ${request.displayCommand}`}>Reject</button>
+                </span>
+              ))}
+            </span>
           )}
           <button
             type="button"
