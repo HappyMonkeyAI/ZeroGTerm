@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, ipcMain, Menu, safeStorage, session, shell } from 'electron';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
 import { ScreenService, parseWslDistributions, type PtySize } from './session-service.js';
@@ -18,6 +19,7 @@ import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './s
 import { AiService } from './ai-service.js';
 import { McpControl } from './mcp-control.js';
 import { McpServerHost } from './mcp-server.js';
+import { requireWorkspaceName } from './mcp-protocol.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -65,6 +67,30 @@ async function restoreWorkspace(workspaceId: string): Promise<unknown> {
   }
   win?.webContents.send('mcp:workspace-restored', { workspaceId, restored });
   return { workspaceId, workspaceName: workspace.name, restored };
+}
+
+async function createProjectWorkspace(request: { name: string; projects: Array<{ name: string; cwd: string; backend?: string }> }): Promise<unknown> {
+  const name = requireWorkspaceName(request.name);
+  const file = await workspaceStore.load();
+  const existing = file.workspaces.find((item) => item.name === name);
+  const workspaceId = existing?.id ?? `ws-${randomUUID()}`;
+  const sessions = [];
+  for (const project of request.projects) {
+    const session = await service.createLocal({ name: project.name, cwd: project.cwd, ...(project.backend ? { backend: project.backend as any } : {}) });
+    sessions.push(session);
+  }
+  const members = sessions.map((session) => ({
+    sessionId: session.id,
+    kind: session.kind,
+    name: session.name,
+    ...(session.host ? { host: session.host } : {}),
+    ...(session.screenName ? { screenName: session.screenName } : {}),
+    ...(session.backend ? { backend: session.backend } : {})
+  }));
+  const workspace = { id: workspaceId, name, members, view: { layout: 'grid', lastSplit: 'grid', maximizedSessionId: null } };
+  await workspaceStore.save({ version: 1, workspaces: [...file.workspaces.filter((item) => item.id !== workspaceId), workspace], activeWorkspaceId: workspaceId });
+  win?.webContents.send('mcp:workspace-restored', { workspaceId, restored: sessions.map((session, index) => ({ member: members[index], session, action: 'created' })) });
+  return { workspaceId, workspaceName: name, restored: sessions };
 }
 
 /** A pane's measured size, as it arrives from the renderer. */
@@ -276,7 +302,7 @@ ipcMain.handle('mcp:revoke', () => mcpControl.revoke());
 ipcMain.handle('mcp:start', async () => {
   mcpHost ??= new McpServerHost({
     control: mcpControl,
-    providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace },
+    providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace, createProjectWorkspace },
     version: app.getVersion()
   });
   return mcpHost.start();
@@ -539,7 +565,7 @@ app.whenReady().then(() => {
   if (process.env.ZEROG_MCP_ENABLED === '1') {
     mcpHost ??= new McpServerHost({
       control: mcpControl,
-      providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace },
+      providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace, createProjectWorkspace },
       version: app.getVersion()
     });
     void mcpHost.start();

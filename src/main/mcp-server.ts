@@ -15,6 +15,7 @@ export interface McpServerProviders {
   restoreWorkspace?: (workspaceId: string) => Promise<unknown>;
   createLocalSession?: (request: { name: string; cwd?: string; backend?: string }) => Promise<unknown>;
   closeSession?: (sessionId: string) => Promise<unknown>;
+  createProjectWorkspace?: (request: { name: string; projects: Array<{ name: string; cwd: string; backend?: string }> }) => Promise<unknown>;
 }
 
 export interface McpServerHostOptions {
@@ -32,6 +33,10 @@ export interface McpServerInfo {
 
 const MAX_BODY_BYTES = 128 * 1024;
 const DEFAULT_CAPABILITIES: McpCapability[] = ['workspace:read', 'session:read'];
+const ALL_CAPABILITIES: McpCapability[] = [
+  'workspace:read', 'workspace:restore', 'workspace:write',
+  'session:read', 'session:create', 'session:close'
+];
 
 /** Local authenticated MCP endpoint owned by the running ZeroG instance. */
 export class McpServerHost {
@@ -41,8 +46,7 @@ export class McpServerHost {
   private readonly configuredPort: number;
   private readonly token: string;
   private http: Server | undefined;
-  private mcp: McpServer | undefined;
-  private transport: StreamableHTTPServerTransport | undefined;
+
 
   constructor(options: McpServerHostOptions) {
     this.providers = options.providers;
@@ -58,9 +62,6 @@ export class McpServerHost {
 
   async start(): Promise<McpServerInfo> {
     if (this.http) return { endpoint: this.endpoint(), token: this.token };
-    this.mcp = this.buildMcpServer();
-    this.transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    await this.mcp.connect(this.transport);
     this.http = createServer((req, res) => { void this.handle(req, res); });
     await new Promise<void>((resolve, reject) => {
       this.http!.once('error', reject);
@@ -77,9 +78,6 @@ export class McpServerHost {
 
   async stop(): Promise<void> {
     this.control.disable();
-    await this.transport?.close().catch(() => undefined);
-    this.transport = undefined;
-    this.mcp = undefined;
     if (this.http) {
       await new Promise<void>((resolve) => this.http!.close(() => resolve()));
       this.http = undefined;
@@ -101,10 +99,15 @@ export class McpServerHost {
     if (req.method === 'POST') {
       const body = await readJson(req);
       if (body.error) return respond(res, body.status, { error: body.error });
-      await this.transport!.handleRequest(req, res, body.value);
+      // Stateless transport: each HTTP request gets an independent protocol
+      // wrapper, so one client cannot wedge the desktop-wide MCP endpoint.
+      const mcp = this.buildMcpServer();
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      await mcp.connect(transport);
+      await transport.handleRequest(req, res, body.value);
       return;
     }
-    await this.transport!.handleRequest(req, res);
+    respond(res, 400, { error: 'This stateless endpoint accepts POST requests only.' });
   }
 
   private authorized(req: IncomingMessage): boolean {
@@ -143,9 +146,22 @@ export class McpServerHost {
       if (!this.providers.restoreWorkspace) throw new Error('Workspace restoration is not available.');
       return text(await this.providers.restoreWorkspace(requireWorkspaceId(workspaceId)));
     });
+    server.registerTool('zerog_create_project_workspace', {
+      description: 'Create or replace a workspace containing local project panes. Does not execute commands.',
+      inputSchema: z.object({
+        clientId: z.string().min(1),
+        name: z.string().min(1).max(49),
+        projects: z.array(z.object({ name: z.string().min(1).max(64), cwd: z.string().min(1).max(512), backend: z.string().max(32).optional() })).min(1).max(4)
+      })
+    }, async ({ clientId, name, projects }) => {
+      this.control.require(clientId, 'workspace:write');
+      this.control.require(clientId, 'session:create');
+      if (!this.providers.createProjectWorkspace) throw new Error('Project workspace creation is not available.');
+      return text(await this.providers.createProjectWorkspace({ name, projects }));
+    });
     server.registerTool('zerog_acquire_control', {
       description: 'Acquire the single AI control lease for this local ZeroG instance.',
-      inputSchema: z.object({ clientId: z.string().min(1).max(128), clientName: z.string().max(128).optional(), capabilities: z.array(z.enum(DEFAULT_CAPABILITIES as [string, ...string[]])).optional() })
+      inputSchema: z.object({ clientId: z.string().min(1).max(128), clientName: z.string().max(128).optional(), capabilities: z.array(z.enum(ALL_CAPABILITIES as [string, ...string[]])).optional() })
     }, async ({ clientId, clientName, capabilities }) => text(this.control.connect(clientId, clientName, (capabilities ?? DEFAULT_CAPABILITIES) as McpCapability[])));
     server.registerTool('zerog_renew_control', {
       description: 'Renew the current AI control lease.',
