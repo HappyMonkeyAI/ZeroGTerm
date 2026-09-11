@@ -1137,21 +1137,33 @@ function App() {
         for (const session of restoredSessions) byId.set(session.id, session);
         return [...byId.values()];
       });
-      setWorkspaces((current) => current.map((workspace) => {
-        if (workspace.id !== event.workspaceId) return workspace;
+      setWorkspaces((current) => {
         const restoredIds = new Set(restoredSessions.map((session) => session.id));
         const members = event.restored.map((item) => item.member);
-        const pending = workspace.pending.filter((pendingMember) => !members.some((member) =>
-          pendingMember.sessionId === member.sessionId ||
-          (pendingMember.sshTarget && pendingMember.sshTarget === member.sshTarget) ||
-          (pendingMember.name === member.name && pendingMember.kind === member.kind)
-        ));
-        return {
-          ...workspace,
-          sessionIds: Array.from(new Set([...workspace.sessionIds, ...restoredIds])),
-          pending
-        };
-      }));
+        const existing = current.find((workspace) => workspace.id === event.workspaceId);
+        if (!existing) {
+          return [...current, {
+            id: event.workspaceId,
+            name: event.workspaceName ?? 'Restored workspace',
+            sessionIds: Array.from(restoredIds),
+            pending: [],
+            view: makeView('grid')
+          }];
+        }
+        return current.map((workspace) => {
+          if (workspace.id !== event.workspaceId) return workspace;
+          const pending = workspace.pending.filter((pendingMember) => !members.some((member) =>
+            pendingMember.sessionId === member.sessionId ||
+            (pendingMember.sshTarget && pendingMember.sshTarget === member.sshTarget) ||
+            (pendingMember.name === member.name && pendingMember.kind === member.kind)
+          ));
+          return {
+            ...workspace,
+            sessionIds: Array.from(new Set([...workspace.sessionIds, ...restoredIds])),
+            pending
+          };
+        });
+      });
       setActiveWorkspaceId(event.workspaceId);
       setStatus(`Restored ${restoredSessions.length} session${restoredSessions.length === 1 ? '' : 's'}`);
       void currentApi.listSessions().then(setSessions).catch(() => undefined);

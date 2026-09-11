@@ -65,7 +65,7 @@ async function restoreWorkspace(workspaceId: string): Promise<unknown> {
       : await service.createLocal({ name: member.name });
     restored.push({ member, session, action: 'created' });
   }
-  win?.webContents.send('mcp:workspace-restored', { workspaceId, restored });
+  win?.webContents.send('mcp:workspace-restored', { workspaceId, workspaceName: workspace.name, restored });
   return { workspaceId, workspaceName: workspace.name, restored };
 }
 

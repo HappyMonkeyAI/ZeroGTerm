@@ -285,6 +285,7 @@ export interface McpControlStatus {
 
 export interface McpWorkspaceRestored {
   workspaceId: string;
+  workspaceName?: string;
   restored: Array<{
     member: StoredWorkspaceMember;
     session: SessionInfo;
