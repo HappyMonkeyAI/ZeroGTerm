@@ -28,7 +28,7 @@ export interface McpRestoreResult {
 
 export function isMcpCapability(value: unknown): value is McpCapability {
   return value === 'workspace:read' || value === 'workspace:restore' || value === 'workspace:write' ||
-    value === 'session:read' || value === 'session:create' || value === 'session:close';
+    value === 'session:read' || value === 'session:create' || value === 'session:close' || value === 'session:execute';
 }
 
 export function requireMcpCapability(lease: McpLease | undefined, capability: McpCapability, now = Date.now()): void {

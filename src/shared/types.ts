@@ -276,7 +276,39 @@ export type McpCapability =
   | 'workspace:write'
   | 'session:read'
   | 'session:create'
-  | 'session:close';
+  | 'session:close'
+  | 'session:execute';
+
+export type McpExecutionState = 'pending' | 'approved' | 'rejected' | 'running' | 'completed' | 'timed-out' | 'cancelled' | 'failed';
+
+export interface McpExecutionPolicy {
+  allowShellOperators: boolean;
+  allowRemoteSessions: boolean;
+  maxCommandLength: number;
+  maxRuntimeMs: number;
+  maxOutputBytes: number;
+}
+
+export interface McpExecutionRequest {
+  requestId: string;
+  clientId: string;
+  sessionId: string;
+  command: string;
+  displayCommand: string;
+  state: McpExecutionState;
+  createdAt: number;
+  expiresAt: number;
+  policy: McpExecutionPolicy;
+}
+
+export interface McpExecutionResult {
+  requestId: string;
+  state: Exclude<McpExecutionState, 'pending' | 'approved' | 'running'>;
+  output?: string;
+  truncated?: boolean;
+  message?: string;
+  completedAt: number;
+}
 
 export interface McpControlStatus {
   state: McpConnectionState;
