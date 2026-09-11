@@ -325,9 +325,12 @@ ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save
 ipcMain.handle('mcp:status', () => mcpControl.status());
 ipcMain.handle('mcp:revoke', () => { mcpControl.revoke(); mcpExecutions.revokeAll(); for (const requestId of Array.from(mcpExecutionTimers.keys())) clearMcpExecution(requestId); win?.webContents.send('mcp:execution', mcpExecutions.listAll()); });
 ipcMain.handle('mcp:executions:list', () => mcpExecutions.listAll());
+ipcMain.handle('mcp:audit:list', () => mcpAudit.list());
 ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const pending = mcpExecutions.listAll().find((item) => item.requestId === requestId);
   const result = mcpExecutions.decideFromUser(requestId, 'approve');
+  if (pending && 'clientId' in pending) mcpAudit.record({ at: Date.now(), requestId, clientId: pending.clientId, capability: 'session:execute', sessionId: pending.sessionId, state: 'approved', command: pending.displayCommand });
   mcpControl.require(result.clientId, 'session:execute');
   return service.list().then((sessions) => {
     const session = sessions.find((item) => item.id === result.sessionId);
@@ -350,14 +353,18 @@ ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
 });
 ipcMain.handle('mcp:execution:reject', (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const pending = mcpExecutions.listAll().find((item) => item.requestId === requestId);
   const result = mcpExecutions.decideFromUser(requestId, 'reject');
+  if (pending && 'clientId' in pending) mcpAudit.record({ at: Date.now(), requestId, clientId: pending.clientId, capability: 'session:execute', sessionId: pending.sessionId, state: 'rejected', command: pending.displayCommand });
   clearMcpExecution(requestId);
   win?.webContents.send('mcp:execution', result);
   return result;
 });
 ipcMain.handle('mcp:execution:cancel', (_event, requestId: unknown) => {
   if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const pending = mcpExecutions.listAll().find((item) => item.requestId === requestId);
   const result = mcpExecutions.cancelFromUser(requestId);
+  if (pending && 'clientId' in pending) mcpAudit.record({ at: Date.now(), requestId, clientId: pending.clientId, capability: 'session:execute', sessionId: pending.sessionId, state: 'cancelled', command: pending.displayCommand });
   clearMcpExecution(requestId);
   win?.webContents.send('mcp:execution', result);
   return result;
