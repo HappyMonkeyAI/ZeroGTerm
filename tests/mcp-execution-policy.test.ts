@@ -58,4 +58,19 @@ describe('MCP execution broker', () => {
       output: 'hello\n'
     });
   });
+  it('finalizes cancellation with no output and preserves ownership', () => {
+    const broker = new McpExecutionBroker();
+    const request = broker.create({ clientId: 'owner', sessionId: 'local:one', sessionKind: 'local', command: 'echo one' });
+    broker.decide(request.requestId, 'owner', 'approve');
+    broker.start(request.requestId);
+    expect(broker.cancel(request.requestId, 'owner', 'Stopped by test.')).toMatchObject({ state: 'cancelled', message: 'Stopped by test.' });
+    expect(() => broker.cancel(request.requestId, 'other')).toThrow(/Unknown/);
+  });
+  it('supports an explicit bounded-output failure result', () => {
+    const broker = new McpExecutionBroker();
+    const request = broker.create({ clientId: 'owner', sessionId: 'local:one', sessionKind: 'local', command: 'yes' });
+    broker.decide(request.requestId, 'owner', 'approve');
+    broker.start(request.requestId);
+    expect(broker.finishRunning(request.requestId, 'failed', 'x'.repeat(16 * 1024), true, 'Output limit reached.')).toMatchObject({ state: 'failed', truncated: true, output: 'x'.repeat(16 * 1024) });
+  });
 });
