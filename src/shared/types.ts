@@ -283,6 +283,15 @@ export interface McpControlStatus {
   capabilities: McpCapability[];
 }
 
+export interface McpWorkspaceRestored {
+  workspaceId: string;
+  restored: Array<{
+    member: StoredWorkspaceMember;
+    session: SessionInfo;
+    action: 'reused' | 'created';
+  }>;
+}
+
 /**
  * Which way a tunnel runs.
  *
@@ -373,6 +382,7 @@ export interface TerminalApi {
   /** Emergency takeover: revoke AI control without closing panes. */
   revokeMcpControl(): Promise<void>;
   onMcpStatus(callback: (status: McpControlStatus) => void): () => void;
+  onMcpWorkspaceRestored(callback: (event: McpWorkspaceRestored) => void): () => void;
   /** Tunnels currently open, which outlive the Ports view being closed. */
   listForwards(): Promise<PortForwardInfo[]>;
   /**

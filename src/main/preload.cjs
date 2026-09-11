@@ -30,6 +30,11 @@ const api = {
     ipcRenderer.on('mcp:status', listener);
     return () => ipcRenderer.removeListener('mcp:status', listener);
   },
+  onMcpWorkspaceRestored: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:workspace-restored', listener);
+    return () => ipcRenderer.removeListener('mcp:workspace-restored', listener);
+  },
   listBackends: () => ipcRenderer.invoke('sessions:backends'),
   listWslDistributions: () => ipcRenderer.invoke('sessions:wslDistributions'),
   createLocalSession: (request) => ipcRenderer.invoke('sessions:createLocal', request),

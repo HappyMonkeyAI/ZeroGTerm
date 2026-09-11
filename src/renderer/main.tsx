@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpWorkspaceRestored, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -1126,6 +1126,37 @@ function App() {
     void currentApi?.mcpStatus?.().then(setMcpStatus).catch(() => undefined);
     return currentApi?.onMcpStatus?.(setMcpStatus);
   }, []);
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.onMcpWorkspaceRestored) return;
+    return currentApi.onMcpWorkspaceRestored((event: McpWorkspaceRestored) => {
+      const restoredSessions = event.restored.map((item) => item.session);
+      setSessions((current) => {
+        const byId = new Map(current.map((session) => [session.id, session]));
+        for (const session of restoredSessions) byId.set(session.id, session);
+        return [...byId.values()];
+      });
+      setWorkspaces((current) => current.map((workspace) => {
+        if (workspace.id !== event.workspaceId) return workspace;
+        const restoredIds = new Set(restoredSessions.map((session) => session.id));
+        const members = event.restored.map((item) => item.member);
+        const pending = workspace.pending.filter((pendingMember) => !members.some((member) =>
+          pendingMember.sessionId === member.sessionId ||
+          (pendingMember.sshTarget && pendingMember.sshTarget === member.sshTarget) ||
+          (pendingMember.name === member.name && pendingMember.kind === member.kind)
+        ));
+        return {
+          ...workspace,
+          sessionIds: Array.from(new Set([...workspace.sessionIds, ...restoredIds])),
+          pending
+        };
+      }));
+      setActiveWorkspaceId(event.workspaceId);
+      setStatus(`Restored ${restoredSessions.length} session${restoredSessions.length === 1 ? '' : 's'}`);
+      void currentApi.listSessions().then(setSessions).catch(() => undefined);
+    });
+  }, []);
+
   useEffect(() => {
     const currentApi = api();
     return currentApi?.onSftpEvent?.((event) => {

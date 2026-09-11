@@ -55,13 +55,13 @@ async function restoreWorkspace(workspaceId: string): Promise<unknown> {
       (member.kind === 'local' && Boolean(member.screenName) && session.screenName === member.screenName)
     );
     if (match) {
-      restored.push({ session: match, action: 'reused' });
+      restored.push({ member, session: match, action: 'reused' });
       continue;
     }
     const session = member.kind === 'ssh' && member.sshTarget
       ? await service.createSsh(member.sshTarget, member.name)
       : await service.createLocal({ name: member.name });
-    restored.push({ session, action: 'created' });
+    restored.push({ member, session, action: 'created' });
   }
   win?.webContents.send('mcp:workspace-restored', { workspaceId, restored });
   return { workspaceId, workspaceName: workspace.name, restored };
