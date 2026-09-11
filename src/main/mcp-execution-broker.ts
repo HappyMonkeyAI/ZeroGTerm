@@ -58,9 +58,26 @@ export class McpExecutionBroker {
     return { ...item.request, policy: { ...item.request.policy } };
   }
 
+  decideFromUser(requestId: string, decision: 'approve' | 'reject', now = Date.now()): McpExecutionRequest {
+    const item = this.pending.get(requestId);
+    if (!item) throw new Error('Unknown command request.');
+    this.expire(item, now);
+    if (item.request.state !== 'pending') throw new Error('Command approval is no longer pending.');
+    item.request.state = decision === 'approve' ? 'approved' : 'rejected';
+    if (decision === 'reject') this.finish(item, 'rejected', 'Rejected by the user.', now);
+    return { ...item.request, policy: { ...item.request.policy } };
+  }
+
   cancel(requestId: string, clientId: string, message = 'Cancelled by the user.', now = Date.now()): McpExecutionResult {
     const item = this.owned(requestId, clientId);
     this.finish(item, 'cancelled', message, now);
+    return item.result!;
+  }
+
+  cancelFromUser(requestId: string, now = Date.now()): McpExecutionResult {
+    const item = this.pending.get(requestId);
+    if (!item) throw new Error('Unknown command request.');
+    this.finish(item, 'cancelled', 'Cancelled by the user.', now);
     return item.result!;
   }
 
@@ -68,8 +85,16 @@ export class McpExecutionBroker {
     for (const item of Array.from(this.pending.values())) if (item.request.clientId === clientId && !item.result) this.finish(item, 'cancelled', 'AI control was revoked.', now);
   }
 
+  revokeAll(now = Date.now()): void {
+    for (const item of Array.from(this.pending.values())) if (!item.result) this.finish(item, 'cancelled', 'AI control was revoked.', now);
+  }
+
   list(clientId: string, now = Date.now()): Array<McpExecutionRequest | McpExecutionResult> {
     return Array.from(this.pending.values()).filter((item) => item.request.clientId === clientId).map((item) => this.get(item.request.requestId, clientId, now));
+  }
+
+  listAll(now = Date.now()): Array<McpExecutionRequest | McpExecutionResult> {
+    return Array.from(this.pending.values()).map((item) => { this.expire(item, now); return item.result ? { ...item.result } : { ...item.request, policy: { ...item.request.policy } }; });
   }
 
   private owned(requestId: string, clientId: string): Pending {

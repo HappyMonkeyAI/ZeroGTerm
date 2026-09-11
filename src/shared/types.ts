@@ -419,6 +419,11 @@ export interface TerminalApi {
   revokeMcpControl(): Promise<void>;
   onMcpStatus(callback: (status: McpControlStatus) => void): () => void;
   onMcpWorkspaceRestored(callback: (event: McpWorkspaceRestored) => void): () => void;
+  listMcpExecutions(): Promise<Array<McpExecutionRequest | McpExecutionResult>>;
+  approveMcpExecution(requestId: string): Promise<McpExecutionRequest>;
+  rejectMcpExecution(requestId: string): Promise<McpExecutionRequest>;
+  cancelMcpExecution(requestId: string): Promise<McpExecutionResult>;
+  onMcpExecution(callback: (request: McpExecutionRequest | McpExecutionResult) => void): () => void;
   /** Tunnels currently open, which outlive the Ports view being closed. */
   listForwards(): Promise<PortForwardInfo[]>;
   /**

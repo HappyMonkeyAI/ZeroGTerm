@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpWorkspaceRestored, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -983,6 +983,7 @@ function App() {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
   const [status, setStatus] = useState('Ready');
   const [mcpStatus, setMcpStatus] = useState<McpControlStatus>({ state: 'disabled', capabilities: [] });
+  const [mcpExecutions, setMcpExecutions] = useState<McpExecutionRequest[]>([]);
   const [mcpInfo, setMcpInfo] = useState<{ endpoint: string; token: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
@@ -1126,6 +1127,17 @@ function App() {
     const currentApi = api();
     void currentApi?.mcpStatus?.().then(setMcpStatus).catch(() => undefined);
     return currentApi?.onMcpStatus?.(setMcpStatus);
+  }, []);
+  useEffect(() => {
+    const currentApi = api();
+    void currentApi?.listMcpExecutions?.().then((items) => setMcpExecutions(items.filter((item): item is McpExecutionRequest => 'command' in item && item.state === 'pending'))).catch(() => undefined);
+    return currentApi?.onMcpExecution?.((item) => {
+      if (!('command' in item)) {
+        setMcpExecutions((current) => current.filter((request) => request.requestId !== item.requestId));
+        return;
+      }
+      setMcpExecutions((current) => item.state === 'pending' ? [...current.filter((request) => request.requestId !== item.requestId), item] : current.filter((request) => request.requestId !== item.requestId));
+    });
   }, []);
   useEffect(() => {
     const currentApi = api();
@@ -3460,6 +3472,9 @@ function App() {
               <Icon name="stop" />
               <span>Take over</span>
             </button>
+          )}
+          {mcpExecutions.length > 0 && (
+            <span className="mcp-pending-count" title="Commands waiting for explicit approval">{mcpExecutions.length} pending</span>
           )}
           <button
             type="button"

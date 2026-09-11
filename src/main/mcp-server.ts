@@ -16,6 +16,9 @@ export interface McpServerProviders {
   createLocalSession?: (request: { name: string; cwd?: string; backend?: string }) => Promise<unknown>;
   closeSession?: (sessionId: string) => Promise<unknown>;
   createProjectWorkspace?: (request: { name: string; projects: Array<{ name: string; cwd: string; backend?: string }> }) => Promise<unknown>;
+  requestCommand?: (request: { clientId: string; sessionId: string; command: string; timeoutMs?: number; outputBytes?: number }) => Promise<unknown>;
+  getCommandResult?: (request: { clientId: string; requestId: string }) => Promise<unknown>;
+  cancelCommand?: (request: { clientId: string; requestId: string }) => Promise<unknown>;
 }
 
 export interface McpServerHostOptions {
@@ -158,6 +161,30 @@ export class McpServerHost {
       this.control.require(clientId, 'session:create');
       if (!this.providers.createProjectWorkspace) throw new Error('Project workspace creation is not available.');
       return text(await this.providers.createProjectWorkspace({ name, projects }));
+    });
+    server.registerTool('zerog_request_command', {
+      description: 'Request a local command for explicit user approval. This never executes the command by itself.',
+      inputSchema: z.object({ clientId: z.string().min(1), sessionId: z.string().min(1).max(128), command: z.string().min(1).max(512), timeoutMs: z.number().int().min(100).max(30000).optional(), outputBytes: z.number().int().min(256).max(16384).optional() })
+    }, async ({ clientId, sessionId, command, timeoutMs, outputBytes }) => {
+      this.control.require(clientId, 'session:execute');
+      if (!this.providers.requestCommand) throw new Error('Command requests are not available.');
+      return text(await this.providers.requestCommand({ clientId, sessionId, command, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(outputBytes === undefined ? {} : { outputBytes }) }));
+    });
+    server.registerTool('zerog_get_command_result', {
+      description: 'Read the state of a command request owned by this client.',
+      inputSchema: z.object({ clientId: z.string().min(1), requestId: z.string().min(1).max(128) })
+    }, async ({ clientId, requestId }) => {
+      this.control.require(clientId, 'session:execute');
+      if (!this.providers.getCommandResult) throw new Error('Command requests are not available.');
+      return text(await this.providers.getCommandResult({ clientId, requestId }));
+    });
+    server.registerTool('zerog_cancel_command', {
+      description: 'Cancel a pending command request owned by this client.',
+      inputSchema: z.object({ clientId: z.string().min(1), requestId: z.string().min(1).max(128) })
+    }, async ({ clientId, requestId }) => {
+      this.control.require(clientId, 'session:execute');
+      if (!this.providers.cancelCommand) throw new Error('Command requests are not available.');
+      return text(await this.providers.cancelCommand({ clientId, requestId }));
     });
     server.registerTool('zerog_acquire_control', {
       description: 'Acquire the single AI control lease for this local ZeroG instance.',

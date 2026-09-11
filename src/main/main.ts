@@ -19,6 +19,7 @@ import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './s
 import { AiService } from './ai-service.js';
 import { McpControl } from './mcp-control.js';
 import { McpServerHost } from './mcp-server.js';
+import { McpExecutionBroker } from './mcp-execution-broker.js';
 import { requireWorkspaceName } from './mcp-protocol.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
@@ -42,6 +43,7 @@ const sftp = new SftpService({ onEvent: (event) => win?.webContents.send('sftp:e
 // ready, which every IPC call here already is.
 const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('userData')), crypto: safeStorage });
 const mcpControl = new McpControl({ onChange: (status) => win?.webContents.send('mcp:status', status) });
+const mcpExecutions = new McpExecutionBroker();
 let mcpHost: McpServerHost | undefined;
 
 async function restoreWorkspace(workspaceId: string): Promise<unknown> {
@@ -301,11 +303,45 @@ ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(fil
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
 ipcMain.handle('mcp:status', () => mcpControl.status());
-ipcMain.handle('mcp:revoke', () => mcpControl.revoke());
+ipcMain.handle('mcp:revoke', () => { mcpControl.revoke(); mcpExecutions.revokeAll(); win?.webContents.send('mcp:execution', mcpExecutions.listAll()); });
+ipcMain.handle('mcp:executions:list', () => mcpExecutions.listAll());
+ipcMain.handle('mcp:execution:approve', (_event, requestId: unknown) => {
+  if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const result = mcpExecutions.decideFromUser(requestId, 'approve');
+  win?.webContents.send('mcp:execution', result);
+  return result;
+});
+ipcMain.handle('mcp:execution:reject', (_event, requestId: unknown) => {
+  if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const result = mcpExecutions.decideFromUser(requestId, 'reject');
+  win?.webContents.send('mcp:execution', result);
+  return result;
+});
+ipcMain.handle('mcp:execution:cancel', (_event, requestId: unknown) => {
+  if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const result = mcpExecutions.cancelFromUser(requestId);
+  win?.webContents.send('mcp:execution', result);
+  return result;
+});
 ipcMain.handle('mcp:start', async () => {
   mcpHost ??= new McpServerHost({
     control: mcpControl,
-    providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace, createProjectWorkspace },
+    providers: {
+      listWorkspaces: () => workspaceStore.load(),
+      listSessions: () => service.list(),
+      restoreWorkspace,
+      createProjectWorkspace,
+      requestCommand: async (request) => {
+        const sessions = await service.list();
+        const session = sessions.find((item) => item.id === request.sessionId);
+        if (!session) throw new Error('Unknown session.');
+        const result = mcpExecutions.create({ clientId: request.clientId, sessionId: request.sessionId, sessionKind: session.kind, command: request.command, policy: { maxRuntimeMs: request.timeoutMs, maxOutputBytes: request.outputBytes } });
+        win?.webContents.send('mcp:execution', result);
+        return result;
+      },
+      getCommandResult: async (request) => mcpExecutions.get(request.requestId, request.clientId),
+      cancelCommand: async (request) => mcpExecutions.cancel(request.requestId, request.clientId)
+    },
     version: app.getVersion()
   });
   return mcpHost.start();
@@ -568,7 +604,22 @@ app.whenReady().then(() => {
   if (process.env.ZEROG_MCP_ENABLED === '1') {
     mcpHost ??= new McpServerHost({
       control: mcpControl,
-      providers: { listWorkspaces: () => workspaceStore.load(), listSessions: () => service.list(), restoreWorkspace, createProjectWorkspace },
+      providers: {
+      listWorkspaces: () => workspaceStore.load(),
+      listSessions: () => service.list(),
+      restoreWorkspace,
+      createProjectWorkspace,
+      requestCommand: async (request) => {
+        const sessions = await service.list();
+        const session = sessions.find((item) => item.id === request.sessionId);
+        if (!session) throw new Error('Unknown session.');
+        const result = mcpExecutions.create({ clientId: request.clientId, sessionId: request.sessionId, sessionKind: session.kind, command: request.command, policy: { maxRuntimeMs: request.timeoutMs, maxOutputBytes: request.outputBytes } });
+        win?.webContents.send('mcp:execution', result);
+        return result;
+      },
+      getCommandResult: async (request) => mcpExecutions.get(request.requestId, request.clientId),
+      cancelCommand: async (request) => mcpExecutions.cancel(request.requestId, request.clientId)
+    },
       version: app.getVersion()
     });
     void mcpHost.start();
