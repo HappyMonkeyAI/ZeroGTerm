@@ -25,6 +25,7 @@ export interface CommandPolicyDecision {
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const SHELL_OPERATORS = /[|;&<>`$(){}\\]/;
 const CREDENTIAL_SHAPE = /(?:bearer\s+|password\s*=|token\s*=|api[_-]?key\s*=|-----begin\s+[^\r\n]+-----)/i;
+const SAFE_REMOTE_COMMANDS = /^(?:pwd|cd(?:\s+\.?\/?[A-Za-z0-9_./~-]+)?|whoami|hostname|uname(?:\s+-a)?|ls(?:\s+(?:-[al]{1,2}|\.?\/?[A-Za-z0-9_./~-]+))?|df(?:\s+-h)?(?:\s+\.?\/?[A-Za-z0-9_./~-]+)?)$/;
 
 export function validateMcpCommand(input: CommandPolicyInput): CommandPolicyDecision {
   const policy = { ...DEFAULT_MCP_EXECUTION_POLICY, ...(input.policy ?? {}) };
@@ -38,6 +39,10 @@ export function validateMcpCommand(input: CommandPolicyInput): CommandPolicyDeci
   if (!policy.allowShellOperators && SHELL_OPERATORS.test(command)) return denied(policy, 'Shell operators are disabled.');
   if (input.sessionKind === 'ssh' && !policy.allowRemoteSessions) return denied(policy, 'Remote command execution is disabled.');
   return { allowed: true, command, displayCommand: redactCommand(command), policy };
+}
+
+export function isSafeRemoteCommand(command: string): boolean {
+  return SAFE_REMOTE_COMMANDS.test(command.trim());
 }
 
 function redactCommand(command: string): string {

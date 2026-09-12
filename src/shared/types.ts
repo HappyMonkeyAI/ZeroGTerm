@@ -328,6 +328,10 @@ export interface McpWorkspaceRestored {
   }>;
 }
 
+export interface McpSshSessionCreated {
+  session: SessionInfo;
+}
+
 /**
  * Which way a tunnel runs.
  *
@@ -419,6 +423,7 @@ export interface TerminalApi {
   revokeMcpControl(): Promise<void>;
   onMcpStatus(callback: (status: McpControlStatus) => void): () => void;
   onMcpWorkspaceRestored(callback: (event: McpWorkspaceRestored) => void): () => void;
+  onMcpSshSessionCreated(callback: (event: McpSshSessionCreated) => void): () => void;
   listMcpExecutions(): Promise<Array<McpExecutionRequest | McpExecutionResult>>;
   approveMcpExecution(requestId: string): Promise<McpExecutionRequest>;
   rejectMcpExecution(requestId: string): Promise<McpExecutionRequest>;

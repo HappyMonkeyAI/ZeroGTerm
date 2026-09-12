@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateMcpCommand } from '../src/main/mcp-execution-policy';
+import { isSafeRemoteCommand, validateMcpCommand } from '../src/main/mcp-execution-policy';
 import { McpExecutionBroker } from '../src/main/mcp-execution-broker';
 
 describe('MCP command policy', () => {
@@ -15,8 +15,12 @@ describe('MCP command policy', () => {
   });
   it('rejects remote execution by default and redacts credential-like input', () => {
     expect(validateMcpCommand({ command: 'echo hi', sessionKind: 'ssh' }).reason).toMatch(/Remote/);
-    const result = validateMcpCommand({ ...base, command: 'curl -H "Authorization: Bearer secret" https://example.test' });
+    const result = validateMcpCommand({ ...base, command: 'curl -H "Authorization: Bearer ***" https://example.test' });
     expect(result.allowed).toBe(false);
+  });
+  it('recognises the restricted remote read-only safe list', () => {
+    for (const command of ['pwd', 'cd', 'cd ~/projects', 'cd /srv/app', 'ls -la', 'ls /var/log', 'whoami', 'hostname', 'uname -a', 'df -h']) expect(isSafeRemoteCommand(command)).toBe(true);
+    for (const command of ['rm -rf /', 'cat /etc/shadow', 'cd /srv/my projects', 'ls; whoami', 'curl https://example.test']) expect(isSafeRemoteCommand(command)).toBe(false);
   });
 });
 
@@ -52,11 +56,7 @@ describe('MCP execution broker', () => {
     const request = broker.create({ clientId: 'owner', sessionId: 'local:one', sessionKind: 'local', command: 'echo one' });
     broker.decide(request.requestId, 'owner', 'approve');
     broker.start(request.requestId);
-    expect(broker.finishRunning(request.requestId, 'completed', 'hello\n', false, 'Command completed.', 2000)).toMatchObject({
-      requestId: request.requestId,
-      state: 'completed',
-      output: 'hello\n'
-    });
+    expect(broker.finishRunning(request.requestId, 'completed', 'hello\n', false, 'Command completed.', 2000)).toMatchObject({ requestId: request.requestId, state: 'completed', output: 'hello\n' });
   });
   it('finalizes cancellation with no output and preserves ownership', () => {
     const broker = new McpExecutionBroker();

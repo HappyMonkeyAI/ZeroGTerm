@@ -43,6 +43,25 @@ describe('McpControl', () => {
     expect(control.renew('one').expiresAt).toBe(1_500);
   });
 
+  it('allows the lease owner to add capabilities without replacing the lease', () => {
+    let now = 1_000;
+    const control = new McpControl({ now: () => now, leaseMs: 500 });
+    control.enable();
+    control.connect('one', 'Hermes', ['session:read']);
+    const upgraded = control.upgrade('one', ['workspace:read', 'workspace:write', 'workspace:read']);
+    expect(upgraded.clientName).toBe('Hermes');
+    expect(upgraded.capabilities).toEqual(['session:read', 'workspace:read', 'workspace:write']);
+    expect(upgraded.expiresAt).toBe(1_500);
+    control.require('one', 'workspace:write');
+  });
+
+  it('does not let another client upgrade the active lease', () => {
+    const control = new McpControl();
+    control.enable();
+    control.connect('one', undefined, ['session:read']);
+    expect(() => control.upgrade('two', ['workspace:write'])).toThrow(/active control lease/);
+  });
+
   it('rejects a second active client and permits it after revoke', () => {
     const control = new McpControl({ leaseMs: 10_000 });
     control.enable();

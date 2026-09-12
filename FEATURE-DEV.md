@@ -57,6 +57,20 @@ Reliable exit status would require switching to a supervised child-process model
 - [x] Bearer authentication without token persistence.
 - [x] Renewable single-client control lease.
 - [x] Explicit capabilities and renderer approval.
-- [x] Local sessions only for MCP execution.
 - [x] No password, passphrase, OTP, host-key, or unknown-prompt automation.
-- [x] No remote/SSH command execution.
+- [ ] Auto-approved remote safe-list with restricted arguments.
+- [x] Remote SSH commands can enter the existing explicit approval flow.
+
+## MCP SSH session creation
+
+- [x] Expose validated SSH session creation through MCP.
+- [x] Require the `session:create` capability.
+- [x] Keep authentication and host-key prompts user-controlled.
+- [ ] Verify opening a session through the live MCP endpoint.
+
+## MCP blank workspace creation
+
+- [x] Expose blank workspace creation through MCP.
+- [x] Select the new workspace and persist it immediately.
+- [x] Use sequential `workspace-N` names, skipping names already stored.
+- [x] Use a stable default loopback MCP port so Hermes registration survives app restarts.

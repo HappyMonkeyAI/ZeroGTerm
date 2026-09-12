@@ -14,6 +14,7 @@ export interface McpServerProviders {
   selectWorkspace?: (workspaceId: string) => Promise<unknown>;
   restoreWorkspace?: (workspaceId: string) => Promise<unknown>;
   createLocalSession?: (request: { name: string; cwd?: string; backend?: string }) => Promise<unknown>;
+  createSshSession?: (request: { target: string; name?: string }) => Promise<unknown>;
   closeSession?: (sessionId: string) => Promise<unknown>;
   createProjectWorkspace?: (request: { name: string; projects: Array<{ name: string; cwd: string; backend?: string }> }) => Promise<unknown>;
   requestCommand?: (request: { clientId: string; sessionId: string; command: string; timeoutMs?: number; outputBytes?: number }) => Promise<unknown>;
@@ -35,10 +36,11 @@ export interface McpServerInfo {
 }
 
 const MAX_BODY_BYTES = 128 * 1024;
+export const DEFAULT_MCP_PORT = 60056;
 const DEFAULT_CAPABILITIES: McpCapability[] = ['workspace:read', 'session:read'];
 const ALL_CAPABILITIES: McpCapability[] = [
   'workspace:read', 'workspace:restore', 'workspace:write',
-  'session:read', 'session:create', 'session:close'
+  'session:read', 'session:create', 'session:close', 'session:execute'
 ];
 
 /** Local authenticated MCP endpoint owned by the running ZeroG instance. */
@@ -55,8 +57,8 @@ export class McpServerHost {
     this.providers = options.providers;
     this.control = options.control ?? new McpControl();
     this.version = options.version ?? '0.0.0';
-    this.configuredPort = options.port ?? 0;
-    this.token = options.token ?? randomBytes(32).toString('base64url');
+    this.configuredPort = options.port ?? DEFAULT_MCP_PORT;
+    this.token = options.token ?? process.env.MCP_BEARER_TOKEN ?? randomBytes(32).toString('base64url');
   }
 
   status(): McpControlStatus {
@@ -149,6 +151,14 @@ export class McpServerHost {
       if (!this.providers.restoreWorkspace) throw new Error('Workspace restoration is not available.');
       return text(await this.providers.restoreWorkspace(requireWorkspaceId(workspaceId)));
     });
+    server.registerTool('zerog_create_workspace', {
+      description: 'Create and select a new blank workspace using the next workspace-N name.',
+      inputSchema: z.object({ clientId: z.string().min(1) })
+    }, async ({ clientId }) => {
+      this.control.require(clientId, 'workspace:write');
+      if (!this.providers.createWorkspace) throw new Error('Workspace creation is not available.');
+      return text(await this.providers.createWorkspace(''));
+    });
     server.registerTool('zerog_create_project_workspace', {
       description: 'Create or replace a workspace containing local project panes. Does not execute commands.',
       inputSchema: z.object({
@@ -161,6 +171,18 @@ export class McpServerHost {
       this.control.require(clientId, 'session:create');
       if (!this.providers.createProjectWorkspace) throw new Error('Project workspace creation is not available.');
       return text(await this.providers.createProjectWorkspace({ name, projects }));
+    });
+    server.registerTool('zerog_create_ssh_session', {
+      description: 'Open a new SSH session in the active ZeroG workspace. Authentication and host-key prompts remain user-controlled.',
+      inputSchema: z.object({
+        clientId: z.string().min(1),
+        target: z.string().min(1).max(512),
+        name: z.string().min(1).max(128).optional()
+      })
+    }, async ({ clientId, target, name }) => {
+      this.control.require(clientId, 'session:create');
+      if (!this.providers.createSshSession) throw new Error('SSH session creation is not available.');
+      return text(await this.providers.createSshSession({ target, ...(name === undefined ? {} : { name }) }));
     });
     server.registerTool('zerog_request_command', {
       description: 'Request a local command for explicit user approval. This never executes the command by itself.',
@@ -194,6 +216,10 @@ export class McpServerHost {
       description: 'Renew the current AI control lease.',
       inputSchema: z.object({ clientId: z.string().min(1) })
     }, async ({ clientId }) => text(this.control.renew(clientId)));
+    server.registerTool('zerog_upgrade_control', {
+      description: 'Add capabilities to the current AI control lease without taking control from another client.',
+      inputSchema: z.object({ clientId: z.string().min(1), capabilities: z.array(z.enum(ALL_CAPABILITIES as [string, ...string[]])).min(1) })
+    }, async ({ clientId, capabilities }) => text(this.control.upgrade(clientId, capabilities as McpCapability[])));
     return server;
   }
 }

@@ -62,6 +62,17 @@ export class McpControl {
     return { ...lease, capabilities: [...lease.capabilities] };
   }
 
+  upgrade(clientId: string, capabilities: McpCapability[]): McpLease {
+    this.requireClient(clientId);
+    const lease = this.lease!;
+    const unique = Array.from(new Set([...lease.capabilities, ...capabilities]));
+    lease.capabilities = unique;
+    lease.expiresAt = this.now() + this.leaseMs;
+    this.state = { ...this.state, leaseExpiresAt: lease.expiresAt, capabilities: unique };
+    this.emit();
+    return { ...lease, capabilities: [...lease.capabilities] };
+  }
+
   revoke(reason = 'AI control revoked by the user.'): void {
     this.lease = undefined;
     this.state = { ...this.state, state: 'revoked', leaseExpiresAt: undefined, capabilities: [] };

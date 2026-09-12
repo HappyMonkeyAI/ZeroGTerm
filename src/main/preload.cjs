@@ -35,6 +35,11 @@ const api = {
     ipcRenderer.on('mcp:workspace-restored', listener);
     return () => ipcRenderer.removeListener('mcp:workspace-restored', listener);
   },
+  onMcpSshSessionCreated: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:ssh-session-created', listener);
+    return () => ipcRenderer.removeListener('mcp:ssh-session-created', listener);
+  },
   listMcpExecutions: () => ipcRenderer.invoke('mcp:executions:list'),
   approveMcpExecution: (requestId) => ipcRenderer.invoke('mcp:execution:approve', requestId),
   rejectMcpExecution: (requestId) => ipcRenderer.invoke('mcp:execution:reject', requestId),

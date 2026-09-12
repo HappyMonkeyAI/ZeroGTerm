@@ -9,12 +9,15 @@ The selected execution model is interactive-pane execution. MCP commands run in 
 ## Delivered
 
 - Loopback-only, bearer-authenticated MCP server.
+- Stable default MCP endpoint at `http://127.0.0.1:60056/mcp`; explicit port overrides remain supported.
 - Single-client renewable MCP control lease with capability checks and revocation.
 - Workspace and session inspection, restoration, project workspace creation, and durable project-directory restoration.
+- MCP blank workspace creation with sequential `workspace-N` naming and immediate selection.
 - Renderer MCP settings and memory-only token handling.
 - `session:execute` capability with bounded command validation.
 - Explicit renderer approval for every command.
-- Local-session-only PTY execution; SSH execution and credential automation remain disabled.
+- Remote SSH commands now enter the existing explicit approval path; auto-approved safe-list policy remains the next slice.
+- MCP can open validated SSH sessions in the active workspace; SSH authentication and host-key prompts remain user-controlled.
 - Shell-operator, multiline, control-character, ANSI, credential-like, and remote-command rejection.
 - Sensitive prompt classification and fail-closed handling for passwords, passphrases, verification codes, host-key prompts, and uncertain prompts.
 - Bounded output capture at 16 KiB.

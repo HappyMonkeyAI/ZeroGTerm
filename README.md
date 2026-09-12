@@ -38,7 +38,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.8.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
+ZeroG Terminal is currently a public alpha. The current release is `0.9.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
 The GitHub Releases page provides a Windows x64 installer and portable executable for each desktop release. These alpha builds are intended for early adopters and testing rather than production use. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
 
@@ -395,6 +395,59 @@ The package downloads the application and launches it. To use the launcher repea
 npm install --global zerogterm
 zerogterm
 ```
+
+## Connecting an AI agent through MCP
+
+ZeroG Terminal can expose the running desktop instance as a local MCP server. This
+lets an MCP-capable AI agent inspect workspaces and sessions, restore or create
+project workspaces, open SSH sessions, and request commands for your approval.
+
+1. Start ZeroG Terminal with MCP enabled:
+
+   ```bash
+   ZEROG_MCP_ENABLED=1 npx zerogterm
+   ```
+
+   On Windows PowerShell, use:
+
+   ```powershell
+   $env:ZEROG_MCP_ENABLED = "1"
+   npx zerogterm
+   ```
+
+2. Open **Settings → AI & voice → MCP** in ZeroG Terminal. Copy the displayed
+   endpoint and bearer token into your MCP client. The default endpoint is
+   `http://127.0.0.1:60056/mcp`.
+
+   MCP clients that support Streamable HTTP generally need the equivalent of:
+
+   ```json
+   {
+     "url": "http://127.0.0.1:60056/mcp",
+     "headers": {
+       "Authorization": "Bearer <token-from-zero-g-settings>"
+     }
+   }
+   ```
+
+   The exact configuration key differs between clients; use its Streamable HTTP
+   or remote MCP server setting rather than a stdio command. The token belongs to
+   the current ZeroG process, is held only in memory, and must be copied again
+   after ZeroG restarts. Never put it in source control, prompts, issue reports,
+   or shared configuration.
+
+3. Ask the agent to call `zerog_get_connection_status`, then
+   `zerog_acquire_control` with a client ID and the capabilities it needs. Read
+   capabilities require no write access; workspace changes and command requests
+   require the corresponding lease capabilities. The lease is single-client and
+   expires unless renewed.
+
+Every command request is shown in ZeroG Terminal for exact user approval before
+anything is written to a shell. Rejection, cancellation, takeover, credential
+prompts, uncertain prompts, and unsupported command shapes fail closed. MCP does
+not receive terminal output, credentials, or keystroke-level control. See the
+[full MCP protocol and security guide](docs/mcp.md) for tools, limits, and
+troubleshooting.
 
 ## Development
 

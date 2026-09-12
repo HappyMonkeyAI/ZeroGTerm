@@ -1184,6 +1184,18 @@ function App() {
 
   useEffect(() => {
     const currentApi = api();
+    if (!currentApi?.onMcpSshSessionCreated) return;
+    return currentApi.onMcpSshSessionCreated(({ session }) => {
+      setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
+      setWorkspaces((current) => current.map((workspace) => workspace.id === activeWorkspaceId
+        ? { ...workspace, sessionIds: Array.from(new Set([...workspace.sessionIds, session.id])) }
+        : workspace));
+      setStatus(`Opened SSH session to ${session.host}`);
+    });
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    const currentApi = api();
     return currentApi?.onSftpEvent?.((event) => {
       if (event.type === 'prompt') setSftpQuestion(event.prompt.text.trim().split('\n').pop() ?? null);
       // Anything else means the connection moved on: it opened, it failed, or it

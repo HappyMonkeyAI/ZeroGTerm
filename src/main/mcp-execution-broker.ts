@@ -68,6 +68,15 @@ export class McpExecutionBroker {
     return { ...item.request, policy: { ...item.request.policy } };
   }
 
+  approveAutomatically(requestId: string, now = Date.now()): McpExecutionRequest {
+    const item = this.pending.get(requestId);
+    if (!item) throw new Error('Unknown command request.');
+    this.expire(item, now);
+    if (item.request.state !== 'pending') throw new Error('Command approval is no longer pending.');
+    item.request.state = 'approved';
+    return { ...item.request, policy: { ...item.request.policy } };
+  }
+
   start(requestId: string, now = Date.now()): McpExecutionRequest {
     const item = this.pending.get(requestId);
     if (!item) throw new Error('Unknown command request.');
