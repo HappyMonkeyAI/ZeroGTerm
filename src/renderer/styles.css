@@ -413,6 +413,31 @@ input:focus-visible {
 .status-dot.detached { background: #e0af68; }
 .status-dot.error { background: #f7768e; }
 
+.mcp-stop-button {
+  color: #f7768e;
+  border-color: rgba(247, 118, 142, .45);
+}
+
+.mcp-settings {
+  border-top: 1px solid var(--border);
+  margin-top: 18px;
+  padding-top: 18px;
+}
+
+.mcp-state-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px rgba(128, 128, 128, .12);
+}
+.mcp-state-dot.listening { background: #9ece6a; }
+.mcp-state-dot.connected { background: #73daca; box-shadow: 0 0 0 3px rgba(115, 218, 202, .16); }
+.mcp-state-dot.revoked, .mcp-state-dot.error { background: #f7768e; }
+.settings-value { display: block; overflow-wrap: anywhere; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border); }
+.token-value { max-height: 72px; overflow: auto; }
+
+
 .session-copy {
   min-width: 0;
   display: flex;

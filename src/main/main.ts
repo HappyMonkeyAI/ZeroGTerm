@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, ipcMain, Menu, safeStorage, session, shell } from 'electron';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
 import { ScreenService, parseWslDistributions, type PtySize } from './session-service.js';
@@ -16,6 +17,13 @@ import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
 import { AI_API_KEY, SPEECH_API_KEY, SecretStore, defaultSecretsPath } from './secret-store.js';
 import { AiService } from './ai-service.js';
+import { McpControl } from './mcp-control.js';
+import { McpServerHost } from './mcp-server.js';
+import { McpExecutionBroker } from './mcp-execution-broker.js';
+import { McpAudit } from './mcp-audit.js';
+import { classifyMcpPrompt } from './prompt-classifier.js';
+import { isSafeRemoteCommand } from './mcp-execution-policy.js';
+import { requireWorkspaceName } from './mcp-protocol.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -37,6 +45,90 @@ const sftp = new SftpService({ onEvent: (event) => win?.webContents.send('sftp:e
 // API keys for speech servers. safeStorage is only usable after the app is
 // ready, which every IPC call here already is.
 const secrets = new SecretStore({ filePath: defaultSecretsPath(app.getPath('userData')), crypto: safeStorage });
+const mcpControl = new McpControl({ onChange: (status) => win?.webContents.send('mcp:status', status) });
+const mcpExecutions = new McpExecutionBroker();
+const mcpAudit = new McpAudit();
+const mcpActiveExecutions = new Map<string, string>();
+const mcpExecutionOutput = new Map<string, string>();
+const mcpExecutionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearMcpExecution(requestId: string, sessionId?: string): void {
+  const timer = mcpExecutionTimers.get(requestId);
+  if (timer) clearTimeout(timer);
+  mcpExecutionTimers.delete(requestId);
+  mcpExecutionOutput.delete(requestId);
+  if (sessionId) {
+    if (mcpActiveExecutions.get(sessionId) === requestId) mcpActiveExecutions.delete(sessionId);
+  } else {
+    for (const [activeSessionId, activeRequestId] of Array.from(mcpActiveExecutions.entries())) {
+      if (activeRequestId === requestId) mcpActiveExecutions.delete(activeSessionId);
+    }
+  }
+}
+let mcpHost: McpServerHost | undefined;
+
+async function restoreWorkspace(workspaceId: string): Promise<unknown> {
+  const file = await workspaceStore.load();
+  const workspace = file.workspaces.find((item) => item.id === workspaceId);
+  if (!workspace) throw new Error(`Unknown workspace: ${workspaceId}`);
+  const existing = await service.list();
+  const restored = [];
+  for (const member of workspace.members) {
+    const match = existing.find((session) =>
+      session.id === member.sessionId ||
+      (member.kind === 'ssh' && Boolean(member.sshTarget) && session.sshTarget === member.sshTarget) ||
+      (member.kind === 'local' && Boolean(member.screenName) && session.screenName === member.screenName)
+    );
+    if (match) {
+      restored.push({ member, session: match, action: 'reused' });
+      continue;
+    }
+    const session = member.kind === 'ssh' && member.sshTarget
+      ? await service.createSsh(member.sshTarget, member.name)
+      : await service.createLocal({ name: member.name, ...(member.cwd ? { cwd: member.cwd } : {}) });
+    restored.push({ member, session, action: 'created' });
+  }
+  win?.webContents.send('mcp:workspace-restored', { workspaceId, workspaceName: workspace.name, restored });
+  return { workspaceId, workspaceName: workspace.name, restored };
+}
+
+async function createWorkspace(): Promise<unknown> {
+  const file = await workspaceStore.load();
+  const names = new Set(file.workspaces.map((workspace) => workspace.name.toLowerCase()));
+  let index = file.workspaces.length + 1;
+  while (names.has(`workspace-${index}`)) index += 1;
+  const workspace = { id: `ws-${randomUUID()}`, name: `workspace-${index}`, members: [], view: { layout: 'stack', lastSplit: 'split-v', maximizedSessionId: null } };
+  await workspaceStore.save({ version: 1, workspaces: [...file.workspaces, workspace], activeWorkspaceId: workspace.id });
+  win?.webContents.send('mcp:workspace-restored', { workspaceId: workspace.id, workspaceName: workspace.name, restored: [] });
+  return { workspaceId: workspace.id, workspaceName: workspace.name, restored: [] };
+}
+
+async function createProjectWorkspace(request: { name: string; projects: Array<{ name: string; cwd: string; backend?: string }> }): Promise<unknown> {
+  const name = requireWorkspaceName(request.name);
+  const file = await workspaceStore.load();
+  const existing = file.workspaces.find((item) => item.name === name);
+  const running = await service.list();
+  const workspaceId = existing?.id ?? `ws-${randomUUID()}`;
+  const sessions = [];
+  for (const project of request.projects) {
+    const reused = running.find((session) => session.kind === 'local' && session.name === project.name && session.cwd === project.cwd);
+    const session = reused ?? await service.createLocal({ name: project.name, cwd: project.cwd, ...(project.backend ? { backend: project.backend as any } : {}) });
+    sessions.push(session);
+  }
+  const members = sessions.map((session) => ({
+    sessionId: session.id,
+    kind: session.kind,
+    name: session.name,
+    ...(session.host ? { host: session.host } : {}),
+    ...(session.screenName ? { screenName: session.screenName } : {}),
+    ...(session.backend ? { backend: session.backend } : {}),
+    ...(session.kind === 'local' && session.cwd ? { cwd: session.cwd } : {})
+  }));
+  const workspace = { id: workspaceId, name, members, view: { layout: 'grid', lastSplit: 'grid', maximizedSessionId: null } };
+  await workspaceStore.save({ version: 1, workspaces: [...file.workspaces.filter((item) => item.id !== workspaceId), workspace], activeWorkspaceId: workspaceId });
+  win?.webContents.send('mcp:workspace-restored', { workspaceId, workspaceName: name, restored: sessions.map((session, index) => ({ member: members[index], session, action: 'created' })) });
+  return { workspaceId, workspaceName: name, restored: sessions };
+}
 
 /** A pane's measured size, as it arrives from the renderer. */
 function parsePtySize(value: unknown): PtySize | undefined {
@@ -242,6 +334,121 @@ ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(fil
 
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
+ipcMain.handle('mcp:status', () => mcpControl.status());
+ipcMain.handle('mcp:revoke', () => { mcpControl.revoke(); mcpExecutions.revokeAll(); for (const requestId of Array.from(mcpExecutionTimers.keys())) clearMcpExecution(requestId); win?.webContents.send('mcp:execution', mcpExecutions.listAll()); });
+ipcMain.handle('mcp:executions:list', () => mcpExecutions.listAll());
+ipcMain.handle('mcp:audit:list', () => mcpAudit.list());
+async function runMcpExecution(requestId: string): Promise<unknown> {
+  const request = mcpExecutions.listAll().find((item) => item.requestId === requestId);
+  if (!request || !('sessionId' in request)) throw new Error('Unknown command request.');
+  const sessions = await service.list();
+  const session = sessions.find((item) => item.id === request.sessionId);
+  if (!session) throw new Error('Only attached sessions may execute approved commands.');
+  const running = mcpExecutions.start(requestId);
+  mcpActiveExecutions.set(session.id, requestId);
+  mcpExecutionOutput.set(requestId, '');
+  mcpExecutionTimers.set(requestId, setTimeout(() => {
+    const output = mcpExecutionOutput.get(requestId) ?? '';
+    service.write(session.id, '\u0003');
+    const result = mcpExecutions.finishRunning(requestId, 'timed-out', output, output.length >= running.policy.maxOutputBytes, 'Execution timed out.');
+    clearMcpExecution(requestId, session.id);
+    win?.webContents.send('mcp:execution', result);
+    win?.webContents.send('terminal:status', session.id, 'MCP command timed out.');
+  }, running.policy.maxRuntimeMs));
+  service.write(session.id, `${running.command}\n`);
+  win?.webContents.send('mcp:execution', running);
+  return running;
+}
+
+ipcMain.handle('mcp:execution:approve', async (_event, requestId: unknown) => {
+  if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const pending = mcpExecutions.listAll().find((item) => item.requestId === requestId);
+  const result = mcpExecutions.decideFromUser(requestId, 'approve');
+  if (pending && 'clientId' in pending) mcpAudit.record({ at: Date.now(), requestId, clientId: pending.clientId, capability: 'session:execute', sessionId: pending.sessionId, state: 'approved', command: pending.displayCommand });
+  mcpControl.require(result.clientId, 'session:execute');
+  return runMcpExecution(requestId);
+});
+ipcMain.handle('mcp:execution:reject', (_event, requestId: unknown) => {
+  if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const pending = mcpExecutions.listAll().find((item) => item.requestId === requestId);
+  const result = mcpExecutions.decideFromUser(requestId, 'reject');
+  if (pending && 'clientId' in pending) mcpAudit.record({ at: Date.now(), requestId, clientId: pending.clientId, capability: 'session:execute', sessionId: pending.sessionId, state: 'rejected', command: pending.displayCommand });
+  clearMcpExecution(requestId);
+  win?.webContents.send('mcp:execution', result);
+  return result;
+});
+ipcMain.handle('mcp:execution:cancel', (_event, requestId: unknown) => {
+  if (typeof requestId !== 'string' || !requestId) throw new Error('A command request id is required.');
+  const pending = mcpExecutions.listAll().find((item) => item.requestId === requestId);
+  const result = mcpExecutions.cancelFromUser(requestId);
+  if (pending && 'clientId' in pending) mcpAudit.record({ at: Date.now(), requestId, clientId: pending.clientId, capability: 'session:execute', sessionId: pending.sessionId, state: 'cancelled', command: pending.displayCommand });
+  clearMcpExecution(requestId);
+  win?.webContents.send('mcp:execution', result);
+  return result;
+});
+
+function createMcpProviders() {
+  return {
+    listWorkspaces: () => workspaceStore.load(),
+    listSessions: () => service.list(),
+    createWorkspace,
+    restoreWorkspace,
+    createSshSession: async (request: { target: string; name?: string }) => {
+      const session = await service.createSsh(request.target, request.name);
+      const attached = service.attach(session.id, (data) => {
+        const requestId = mcpActiveExecutions.get(session.id);
+        if (requestId) {
+          const output = `${mcpExecutionOutput.get(requestId) ?? ''}${data}`.slice(0, 16 * 1024);
+          mcpExecutionOutput.set(requestId, output);
+          if ((output.match(/ExitCode=\d+/g) ?? []).length >= 2) {
+            const result = mcpExecutions.finishRunning(requestId, 'completed', output, false, 'Command completed.');
+            clearMcpExecution(requestId, session.id);
+            win?.webContents.send('mcp:execution', result);
+          }
+        }
+        win?.webContents.send('terminal:data', session.id, data);
+      }, (message) => win?.webContents.send('terminal:status', session.id, message));
+      win?.webContents.send('mcp:ssh-session-created', { session: attached });
+      return attached;
+    },
+    createProjectWorkspace,
+    requestCommand: async (request: { clientId: string; sessionId: string; command: string; timeoutMs?: number; outputBytes?: number }) => {
+      const sessions = await service.list();
+      const session = sessions.find((item) => item.id === request.sessionId);
+      if (!session) throw new Error('Unknown session.');
+      const result = mcpExecutions.create({ clientId: request.clientId, sessionId: request.sessionId, sessionKind: session.kind, command: request.command, policy: { allowRemoteSessions: session.kind === 'ssh', ...(request.timeoutMs === undefined ? {} : { maxRuntimeMs: request.timeoutMs }), ...(request.outputBytes === undefined ? {} : { maxOutputBytes: request.outputBytes }) } });
+      const safeRemote = session.kind === 'ssh' && isSafeRemoteCommand(result.command);
+      if (safeRemote) {
+        const approved = mcpExecutions.approveAutomatically(result.requestId);
+        mcpAudit.record({ at: Date.now(), requestId: approved.requestId, clientId: approved.clientId, capability: 'session:execute', sessionId: approved.sessionId, state: 'approved', command: approved.displayCommand });
+        await runMcpExecution(approved.requestId);
+        return mcpExecutions.get(approved.requestId, request.clientId);
+      }
+      mcpAudit.record({ at: Date.now(), requestId: result.requestId, clientId: result.clientId, capability: 'session:execute', sessionId: result.sessionId, state: 'requested', command: result.displayCommand });
+      win?.webContents.send('mcp:execution', result);
+      return result;
+    },
+    getCommandResult: async (request: { clientId: string; requestId: string }) => mcpExecutions.get(request.requestId, request.clientId),
+    cancelCommand: async (request: { clientId: string; requestId: string }) => {
+      const current = mcpExecutions.get(request.requestId, request.clientId);
+      const result = mcpExecutions.cancel(request.requestId, request.clientId);
+      const session = 'sessionId' in current ? (await service.list()).find((item) => item.id === current.sessionId) : undefined;
+      if (session?.kind === 'local') service.write(session.id, '\u0003');
+      clearMcpExecution(request.requestId);
+      return result;
+    }
+  };
+}
+
+ipcMain.handle('mcp:start', async () => {
+  mcpHost ??= new McpServerHost({
+    control: mcpControl,
+    providers: createMcpProviders(),
+    version: app.getVersion()
+  });
+  return mcpHost.start();
+});
+ipcMain.handle('mcp:stop', async () => { await mcpHost?.stop(); });
 
 ipcMain.handle('sessions:backends', () => discoverShellBackends());
 ipcMain.handle('sessions:wslDistributions', async () => {
@@ -294,7 +501,30 @@ ipcMain.handle('sessions:attach', (_event, id: unknown, size: unknown) => {
   if (typeof id !== 'string' || !id) throw new Error('attachSession requires a session id');
   return service.attach(
     id,
-    (data) => win?.webContents.send('terminal:data', id, data),
+    (data) => {
+      const requestId = mcpActiveExecutions.get(id);
+      if (requestId) {
+        const existing = mcpExecutionOutput.get(requestId) ?? '';
+        const next = `${existing}${data}`;
+        mcpExecutionOutput.set(requestId, next.slice(0, 16 * 1024));
+        if (next.length >= 16 * 1024) {
+          service.write(id, '\u0003');
+          const result = mcpExecutions.finishRunning(requestId, 'failed', next.slice(0, 16 * 1024), true, 'Execution stopped after reaching the output limit.');
+          clearMcpExecution(requestId, id);
+          win?.webContents.send('mcp:execution', result);
+          win?.webContents.send('terminal:status', id, 'MCP execution stopped: output limit reached.');
+          return;
+        }
+        const prompt = classifyMcpPrompt(data);
+        if (prompt.kind !== 'unknown') {
+          const result = mcpExecutions.cancelFromUser(requestId, `Execution paused for a ${prompt.kind} prompt; MCP cannot answer prompts.`);
+          clearMcpExecution(requestId, id);
+          win?.webContents.send('mcp:execution', result);
+          win?.webContents.send('terminal:status', id, `MCP execution paused: ${prompt.kind} prompt requires user input.`);
+        }
+      }
+      win?.webContents.send('terminal:data', id, data);
+    },
     (message) => win?.webContents.send('terminal:status', id, message),
     parsePtySize(size)
   );
@@ -496,6 +726,14 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   watchEventLoop();
   createWindow();
+  if (process.env.ZEROG_MCP_ENABLED === '1') {
+    mcpHost ??= new McpServerHost({
+      control: mcpControl,
+      providers: createMcpProviders(),
+      version: app.getVersion()
+    });
+    void mcpHost.start();
+  }
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();
   });

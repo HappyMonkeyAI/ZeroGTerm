@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildTranscriptionForm,
+  buildTranscriptionJson,
+  buildChatCompletionJson,
   encodeWav,
   isLoopbackEndpoint,
   isSupportedEndpoint,
@@ -138,6 +140,25 @@ describe('buildTranscriptionForm', () => {
   });
 });
 
+describe('buildTranscriptionJson', () => {
+  it('sends the wav as a base64 data URL for JSON-only servers', () => {
+    const payload = JSON.parse(buildTranscriptionJson({ url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]) }));
+    expect(payload.model).toBe('m');
+    expect(payload.response_format).toBe('json');
+    expect(payload.file).toMatch(/^data:audio\/wav;base64,/);
+  });
+});
+
+describe('buildChatCompletionJson', () => {
+  it('sends base64 wav audio using the OpenAI chat audio shape', () => {
+    const payload = JSON.parse(buildChatCompletionJson({ url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]) }));
+    expect(payload.model).toBe('m');
+    expect(payload.stream).toBe(false);
+    expect(payload.messages[0].content[1]).toMatchObject({ type: 'input_audio', input_audio: { format: 'wav' } });
+    expect(payload.messages[0].content[1].input_audio.data).not.toContain('data:');
+  });
+});
+
 describe('parseTranscriptionText', () => {
   it('reads the OpenAI shape', () => {
     expect(parseTranscriptionText({ text: '  git status  ' })).toBe('git status');
@@ -185,6 +206,31 @@ describe('transcribeViaServer', () => {
       transcribeViaServer({ url: lanEndpoint, model: 'm', language: 'auto', audio: samples([0]) }, fetchImpl as unknown as typeof fetch)
     ).resolves.toBe('git status');
     expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toBe(lanEndpoint);
+  });
+
+  it('uses JSON chat completions for LM Studio-style endpoints', async () => {
+    const endpoint = 'http://192.168.5.229:1234/v1/chat/completions';
+    const fetchImpl = vi.fn(async () => jsonResponse({ choices: [{ message: { content: 'git status' } }] }));
+    await expect(
+      transcribeViaServer({ url: endpoint, model: 'Qwen3-ASR-0.6B', language: 'auto', audio: samples([0]) }, fetchImpl as unknown as typeof fetch)
+    ).resolves.toBe('git status');
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(typeof init.body).toBe('string');
+  });
+
+  it('retries as JSON when a server explicitly requires application/json', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { message: "POST requests must use 'application/json'" } }, { status: 415 }))
+      .mockResolvedValueOnce(jsonResponse({ text: 'git status' }));
+
+    await expect(
+      transcribeViaServer({ url: ENDPOINT, model: 'm', language: 'auto', audio: samples([0]) }, fetchImpl as unknown as typeof fetch)
+    ).resolves.toBe('git status');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [, retry] = fetchImpl.mock.calls[1] as unknown as [string, RequestInit];
+    expect(retry.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(typeof retry.body).toBe('string');
   });
 
   it('sends an api key as a bearer token', async () => {

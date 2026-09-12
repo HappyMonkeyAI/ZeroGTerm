@@ -30,6 +30,7 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - AI command suggestions from any OpenAI-compatible endpoint — Ollama, LM Studio, llama.cpp, vLLM, OpenRouter, or OpenAI itself — configured with a base URL, a model and an optional key in Settings. Ask what you want, get one command with an explanation, and approve it before it runs.
 - Sandboxed Electron renderer, context isolation, disabled Node integration, and a narrow typed preload API.
 - Safe argument-array handling and validation around SSH and `screen` session operations.
+- Optional local MCP control for inspecting and restoring workspaces, and creating explicit project workspaces. It is loopback-only, bearer-authenticated, lease-controlled, and never executes terminal commands; see [docs/mcp.md](docs/mcp.md).
 
 The project is particularly useful for terminal-based AI development workflows: start an agent in a persistent session, disconnect or suffer an interrupted connection, and reconnect later to see what it has done and continue working.
 
@@ -37,7 +38,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.8.0-alpha`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
+ZeroG Terminal is currently a public alpha. The current release is `0.9.0-alpha.1`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
 The GitHub Releases page provides a Windows x64 installer and portable executable for each desktop release. These alpha builds are intended for early adopters and testing rather than production use. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
 
@@ -394,6 +395,59 @@ The package downloads the application and launches it. To use the launcher repea
 npm install --global zerogterm
 zerogterm
 ```
+
+## Connecting an AI agent through MCP
+
+ZeroG Terminal can expose the running desktop instance as a local MCP server. This
+lets an MCP-capable AI agent inspect workspaces and sessions, restore or create
+project workspaces, open SSH sessions, and request commands for your approval.
+
+1. Start ZeroG Terminal with MCP enabled:
+
+   ```bash
+   ZEROG_MCP_ENABLED=1 npx zerogterm
+   ```
+
+   On Windows PowerShell, use:
+
+   ```powershell
+   $env:ZEROG_MCP_ENABLED = "1"
+   npx zerogterm
+   ```
+
+2. Open **Settings → AI & voice → MCP** in ZeroG Terminal. Copy the displayed
+   endpoint and bearer token into your MCP client. The default endpoint is
+   `http://127.0.0.1:60056/mcp`.
+
+   MCP clients that support Streamable HTTP generally need the equivalent of:
+
+   ```json
+   {
+     "url": "http://127.0.0.1:60056/mcp",
+     "headers": {
+       "Authorization": "Bearer <token-from-zero-g-settings>"
+     }
+   }
+   ```
+
+   The exact configuration key differs between clients; use its Streamable HTTP
+   or remote MCP server setting rather than a stdio command. The token belongs to
+   the current ZeroG process, is held only in memory, and must be copied again
+   after ZeroG restarts. Never put it in source control, prompts, issue reports,
+   or shared configuration.
+
+3. Ask the agent to call `zerog_get_connection_status`, then
+   `zerog_acquire_control` with a client ID and the capabilities it needs. Read
+   capabilities require no write access; workspace changes and command requests
+   require the corresponding lease capabilities. The lease is single-client and
+   expires unless renewed.
+
+Every command request is shown in ZeroG Terminal for exact user approval before
+anything is written to a shell. Rejection, cancellation, takeover, credential
+prompts, uncertain prompts, and unsupported command shapes fail closed. MCP does
+not receive terminal output, credentials, or keystroke-level control. See the
+[full MCP protocol and security guide](docs/mcp.md) for tools, limits, and
+troubleshooting.
 
 ## Development
 

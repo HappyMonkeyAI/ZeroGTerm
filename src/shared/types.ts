@@ -152,8 +152,9 @@ export interface SpeechApiKeyStatus {
  *
  * The id alone is not enough. A local `screen` session's id is derived from its
  * name and comes back identical after a relaunch, but an SSH session's is a
- * fresh uuid each launch, so the durable keys travel alongside it. Never
- * carries cwd, command arguments, or credentials.
+ * fresh uuid each launch, so the durable keys travel alongside it. Project
+ * members may additionally carry an explicitly supplied cwd; this never
+ * carries command arguments or credentials.
  */
 export interface StoredWorkspaceMember {
   sessionId: string;
@@ -163,6 +164,8 @@ export interface StoredWorkspaceMember {
   screenName?: string;
   sshTarget?: string;
   backend?: string;
+  /** Set only for explicitly created local project panes. */
+  cwd?: string;
 }
 
 /** How a workspace was arranged, as stored. Validated on load, so loosely typed. */
@@ -264,6 +267,71 @@ export interface AiTestResult {
   message: string;
 }
 
+/** The user-visible state of ZeroG's optional local MCP control channel. */
+export type McpConnectionState = 'disabled' | 'listening' | 'connected' | 'revoked' | 'error';
+
+export type McpCapability =
+  | 'workspace:read'
+  | 'workspace:restore'
+  | 'workspace:write'
+  | 'session:read'
+  | 'session:create'
+  | 'session:close'
+  | 'session:execute';
+
+export type McpExecutionState = 'pending' | 'approved' | 'rejected' | 'running' | 'completed' | 'timed-out' | 'cancelled' | 'failed';
+
+export interface McpExecutionPolicy {
+  allowShellOperators: boolean;
+  allowRemoteSessions: boolean;
+  maxCommandLength: number;
+  maxRuntimeMs: number;
+  maxOutputBytes: number;
+}
+
+export interface McpExecutionRequest {
+  requestId: string;
+  clientId: string;
+  sessionId: string;
+  command: string;
+  displayCommand: string;
+  state: McpExecutionState;
+  createdAt: number;
+  expiresAt: number;
+  policy: McpExecutionPolicy;
+}
+
+export interface McpExecutionResult {
+  requestId: string;
+  state: Exclude<McpExecutionState, 'pending' | 'approved' | 'running'>;
+  output?: string;
+  truncated?: boolean;
+  message?: string;
+  completedAt: number;
+}
+
+export interface McpControlStatus {
+  state: McpConnectionState;
+  endpoint?: string;
+  clientName?: string;
+  leaseExpiresAt?: number;
+  capabilities: McpCapability[];
+}
+
+export interface McpWorkspaceRestored {
+  workspaceId: string;
+  workspaceName?: string;
+  restored: Array<{
+    member: StoredWorkspaceMember;
+    session: SessionInfo;
+    action: 'reused' | 'created';
+  }>;
+}
+
+export interface McpSshSessionCreated {
+  session: SessionInfo;
+}
+
 /**
  * Which way a tunnel runs.
  *
@@ -347,6 +415,20 @@ export interface TerminalApi {
    */
   loadWorkspaces(): Promise<StoredWorkspaceFile>;
   saveWorkspaces(file: StoredWorkspaceFile): Promise<StoredWorkspaceFile>;
+  /** Current local MCP listener/lease state. */
+  mcpStatus(): Promise<McpControlStatus>;
+  startMcp(): Promise<{ endpoint: string; token: string }>;
+  stopMcp(): Promise<void>;
+  /** Emergency takeover: revoke AI control without closing panes. */
+  revokeMcpControl(): Promise<void>;
+  onMcpStatus(callback: (status: McpControlStatus) => void): () => void;
+  onMcpWorkspaceRestored(callback: (event: McpWorkspaceRestored) => void): () => void;
+  onMcpSshSessionCreated(callback: (event: McpSshSessionCreated) => void): () => void;
+  listMcpExecutions(): Promise<Array<McpExecutionRequest | McpExecutionResult>>;
+  approveMcpExecution(requestId: string): Promise<McpExecutionRequest>;
+  rejectMcpExecution(requestId: string): Promise<McpExecutionRequest>;
+  cancelMcpExecution(requestId: string): Promise<McpExecutionResult>;
+  onMcpExecution(callback: (request: McpExecutionRequest | McpExecutionResult) => void): () => void;
   /** Tunnels currently open, which outlive the Ports view being closed. */
   listForwards(): Promise<PortForwardInfo[]>;
   /**
