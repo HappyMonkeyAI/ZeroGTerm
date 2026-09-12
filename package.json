@@ -1,6 +1,6 @@
 {
   "name": "zerogterm",
-  "version": "0.8.0-alpha.1",
+  "version": "0.9.0-alpha.1",
   "description": "A Linux-first persistent Electron terminal workspace",
   "license": "MIT",
   "author": "Stephen Phillips",
@@ -53,11 +53,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -67,23 +71,24 @@
       "perMachine": false
     }
   },
-
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-webgl": "0.18.0",
     "@xterm/xterm": "^5.3.0",
     "node-pty": "^1.1.0",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "electron": "^43.3.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.2.4",
+    "electron": "^43.3.0",
     "electron-builder": "^26.15.3",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",

@@ -111,10 +111,12 @@ function normalizeMember(value: unknown): StoredMember | undefined {
   const screenName = optionalText(item.screenName, 64);
   const sshTarget = optionalText(item.sshTarget);
   const backend = optionalText(item.backend, 32);
+  const cwd = optionalText(item.cwd, 512);
   if (host) member.host = host;
   if (screenName) member.screenName = screenName;
   if (sshTarget) member.sshTarget = sshTarget;
   if (backend) member.backend = backend;
+  if (cwd) member.cwd = cwd;
   return member;
 }
 

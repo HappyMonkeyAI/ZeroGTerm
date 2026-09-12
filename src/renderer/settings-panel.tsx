@@ -5,7 +5,7 @@
 // recorder behind the app's back.
 
 import React, { useMemo, useState } from 'react';
-import type { ShellBackend } from '../shared/types';
+import type { McpControlStatus, ShellBackend } from '../shared/types';
 import {
   RESERVED,
   SHORTCUTS,
@@ -105,6 +105,11 @@ export type SettingsPanelProps = {
   onAiModelsRefresh: () => void;
   aiTest: AiTestState;
   onAiTest: () => void;
+  mcpStatus: McpControlStatus;
+  mcpInfo: { endpoint: string; token: string } | null;
+  onMcpStart: () => void;
+  onMcpStop: () => void;
+  onMcpCopyToken: () => void;
 };
 
 /**
@@ -603,6 +608,45 @@ function SpeechTest({ state, onRun }: { state: SpeechTestState; onRun: () => voi
   );
 }
 
+function McpControlSection({
+  status,
+  info,
+  onStart,
+  onStop,
+  onCopyToken
+}: {
+  status: McpControlStatus;
+  info: { endpoint: string; token: string } | null;
+  onStart: () => void;
+  onStop: () => void;
+  onCopyToken: () => void;
+}) {
+  const active = status.state === 'listening' || status.state === 'connected';
+  return (
+    <section className="settings-group mcp-settings">
+      <div className="settings-group-head">
+        <div>
+          <span className="eyebrow">ZERO G CONTROL</span>
+          <h3>Local MCP connection</h3>
+        </div>
+        <span className={`mcp-state-dot ${status.state}`} title={status.state} />
+      </div>
+      <p className="settings-hint">Allow a local agent such as Hermes to inspect and restore ZeroG workspaces. Terminal command execution is not enabled.</p>
+      <div className="settings-actions">
+        {!active ? <button type="button" className="primary-button" onClick={onStart}>Enable MCP</button> : <button type="button" onClick={onStop}>Disable MCP</button>}
+      </div>
+      {info && active ? (
+        <>
+          <Field label="Endpoint" hint="Give this URL to the local MCP client."><code className="settings-value">{info.endpoint}</code></Field>
+          <Field label="Bearer token" hint="Held only for this app run. Copy it into the local client configuration.">
+            <div className="settings-key-row"><code className="settings-value token-value">{info.token}</code><button type="button" onClick={onCopyToken}>Copy</button></div>
+          </Field>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 export function SettingsPanel({
   settings,
   onChange,
@@ -625,7 +669,12 @@ export function SettingsPanel({
   aiModels,
   onAiModelsRefresh,
   aiTest,
-  onAiTest
+  onAiTest,
+  mcpStatus,
+  mcpInfo,
+  onMcpStart,
+  onMcpStop,
+  onMcpCopyToken
 }: SettingsPanelProps) {
   const [page, setPage] = useState<SettingsPage>('appearance');
   const bindings = useMemo(() => resolveBindings(settings.shortcuts), [settings.shortcuts]);
@@ -897,6 +946,7 @@ export function SettingsPanel({
                   onClear={onAiKeyClear}
                 />
                 <AiTest state={aiTest} onRun={onAiTest} />
+                <McpControlSection status={mcpStatus} info={mcpInfo} onStart={onMcpStart} onStop={onMcpStop} onCopyToken={onMcpCopyToken} />
 
                 <Toggle
                   label="Send recent terminal output"

@@ -21,6 +21,34 @@ const api = {
   },
   loadWorkspaces: () => ipcRenderer.invoke('workspaces:load'),
   saveWorkspaces: (file) => ipcRenderer.invoke('workspaces:save', file),
+  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  revokeMcpControl: () => ipcRenderer.invoke('mcp:revoke'),
+  startMcp: () => ipcRenderer.invoke('mcp:start'),
+  stopMcp: () => ipcRenderer.invoke('mcp:stop'),
+  onMcpStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:status', listener);
+    return () => ipcRenderer.removeListener('mcp:status', listener);
+  },
+  onMcpWorkspaceRestored: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:workspace-restored', listener);
+    return () => ipcRenderer.removeListener('mcp:workspace-restored', listener);
+  },
+  onMcpSshSessionCreated: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:ssh-session-created', listener);
+    return () => ipcRenderer.removeListener('mcp:ssh-session-created', listener);
+  },
+  listMcpExecutions: () => ipcRenderer.invoke('mcp:executions:list'),
+  approveMcpExecution: (requestId) => ipcRenderer.invoke('mcp:execution:approve', requestId),
+  rejectMcpExecution: (requestId) => ipcRenderer.invoke('mcp:execution:reject', requestId),
+  cancelMcpExecution: (requestId) => ipcRenderer.invoke('mcp:execution:cancel', requestId),
+  onMcpExecution: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('mcp:execution', listener);
+    return () => ipcRenderer.removeListener('mcp:execution', listener);
+  },
   listBackends: () => ipcRenderer.invoke('sessions:backends'),
   listWslDistributions: () => ipcRenderer.invoke('sessions:wslDistributions'),
   createLocalSession: (request) => ipcRenderer.invoke('sessions:createLocal', request),

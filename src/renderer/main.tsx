@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -982,6 +982,9 @@ function App() {
   ]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
   const [status, setStatus] = useState('Ready');
+  const [mcpStatus, setMcpStatus] = useState<McpControlStatus>({ state: 'disabled', capabilities: [] });
+  const [mcpExecutions, setMcpExecutions] = useState<McpExecutionRequest[]>([]);
+  const [mcpInfo, setMcpInfo] = useState<{ endpoint: string; token: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [drawerCollapsed, setDrawerCollapsed] = useState(settings.sessions.startSidebarCollapsed);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('terminals');
@@ -1120,6 +1123,77 @@ function App() {
       .then((version) => setAppVersion(formatVersion(version)))
       .catch(() => undefined);
   }, []);
+  useEffect(() => {
+    const currentApi = api();
+    void currentApi?.mcpStatus?.().then(setMcpStatus).catch(() => undefined);
+    return currentApi?.onMcpStatus?.(setMcpStatus);
+  }, []);
+  useEffect(() => {
+    const currentApi = api();
+    void currentApi?.listMcpExecutions?.().then((items) => setMcpExecutions(items.filter((item): item is McpExecutionRequest => 'command' in item && item.state === 'pending'))).catch(() => undefined);
+    return currentApi?.onMcpExecution?.((item) => {
+      if (!('command' in item)) {
+        setMcpExecutions((current) => current.filter((request) => request.requestId !== item.requestId));
+        return;
+      }
+      setMcpExecutions((current) => item.state === 'pending' ? [...current.filter((request) => request.requestId !== item.requestId), item] : current.filter((request) => request.requestId !== item.requestId));
+    });
+  }, []);
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.onMcpWorkspaceRestored) return;
+    return currentApi.onMcpWorkspaceRestored((event: McpWorkspaceRestored) => {
+      const restoredSessions = event.restored.map((item) => item.session);
+      setSessions((current) => {
+        const byId = new Map(current.map((session) => [session.id, session]));
+        for (const session of restoredSessions) byId.set(session.id, session);
+        return [...byId.values()];
+      });
+      setWorkspaces((current) => {
+        const restoredIds = new Set(restoredSessions.map((session) => session.id));
+        const members = event.restored.map((item) => item.member);
+        const existing = current.find((workspace) => workspace.id === event.workspaceId);
+        if (!existing) {
+          return [...current, {
+            id: event.workspaceId,
+            name: event.workspaceName ?? 'Restored workspace',
+            sessionIds: Array.from(restoredIds),
+            pending: [],
+            view: makeView('grid')
+          }];
+        }
+        return current.map((workspace) => {
+          if (workspace.id !== event.workspaceId) return workspace;
+          const pending = workspace.pending.filter((pendingMember) => !members.some((member) =>
+            pendingMember.sessionId === member.sessionId ||
+            (pendingMember.sshTarget && pendingMember.sshTarget === member.sshTarget) ||
+            (pendingMember.name === member.name && pendingMember.kind === member.kind)
+          ));
+          return {
+            ...workspace,
+            sessionIds: Array.from(new Set([...workspace.sessionIds, ...restoredIds])),
+            pending
+          };
+        });
+      });
+      setActiveWorkspaceId(event.workspaceId);
+      setStatus(`Restored ${restoredSessions.length} session${restoredSessions.length === 1 ? '' : 's'}`);
+      void currentApi.listSessions().then(setSessions).catch(() => undefined);
+    });
+  }, []);
+
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.onMcpSshSessionCreated) return;
+    return currentApi.onMcpSshSessionCreated(({ session }) => {
+      setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
+      setWorkspaces((current) => current.map((workspace) => workspace.id === activeWorkspaceId
+        ? { ...workspace, sessionIds: Array.from(new Set([...workspace.sessionIds, session.id])) }
+        : workspace));
+      setStatus(`Opened SSH session to ${session.host}`);
+    });
+  }, [activeWorkspaceId]);
+
   useEffect(() => {
     const currentApi = api();
     return currentApi?.onSftpEvent?.((event) => {
@@ -3402,6 +3476,26 @@ function App() {
           })}
         </div>
         <div className="window-actions">
+          {mcpStatus.state === 'connected' && (
+            <button type="button" className="bar-button mcp-stop-button" onClick={() => {
+              void api()?.revokeMcpControl?.();
+              setStatus('AI control revoked · panes remain available manually');
+            }} title="Stop AI control and take over manually" aria-label="Stop AI control and take over manually">
+              <Icon name="stop" />
+              <span>Take over</span>
+            </button>
+          )}
+          {mcpExecutions.length > 0 && (
+            <span className="mcp-pending-count" title="Commands waiting for explicit approval">
+              {mcpExecutions.map((request) => (
+                <span key={request.requestId} className="mcp-pending-request">
+                  <span title={request.displayCommand}>{request.displayCommand}</span>
+                  <button type="button" className="bar-button" onClick={() => { void api()?.approveMcpExecution?.(request.requestId); }} aria-label={`Approve command ${request.displayCommand}`}>Approve</button>
+                  <button type="button" className="bar-button" onClick={() => { void api()?.rejectMcpExecution?.(request.requestId); }} aria-label={`Reject command ${request.displayCommand}`}>Reject</button>
+                </span>
+              ))}
+            </span>
+          )}
           <button
             type="button"
             className="bar-button"
@@ -4387,6 +4481,13 @@ function App() {
           onAiModelsRefresh={() => void refreshAiModels()}
           aiTest={aiTest}
           onAiTest={() => void runAiTest()}
+          mcpStatus={mcpStatus}
+          mcpInfo={mcpInfo}
+          onMcpStart={() => {
+            void api()?.startMcp?.().then((info) => { setMcpInfo(info); setStatus('MCP enabled'); }).catch((error) => setStatus(ipcMessage(error)));
+          }}
+          onMcpStop={() => { void api()?.stopMcp?.().then(() => { setMcpInfo(null); setStatus('MCP disabled'); }).catch((error) => setStatus(ipcMessage(error))); }}
+          onMcpCopyToken={() => { if (mcpInfo) void api()?.copyText?.(mcpInfo.token).then(() => setStatus('MCP bearer token copied.')); }}
         />
       )}
 

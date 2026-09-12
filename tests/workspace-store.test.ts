@@ -17,7 +17,7 @@ const saved: WorkspaceFile = {
       name: 'Workspace',
       view: { layout: 'split-v', lastSplit: 'split-v', activeSessionId: 'local:api', focusedSessionId: 'local:api', maximizedSessionId: null },
       members: [
-        { sessionId: 'local:api', kind: 'local', name: 'api', screenName: 'api', backend: 'screen' },
+        { sessionId: 'local:api', kind: 'local', name: 'api', screenName: 'api', backend: 'screen', cwd: 'C:/work/api' },
         { sessionId: 'ssh:1', kind: 'ssh', name: 'build', host: 'build.example.com', sshTarget: 'dev@build.example.com' }
       ]
     },
@@ -102,6 +102,16 @@ describe('normalizeFile', () => {
       ] }]
     });
     expect(result?.workspaces[0].members.map((m) => m.sessionId)).toEqual(['local:ok']);
+  });
+
+  it('preserves an explicitly supplied project directory', () => {
+    const result = normalizeFile({
+      version: 1,
+      workspaces: [{ id: 'ws-1', name: 'Workspace', view: {}, members: [
+        { sessionId: 'local:project', kind: 'local', name: 'project', cwd: 'C:/work/project' }
+      ] }]
+    });
+    expect(result?.workspaces[0].members[0].cwd).toBe('C:/work/project');
   });
 
   it('caps a workspace at four panes', () => {
