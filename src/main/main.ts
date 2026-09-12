@@ -729,56 +729,7 @@ app.whenReady().then(() => {
   if (process.env.ZEROG_MCP_ENABLED === '1') {
     mcpHost ??= new McpServerHost({
       control: mcpControl,
-      providers: {
-      listWorkspaces: () => workspaceStore.load(),
-      listSessions: () => service.list(),
-      createWorkspace,
-      restoreWorkspace,
-      createSshSession: async (request) => {
-        const session = await service.createSsh(request.target, request.name);
-        const attached = service.attach(session.id, (data) => {
-          const requestId = mcpActiveExecutions.get(session.id);
-          if (requestId) {
-            const output = `${mcpExecutionOutput.get(requestId) ?? ''}${data}`.slice(0, 16 * 1024);
-            mcpExecutionOutput.set(requestId, output);
-            if ((output.match(/ExitCode=\d+/g) ?? []).length >= 2) {
-              const result = mcpExecutions.finishRunning(requestId, 'completed', output, false, 'Command completed.');
-              clearMcpExecution(requestId, session.id);
-              win?.webContents.send('mcp:execution', result);
-            }
-          }
-          win?.webContents.send('terminal:data', session.id, data);
-        }, (message) => win?.webContents.send('terminal:status', session.id, message));
-        win?.webContents.send('mcp:ssh-session-created', { session: attached });
-        return attached;
-      },
-      createProjectWorkspace,
-      requestCommand: async (request) => {
-        const sessions = await service.list();
-        const session = sessions.find((item) => item.id === request.sessionId);
-        if (!session) throw new Error('Unknown session.');
-        const result = mcpExecutions.create({ clientId: request.clientId, sessionId: request.sessionId, sessionKind: session.kind, command: request.command, policy: { allowRemoteSessions: session.kind === 'ssh', ...(request.timeoutMs === undefined ? {} : { maxRuntimeMs: request.timeoutMs }), ...(request.outputBytes === undefined ? {} : { maxOutputBytes: request.outputBytes }) } });
-        const safeRemote = session.kind === 'ssh' && isSafeRemoteCommand(result.command);
-        if (safeRemote) {
-          const approved = mcpExecutions.approveAutomatically(result.requestId);
-          mcpAudit.record({ at: Date.now(), requestId: approved.requestId, clientId: approved.clientId, capability: 'session:execute', sessionId: approved.sessionId, state: 'approved', command: approved.displayCommand });
-          await runMcpExecution(approved.requestId);
-          return mcpExecutions.get(approved.requestId, request.clientId);
-        }
-        mcpAudit.record({ at: Date.now(), requestId: result.requestId, clientId: result.clientId, capability: 'session:execute', sessionId: result.sessionId, state: 'requested', command: result.displayCommand });
-        win?.webContents.send('mcp:execution', result);
-        return result;
-      },
-      getCommandResult: async (request) => mcpExecutions.get(request.requestId, request.clientId),
-      cancelCommand: async (request) => {
-        const current = mcpExecutions.get(request.requestId, request.clientId);
-        const result = mcpExecutions.cancel(request.requestId, request.clientId);
-        const session = 'sessionId' in current ? (await service.list()).find((item) => item.id === current.sessionId) : undefined;
-        if (session?.kind === 'local') service.write(session.id, '\u0003');
-        clearMcpExecution(request.requestId);
-        return result;
-      }
-    },
+      providers: createMcpProviders(),
       version: app.getVersion()
     });
     void mcpHost.start();
