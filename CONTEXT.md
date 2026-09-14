@@ -2,20 +2,17 @@
 
 ## Purpose
 
-ZeroG Terminal is a Linux-first terminal workspace for AI-assisted development. It combines a reliable terminal UI, persistent local and remote sessions, keyboard-driven pane layouts, and carefully controlled AI/voice workflows.
+ZeroG Terminal is a terminal workspace for AI-assisted development, supported on Linux and Windows. It combines a reliable terminal UI, persistent local and remote sessions, keyboard-driven pane layouts, and carefully controlled AI/voice workflows.
 
-The primary user outcome is recovery: if the terminal application, SSH connection, or desktop session disappears, the work should remain alive inside a named `screen` session and be easy to rediscover and reconnect to.
+The primary user outcome is recovery: if the terminal application, SSH connection, or desktop session disappears, the work should remain alive and be easy to rediscover and reconnect to. On hosts with `screen` (Linux, and remote hosts reached over SSH), that recovery is a named `screen` session; on Windows, where `screen` does not exist, local sessions are process-only and recovery is bounded by that (see README's Windows section).
 
 ## Current repository state
 
-- Workspace: `/var/home/stephen/Documents/development/zerogterm`
-- Initial state: empty directory, not yet a Git repository
-- Host: Fedora 44 Silverblue
-- Node.js: 22.23.2
-- npm: 10.9.8
-- Kitty: 0.48.2
-- Toolbox: available (`toolbox` 0.3)
-- Existing screen/SSH behavior: must be verified as part of the first vertical slice
+- Project originated on Fedora 44 Silverblue (host: `/var/home/stephen/Documents/development/zerogterm`) and is now also developed and run on Windows.
+- Node.js: 22.x; npm: 10.x+ on both platforms (see `package.json` engines/devDependencies for exact ranges in use).
+- Linux dev extras: Kitty terminal, Toolbox for sandboxed dependencies — used on the original Fedora host, not required elsewhere.
+- Windows: no toolbox/container requirement; `node-pty` needs a working C/C++ toolchain to build from source (see README's Windows section for the exact prerequisites).
+- Shell backends are platform-dependent and resolved at runtime: Bash/screen on Linux; PowerShell, Windows PowerShell, Command Prompt, WSL, and Git Bash where present on Windows (`src/main/shell-catalog.ts`).
 
 ## Product direction
 
@@ -38,11 +35,11 @@ ZeroG is not initially intended to replace every capability of Kitty or Tilix. I
 - React for the workspace UI.
 - xterm.js for terminal rendering.
 - node-pty for local PTY access.
-- System `ssh` for remote connections.
-- System `screen` for persistence and reconnection.
+- System `ssh` for remote connections (on Windows, resolved from PATH — Git for Windows' `ssh.exe`, or another installed client).
+- System `screen` for persistence and reconnection where it exists (Linux, and remote hosts reached over SSH); Windows local sessions fall back to a process-only PTY with no `screen` layer.
 - Vitest for unit tests.
 - Playwright/Electron smoke tests after the core lifecycle works.
-- Toolbox for development dependencies on Silverblue; host integration remains an explicit boundary.
+- Toolbox for development dependencies on the original Fedora/Silverblue host; not used or required on Windows. Host integration remains an explicit boundary on every platform.
 
 ## Session model
 
@@ -84,8 +81,8 @@ Verified source state at planning time:
 - Repository: `HappyMonkeyAI/AgentsProtocol`
 - License: MIT
 - Default branch: `main`
-- Reviewed commit: `e1706fdfe54ea89399800671543ed950848f864e`
-- Source themes: grounding in project context, pre-mortems, planning, verification, memory, and change-impact analysis
+- Reviewed commit: `d520b2b20318511dd4fbd23d84b8408dce27a430` (2026-09-13; supersedes the prior `e1706fd` review, which predates ADR-0001 through ADR-0004)
+- Source themes: grounding in project context, pre-mortems, planning, verification, memory, change-impact analysis, verification ladders, worktree isolation, MCP intent mapping, and adaptive model escalation
 
 We will adopt the useful, non-destructive parts:
 
@@ -95,6 +92,21 @@ We will adopt the useful, non-destructive parts:
 - Keep verification output tied to real commands and behaviors.
 - Record architectural decisions and lessons in the repository.
 - Review change blast radius before modifying session, IPC, or security boundaries.
+- Verification Ladder discipline (ADR-0001): for non-trivial work, "done" needs
+  independent evidence, not a Worker's self-report. Build, typecheck, and the full test
+  suite are the floor; a feature claim additionally needs the real behavior exercised
+  (e.g. actually launching the app), not just a reading of code that should produce it.
+- Evidence-bearing handoffs (ADR-0002): a handoff between sessions or to a subagent
+  records the exact commands run, their real output, which paths changed, and
+  commit/push status — a narrative summary of intended work is not a handoff.
+- Isolated worktrees for parallel agent work (ADR-0002): if more than one agent session
+  is actively editing this repo at once, each works in its own `git worktree` under
+  `.worktrees/<task>` on its own branch rather than sharing one working tree; solo work
+  on a clean tree does not need this ceremony.
+- Failure classification before retrying (ADR-0004): tell an environmental/flaky
+  failure apart from a real implementation failure before retrying it, make one focused
+  repair attempt, and escalate to deeper reasoning or ask the user after that rather
+  than looping on the same fix.
 
 We will not automatically adopt these behaviors:
 
@@ -103,6 +115,12 @@ We will not automatically adopt these behaviors:
 - Autonomous destructive changes.
 - Treating an agent’s self-report as proof of successful runtime behavior.
 - Global installation of the protocol into unrelated projects.
+- The MCP intent map / bootstrap discovery machinery from ADR-0003: it routes agents to
+  one operator's MCP catalogue (Hermes, MonkeySwarm, `dynamic_proxy`, AuditScan), none of
+  which ZeroGTerm depends on. ZeroGTerm's own MCP surface is documented in this file, the
+  README, and `src/main/mcp-server.ts` directly, not through that catalogue.
+- Formal uSwarm roles (Architect/Manager/Worker/Owner) as a mandatory structure: useful
+  vocabulary for describing a check, not a process this project's size requires.
 
 Any commit automation, reset policy, or autonomous agent loop must be designed, documented, and explicitly approved later.
 
@@ -173,7 +191,10 @@ Voice control uses an adapter interface. Talon, local speech recognition, or ano
 
 1. Can the Toolbox process reliably discover and attach to host-user `screen` sockets?
 2. Should the development app run inside Toolbox while the session helper runs on the host?
-3. Will the first release use Electron packaging, AppImage, RPM, or Flatpak?
+3. ~~Will the first release use Electron packaging, AppImage, RPM, or Flatpak?~~
+   Answered for Windows: `electron-builder` produces an NSIS installer and a
+   portable `.exe`, published to GitHub Releases (`package.json`'s `build`
+   config, `npm run package:win`). Linux packaging format is still open.
 4. Which AI agent protocols/adapters are required first?
 5. What Talon functionality is available and practical on this Fedora setup?
 6. Should remote sessions use `screen` directly, or support tmux as a later backend?
