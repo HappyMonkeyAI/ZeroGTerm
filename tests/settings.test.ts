@@ -8,6 +8,7 @@ import {
   loadSettings,
   parseSettings,
   resetSection,
+  resolveAiCommand,
   resolveProceedPhrase,
   saveSettings,
   updateSection,
@@ -119,6 +120,17 @@ describe('parseSettings', () => {
 
   it('bounds the proceed phrase a hand-edited file could make enormous', () => {
     expect(parseSettings({ ai: { proceedPhrase: 'x'.repeat(5000) } }).ai.proceedPhrase).toHaveLength(200);
+  });
+
+  it('keeps an AI command exactly as typed, and strips control characters the same way as the proceed phrase', () => {
+    expect(parseSettings({ ai: { aiCommand: 'aider ' } }).ai.aiCommand).toBe('aider ');
+    expect(parseSettings({ ai: { aiCommand: '' } }).ai.aiCommand).toBe('');
+    expect(parseSettings({ ai: { aiCommand: 'go\r\nrm -rf /' } }).ai.aiCommand).toBe('go  rm -rf /');
+    expect(parseSettings({ ai: { aiCommand: 42 } }).ai.aiCommand).toBe(DEFAULT_SETTINGS.ai.aiCommand);
+  });
+
+  it('bounds the AI command a hand-edited file could make enormous', () => {
+    expect(parseSettings({ ai: { aiCommand: 'x'.repeat(5000) } }).ai.aiCommand).toHaveLength(200);
   });
 
   it('keeps a dragged sidebar width and split within usable bounds', () => {
@@ -238,6 +250,18 @@ describe('resolveProceedPhrase', () => {
     // free to silently send an empty line.
     expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '' })).toBe('OK, proceed');
     expect(resolveProceedPhrase({ ...DEFAULT_SETTINGS.ai, proceedPhrase: '   ' })).toBe('OK, proceed');
+  });
+});
+
+describe('resolveAiCommand', () => {
+  it('sends what the user typed, without the spaces around it', () => {
+    expect(resolveAiCommand(DEFAULT_SETTINGS.ai)).toBe('claude');
+    expect(resolveAiCommand({ ...DEFAULT_SETTINGS.ai, aiCommand: '  aider  ' })).toBe('aider');
+  });
+
+  it('falls back to the default rather than making the button do nothing', () => {
+    expect(resolveAiCommand({ ...DEFAULT_SETTINGS.ai, aiCommand: '' })).toBe('claude');
+    expect(resolveAiCommand({ ...DEFAULT_SETTINGS.ai, aiCommand: '   ' })).toBe('claude');
   });
 });
 

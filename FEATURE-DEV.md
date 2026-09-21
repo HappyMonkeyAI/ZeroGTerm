@@ -51,6 +51,18 @@ Audit records currently exist in bounded main-process memory and have a local IP
 
 Reliable exit status would require switching to a supervised child-process model. That alternative is intentionally deferred because it would not preserve the interactive pane’s shell context.
 
+## Pane action buttons
+
+The AI button (bot icon, runs a configurable command such as `claude`) shipped as a second hardcoded button alongside the existing proceed button (tick icon, sends a configurable phrase), following the same settings-field-and-button pattern. Both remain fixed, single-purpose controls — there is still no generic mechanism for the user to define their own set of pane buttons.
+
+### 1. Configurable custom buttons — proposed
+
+- [ ] Replace the two hardcoded fields (`proceedPhrase`, `aiCommand`) with an ordered list of user-defined entries, each with a label, an icon choice, the text to send, and whether it presses Enter.
+- [ ] Add/remove/reorder UI in the Settings panel (the app's first array-based settings editor — no existing list-editing pattern to copy from).
+- [ ] Render the list dynamically in the pane's `pane-actions` row instead of two fixed `<button>` elements.
+- [ ] Keep "OK, proceed" and the AI command as the two seeded defaults, so existing users see no behavior change on upgrade.
+- [ ] Decide whether buttons are global or per-pane-kind (e.g. only offering the AI button on local shells, not SSH panes).
+
 ## Security boundaries
 
 - [x] Loopback-only MCP transport.

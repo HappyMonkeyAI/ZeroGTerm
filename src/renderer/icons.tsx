@@ -169,6 +169,16 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
           <path d="M5 13l4.5 4.5L19 7" />
         </svg>
       );
+    case 'bot':
+      return (
+        <svg {...common}>
+          <rect x="4" y="8" width="16" height="12" rx="3" />
+          <path d="M12 8V5M9.5 5h5" />
+          <circle cx="9" cy="14" r="1.2" fill="currentColor" stroke="none" />
+          <circle cx="15" cy="14" r="1.2" fill="currentColor" stroke="none" />
+          <path d="M9 17.5h6" />
+        </svg>
+      );
     case 'transfer':
       return (
         <svg {...common}>

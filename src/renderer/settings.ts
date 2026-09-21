@@ -103,6 +103,12 @@ export type AiSettings = {
    */
   proceedPhrase: string;
   /**
+   * What the pane's AI button types and runs. Unlike proceedPhrase this is a
+   * command, not a reply — meant for launching the user's preferred CLI agent
+   * (e.g. "claude") in a pane that is sitting at a shell prompt.
+   */
+  aiCommand: string;
+  /**
    * Record the commands run in each pane, for the history palette.
    *
    * Off by default, and the only setting in ZeroG that turns on storing what the
@@ -192,6 +198,7 @@ export const DEFAULT_SETTINGS: Settings = {
     requireApproval: true,
     voiceInsert: 'type',
     proceedPhrase: 'OK, proceed',
+    aiCommand: 'claude',
     recordCommands: false,
     // Ollama's default, because a local model is the case with no key to set up
     // and nothing leaving the machine.
@@ -332,6 +339,11 @@ export function resolveProceedPhrase(ai: AiSettings): string {
   return ai.proceedPhrase.trim() || DEFAULT_SETTINGS.ai.proceedPhrase;
 }
 
+/** The command to run, given what is stored. Same empty-field fallback as resolveProceedPhrase. */
+export function resolveAiCommand(ai: AiSettings): string {
+  return ai.aiCommand.trim() || DEFAULT_SETTINGS.ai.aiCommand;
+}
+
 const THEMES: readonly Theme[] = ['dark', 'light'];
 const LAYOUTS: readonly Layout[] = ['stack', 'split-v', 'split-h', 'grid'];
 const BACKENDS: readonly LocalBackend[] = ['bash', 'zsh', 'fish', 'sh', 'powershell', 'pwsh', 'cmd', 'wsl'];
@@ -405,6 +417,7 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
       voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert),
       proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase),
+      aiCommand: pickPhrase(ai.aiCommand, DEFAULT_SETTINGS.ai.aiCommand),
       recordCommands: pickBoolean(ai.recordCommands, DEFAULT_SETTINGS.ai.recordCommands),
       baseUrl: pickString(ai.baseUrl, DEFAULT_SETTINGS.ai.baseUrl, 512),
       model: pickString(ai.model, DEFAULT_SETTINGS.ai.model, 200),
