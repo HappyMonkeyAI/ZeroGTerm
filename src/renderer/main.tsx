@@ -72,6 +72,7 @@ import {
   fontStack,
   loadSettings,
   resetSection,
+  resolveAiCommand,
   resolveDefaultBackend,
   resolveProceedPhrase,
   saveSettings,
@@ -1794,6 +1795,7 @@ function App() {
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
   const proceedPhrase = resolveProceedPhrase(settings.ai);
+  const aiCommand = resolveAiCommand(settings.ai);
   // The host the transfer panel would talk to, and why the button is or is not
   // offered. Both come from the session the user is actually working in.
   const transferTarget = sftpTargetForSession(active);
@@ -3279,11 +3281,10 @@ function App() {
   /**
    * Send the proceed phrase to a pane, Enter included.
    *
-   * The one place in the app that presses Enter for the user. It is not a
-   * command being run on their behalf — it is a reply to an agent already
-   * waiting in that pane, which is the whole point of the button — but it does
-   * reach a shell prompt as a command if the pane is sitting at one, so the
-   * status line says exactly what was sent.
+   * It is not a command being run on the user's behalf — it is a reply to an
+   * agent already waiting in that pane, which is the whole point of the button
+   * — but it does reach a shell prompt as a command if the pane is sitting at
+   * one, so the status line says exactly what was sent.
    */
   const sendProceed = (session: SessionInfo) => {
     const currentApi = api();
@@ -3291,6 +3292,23 @@ function App() {
     const phrase = resolveProceedPhrase(settings.ai);
     currentApi.write(session.id, `${phrase}\r`);
     setStatus(`Sent "${phrase}" to ${session.name}`);
+    focusTerminal(session.id);
+  };
+
+  /**
+   * Launch the user's preferred AI CLI in a pane, Enter included.
+   *
+   * Unlike the proceed button this is a command being run on the user's
+   * behalf, so it only makes sense at a shell prompt — but ZeroG has no
+   * reliable way to tell whether a pane is sitting at one, so it is sent
+   * exactly as typed and the status line says exactly what was sent.
+   */
+  const sendAiCommand = (session: SessionInfo) => {
+    const currentApi = api();
+    if (!currentApi) return;
+    const command = resolveAiCommand(settings.ai);
+    currentApi.write(session.id, `${command}\r`);
+    setStatus(`Sent "${command}" to ${session.name}`);
     focusTerminal(session.id);
   };
 
@@ -3950,6 +3968,15 @@ function App() {
                         aria-label={`Send "${proceedPhrase}" to ${paneSession.name}`}
                       >
                         <Icon name="check" />
+                      </button>
+                      <button
+                        type="button"
+                        className="pane-ai"
+                        onClick={() => sendAiCommand(paneSession)}
+                        title={`Run "${aiCommand}" and press Enter`}
+                        aria-label={`Run "${aiCommand}" in ${paneSession.name}`}
+                      >
+                        <Icon name="bot" />
                       </button>
                       <button
                         type="button"

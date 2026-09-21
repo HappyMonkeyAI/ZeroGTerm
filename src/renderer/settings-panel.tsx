@@ -1004,6 +1004,16 @@ export function SettingsPanel({
                     onChange={(event) => onChange('ai', { proceedPhrase: event.target.value })}
                   />
                 </Field>
+                <Field
+                  label="AI command"
+                  hint={`What a pane's bot button types and runs, Enter included — your preferred CLI agent, e.g. "claude" or "aider".`}
+                >
+                  <input
+                    value={settings.ai.aiCommand}
+                    placeholder={DEFAULT_SETTINGS.ai.aiCommand}
+                    onChange={(event) => onChange('ai', { aiCommand: event.target.value })}
+                  />
+                </Field>
 
                 <CommandHistorySection
                   enabled={settings.ai.recordCommands}

@@ -66,6 +66,11 @@ const features = (bindings: Bindings): Array<{ title: string; body: string }> =>
     title: 'The proceed button',
     body:
       'The tick in a pane’s title bar sends a phrase you choose — “OK, proceed” by default — for waving an agent on without typing the same reply again.'
+  },
+  {
+    title: 'The AI button',
+    body:
+      'The bot icon in a pane’s title bar runs a command you choose in Settings — “claude” by default — for launching your preferred AI CLI without typing it yourself.'
   }
 ];
 

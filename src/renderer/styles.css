@@ -1071,6 +1071,7 @@ input:focus-visible {
 .pane-maximize,
 .pane-close,
 .pane-proceed,
+.pane-ai,
 .pane-browse,
 .pane-mic {
   width: 19px;
@@ -1099,12 +1100,20 @@ input:focus-visible {
   border-color: rgba(247, 118, 142, 0.4);
 }
 
-/* Green on hover: this is the one control that sends a line for you, so it reads
-   as an action rather than another neutral pane button. */
+/* Green on hover: this sends a line for you, so it reads as an action rather
+   than another neutral pane button. */
 .pane-proceed:hover {
   color: #9ece6a;
   background: rgba(158, 206, 106, 0.14);
   border-color: rgba(158, 206, 106, 0.45);
+}
+
+/* Blue on hover, distinct from the proceed button's green: this one runs a
+   command rather than replying to something already waiting. */
+.pane-ai:hover {
+  color: #7aa2f7;
+  background: rgba(122, 162, 247, 0.14);
+  border-color: rgba(122, 162, 247, 0.45);
 }
 
 .pane-mic:disabled,
@@ -1136,6 +1145,7 @@ input:focus-visible {
 .pane-maximize .icon-svg,
 .pane-close .icon-svg,
 .pane-proceed .icon-svg,
+.pane-ai .icon-svg,
 .pane-mic .icon-svg {
   width: 13px;
   height: 13px;
@@ -2160,6 +2170,12 @@ input:focus-visible {
   border-color: rgba(22, 128, 60, 0.35);
 }
 
+:root[data-theme='light'] .pane-ai:hover {
+  color: #2459a6;
+  background: rgba(36, 89, 166, 0.1);
+  border-color: rgba(36, 89, 166, 0.35);
+}
+
 :root[data-theme='light'] .pane-mic.listening {
   color: #c53030;
 }
@@ -3114,6 +3130,7 @@ input:focus-visible {
 :root[data-theme='light'] .pane-maximize,
 :root[data-theme='light'] .pane-close,
 :root[data-theme='light'] .pane-proceed,
+:root[data-theme='light'] .pane-ai,
 :root[data-theme='light'] .pane-mic { color: #68768a; }
 
 :root[data-theme='light'] .pane-nav:hover,
