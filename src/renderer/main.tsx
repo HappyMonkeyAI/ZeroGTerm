@@ -4018,6 +4018,7 @@ function App() {
                           question={paneSession.kind === 'ssh' ? sftpQuestion : null}
                           onOpen={(path) => openDirectory(paneSession, path)}
                           onBrowse={(path) => setBrowserPaths((current) => ({ ...current, [paneSession.id]: path }))}
+                          defaultShowHidden={settings.sessions.showHiddenFiles}
                           onClose={() => toggleBrowser(paneSession.id)}
                         />
                       ) : null
@@ -4479,6 +4480,7 @@ function App() {
           api={api() as TerminalApi}
           onClose={() => setTransferOpen(false)}
           backdrop={dismissTransfer}
+          defaultShowHidden={settings.sessions.showHiddenFiles}
         />
       )}
 

@@ -854,8 +854,23 @@ input:focus-visible {
 
 .pane-browser-actions {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
   flex: none;
+}
+
+.pane-browser-hidden-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #697386;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.pane-browser-hidden-toggle input {
+  margin: 0;
 }
 
 .pane-browser-icon {
@@ -2658,6 +2673,21 @@ input:focus-visible {
   font-weight: 600;
 }
 
+.sftp-hidden-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #8792a2;
+  white-space: nowrap;
+  user-select: none;
+  margin: 6px 12px 0 auto;
+}
+
+.sftp-hidden-toggle input {
+  margin: 0;
+}
+
 .sftp-body {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2986,6 +3016,7 @@ input:focus-visible {
 :root[data-theme='light'] .sftp-modified,
 :root[data-theme='light'] .sftp-count,
 :root[data-theme='light'] .sftp-hint,
+:root[data-theme='light'] .sftp-hidden-toggle,
 :root[data-theme='light'] .sftp-empty small {
   color: #68768a;
 }
@@ -3029,6 +3060,8 @@ input:focus-visible {
 :root[data-theme='light'] .pane-browser-row { color: #253044; }
 
 :root[data-theme='light'] .pane-browser-icon { color: #5c687b; }
+
+:root[data-theme='light'] .pane-browser-hidden-toggle { color: #5c687b; }
 
 :root[data-theme='light'] .pane-browser-icon:hover:not(:disabled) {
   color: #253044;

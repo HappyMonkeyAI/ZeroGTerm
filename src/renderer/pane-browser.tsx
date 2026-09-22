@@ -15,6 +15,7 @@ import { Icon } from './icons';
 import { useRowActivation } from './row-activation';
 import { isNavigable } from './sftp-view';
 import { joinPath, parentOf, type PathKind } from './pane-directory';
+import { isHiddenName } from '../shared/files';
 import type { DirectoryListing, FileEntry, SessionInfo } from '../shared/types';
 
 export type PaneBrowserProps = {
@@ -52,6 +53,8 @@ export type PaneBrowserProps = {
   /** Navigating without moving the shell, which is the browser's own business. */
   onBrowse: (path: string) => void;
   onClose: () => void;
+  /** The Settings default for the "show hidden files" checkbox below. */
+  defaultShowHidden: boolean;
 };
 
 type State =
@@ -70,9 +73,14 @@ export function PaneBrowser({
   question,
   onOpen,
   onBrowse,
-  onClose
+  onClose,
+  defaultShowHidden
 }: PaneBrowserProps) {
   const [state, setState] = useState<State>({ phase: 'idle' });
+  // Starts from the Settings default but is this browser's own from then on —
+  // ticking it here is a one-pane decision, not a change to what the next
+  // pane opens with.
+  const [showHidden, setShowHidden] = useState(defaultShowHidden);
 
   const load = useCallback(
     (target: string | null) => {
@@ -113,9 +121,10 @@ export function PaneBrowser({
   const here = state.phase === 'ready' ? state.listing.path : path;
   const parent = here ? parentOf(here, pathKind) : null;
   const entries = state.phase === 'ready' ? state.listing.entries : [];
+  const visible = showHidden ? entries : entries.filter((entry) => !isHiddenName(entry.name));
   // Directories first, then files, each alphabetically — the order that makes a
   // browser for navigating rather than for reading a directory's raw order.
-  const sorted = [...entries].sort((a, b) => {
+  const sorted = [...visible].sort((a, b) => {
     const aDir = isNavigable(a) ? 0 : 1;
     const bDir = isNavigable(b) ? 0 : 1;
     return aDir === bDir ? a.name.localeCompare(b.name) : aDir - bDir;
@@ -128,6 +137,10 @@ export function PaneBrowser({
           {shellPath ?? here ?? 'connecting…'}
         </span>
         <span className="pane-browser-actions">
+          <label className="pane-browser-hidden-toggle" title="Show files whose name starts with a dot">
+            <input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />
+            Hidden
+          </label>
           <button
             type="button"
             className="pane-browser-icon"
@@ -193,7 +206,9 @@ export function PaneBrowser({
             ))}
 
             {state.phase === 'ready' && !sorted.length ? (
-              <p className="pane-browser-note">Nothing here.</p>
+              <p className="pane-browser-note">
+                {entries.length && !showHidden ? 'Nothing here but hidden files.' : 'Nothing here.'}
+              </p>
             ) : null}
             {state.phase === 'loading' ? <p className="pane-browser-note">Listing…</p> : null}
           </>

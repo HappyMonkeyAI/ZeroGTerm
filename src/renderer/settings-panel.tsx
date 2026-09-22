@@ -904,6 +904,12 @@ export function SettingsPanel({
                   checked={settings.sessions.startSidebarCollapsed}
                   onChange={(startSidebarCollapsed) => onChange('sessions', { startSidebarCollapsed })}
                 />
+                <Toggle
+                  label="Show hidden files"
+                  hint="Default for the directory browser and the transfer panel. Files whose name starts with a dot are hidden unless this is on; either panel can also override it just for itself."
+                  checked={settings.sessions.showHiddenFiles}
+                  onChange={(showHiddenFiles) => onChange('sessions', { showHiddenFiles })}
+                />
               </>
             )}
 
