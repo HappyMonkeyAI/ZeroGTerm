@@ -40,7 +40,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ZeroG Terminal is currently a public alpha. The current release is `0.9.1-alpha.1`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
-The GitHub Releases page provides a Windows x64 installer and portable executable for each desktop release. These alpha builds are intended for early adopters and testing rather than production use. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
+The GitHub Releases page provides a Windows x64 installer and portable executable plus a Linux x64 AppImage and Debian package for each desktop release. These alpha builds are intended for early adopters and testing rather than production use. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
 
 ## Terminal shortcuts
 
@@ -467,12 +467,21 @@ required whichever shell you start them from.
 for Windows and macOS, so a C/C++ toolchain is a Linux requirement rather than a
 general one — there, `npm install` compiles it.
 
-### Windows desktop release
+### Desktop releases
 
-Download the latest Windows x64 installer from [GitHub Releases](https://github.com/HappyMonkeyAI/ZeroGTerm/releases). The installer adds ZeroG Terminal to the current user's applications. The portable `.exe` can be run without installation.
+Download the latest release for your platform from [GitHub Releases](https://github.com/HappyMonkeyAI/ZeroGTerm/releases). These alpha builds are intended for early adopters and testing rather than production use. Review the release notes before installing; SSH, WSL, PowerShell, Git Bash, and any remote `screen` sessions are provided by the host system rather than bundled with the app.
 
-These binaries are unsigned alpha builds, so Windows SmartScreen may show a warning on first launch. If you downloaded the release from the official repository, choose **More info → Run anyway**. Review the release notes before installing; SSH, WSL, PowerShell, Git Bash, and any remote `screen` sessions are provided by the host system rather than bundled with the app.
-### Linux
+#### Windows
+
+The Windows x64 installer adds ZeroG Terminal to the current user's applications. The portable `.exe` can be run without installation.
+
+These binaries are unsigned, so Windows SmartScreen may show a warning on first launch. If you downloaded the release from the official repository, choose **More info → Run anyway**.
+
+#### Linux
+
+The Linux release provides an x64 AppImage and Debian package built for Ubuntu 22.04 or newer. Make the AppImage executable after downloading it, then launch it from the same directory. If the AppImage reports that FUSE2 is unavailable, install `libfuse2` on Ubuntu 22.04 or `libfuse2t64` on Ubuntu 24.04 and newer. The `.deb` package can be installed through Ubuntu's software tools or APT and does not require FUSE2.
+
+The host still needs a C/C++ toolchain when developing from source:
 
 ```bash
 sudo dnf install screen make gcc-c++ python3

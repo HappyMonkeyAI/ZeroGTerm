@@ -39,6 +39,7 @@
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "electron .",
     "package:win": "npm run build && electron-builder --win nsis portable --x64 --publish never",
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
     "prepublishOnly": "npm run build"
   },
   "build": {
@@ -65,10 +66,33 @@
         }
       ]
     },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "maintainer": "ZeroG Terminal <SPhillips1337@users.noreply.github.com>",
+      "artifactName": "ZeroGTerminal-${version}-${arch}.${ext}"
+    },
     "nsis": {
+      "artifactName": "ZeroGTerminal-${version}-Setup.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false
+    },
+    "portable": {
+      "artifactName": "ZeroGTerminal-${version}-Portable.${ext}"
     }
   },
   "dependencies": {
