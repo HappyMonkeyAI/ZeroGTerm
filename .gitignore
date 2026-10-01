@@ -10,3 +10,5 @@ coverage/
 prototype/pane-link/run.log
 prototype/pane-link/transcript.json
 prototype/pane-link/stdout.txt
+prototype/pane-link/hook-run.log
+prototype/pane-link/hook-transcript.json
