@@ -24,6 +24,8 @@ import { McpAudit } from './mcp-audit.js';
 import { classifyMcpPrompt } from './prompt-classifier.js';
 import { isSafeRemoteCommand } from './mcp-execution-policy.js';
 import { requireWorkspaceName } from './mcp-protocol.js';
+import { PaneLinkController, pasteAndSubmit } from './pane-link.js';
+import { AgentHookServer, buildLaunchCommand } from './agent-hook-server.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -66,6 +68,42 @@ function clearMcpExecution(requestId: string, sessionId?: string): void {
   }
 }
 let mcpHost: McpServerHost | undefined;
+
+// Pane link: agents ZeroG launches report their turns over loopback hooks, and the
+// controller relays a finished reply into the linked pane. See src/main/pane-link.ts.
+const paneLinks = new PaneLinkController({
+  deliver: (sessionId, text) => pasteAndSubmit((id, data) => service.write(id, data), sessionId, text),
+  onChange: (snapshot) => win?.webContents.send('paneLinks:changed', snapshot)
+});
+const agentHooks = new AgentHookServer({
+  settingsDir: join(app.getPath('userData'), 'pane-link'),
+  onEvent: (event) => paneLinks.handle(event)
+});
+
+ipcMain.handle('paneLinks:launchAgent', async (_event, sessionId: unknown, agentCommand: unknown) => {
+  const id = requireString(sessionId, 'A pane');
+  const command = requireString(agentCommand, 'The AI command');
+  const info = (await service.list()).find((candidate) => candidate.id === id);
+  if (!info) throw new Error('That pane is not available.');
+  // The hook URL is a Windows/Linux loopback address. An SSH host or a WSL2 guest cannot reach it.
+  if (info.kind !== 'local' || info.backend === 'wsl') {
+    throw new Error('Linked agents run in local panes only (not SSH or WSL).');
+  }
+  const { settingsPath } = await agentHooks.register(id);
+  try {
+    const line = buildLaunchCommand(command, settingsPath);
+    paneLinks.registerAgent(id, info.name);
+    service.write(id, `${line}\r`);
+  } catch (error) {
+    await agentHooks.unregister(id);
+    throw error;
+  }
+});
+ipcMain.handle('paneLinks:list', () => paneLinks.snapshot());
+ipcMain.handle('paneLinks:link', (_event, a: unknown, b: unknown, cap: unknown) =>
+  paneLinks.link(requireString(a, 'A pane'), requireString(b, 'A pane'), typeof cap === 'number' ? cap : undefined));
+ipcMain.handle('paneLinks:unlink', (_event, linkId: unknown) => paneLinks.unlink(requireString(linkId, 'A link')));
+ipcMain.handle('paneLinks:resume', (_event, linkId: unknown) => paneLinks.resume(requireString(linkId, 'A link')));
 
 async function restoreWorkspace(workspaceId: string): Promise<unknown> {
   const file = await workspaceStore.load();
@@ -533,6 +571,8 @@ ipcMain.handle('sessions:attach', (_event, id: unknown, size: unknown) => {
 ipcMain.handle('sessions:close', (_event, id: unknown) => {
   if (typeof id !== 'string' || !id) throw new Error('closeSession requires a session id');
   service.close(id);
+  paneLinks.unregisterAgent(id);
+  void agentHooks.unregister(id);
 });
 
 ipcMain.on('terminal:write', (_event, sessionId: unknown, data: unknown) => {
@@ -737,6 +777,10 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  void agentHooks.stop();
 });
 
 app.on('window-all-closed', () => {

@@ -49,6 +49,16 @@ const api = {
     ipcRenderer.on('mcp:execution', listener);
     return () => ipcRenderer.removeListener('mcp:execution', listener);
   },
+  launchLinkedAgent: (sessionId, agentCommand) => ipcRenderer.invoke('paneLinks:launchAgent', sessionId, agentCommand),
+  listPaneLinks: () => ipcRenderer.invoke('paneLinks:list'),
+  linkPanes: (a, b, cap) => ipcRenderer.invoke('paneLinks:link', a, b, cap),
+  unlinkPanes: (linkId) => ipcRenderer.invoke('paneLinks:unlink', linkId),
+  resumePaneLink: (linkId) => ipcRenderer.invoke('paneLinks:resume', linkId),
+  onPaneLinks: (callback) => {
+    const listener = (_event, snapshot) => callback(snapshot);
+    ipcRenderer.on('paneLinks:changed', listener);
+    return () => ipcRenderer.removeListener('paneLinks:changed', listener);
+  },
   listBackends: () => ipcRenderer.invoke('sessions:backends'),
   listWslDistributions: () => ipcRenderer.invoke('sessions:wslDistributions'),
   createLocalSession: (request) => ipcRenderer.invoke('sessions:createLocal', request),

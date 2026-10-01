@@ -390,7 +390,49 @@ export interface StoredPortForwardFile {
   forwards: Array<Omit<PortForwardInfo, 'status' | 'message'>>;
 }
 
+/* Pane link: relaying one launched agent's finished reply into another's prompt. */
+export type AgentPhase = 'idle' | 'busy';
+
+export interface AgentStatus {
+  sessionId: string;
+  label: string;
+  phase: AgentPhase;
+  /** The agent is waiting on the user (permission prompt and the like). */
+  needsAttention: boolean;
+  linkId?: string;
+}
+
+export type LinkStatus = 'active' | 'paused' | 'broken';
+
+export interface PaneLinkState {
+  id: string;
+  a: string;
+  b: string;
+  status: LinkStatus;
+  /** Replies relayed so far. */
+  turns: number;
+  cap: number;
+  /** Why the link is paused or broken. */
+  reason?: string;
+  /** The session a relay was last delivered to and has not yet answered. */
+  waitingOn?: string;
+  /** A reply held back while paused; resuming delivers it. */
+  holding: boolean;
+}
+
+export interface PaneLinkSnapshot {
+  agents: AgentStatus[];
+  links: PaneLinkState[];
+}
+
 export interface TerminalApi {
+  /** Type the agent command plus ZeroG's hook settings into a local pane, so its replies can be linked. */
+  launchLinkedAgent(sessionId: string, agentCommand: string): Promise<void>;
+  listPaneLinks(): Promise<PaneLinkSnapshot>;
+  linkPanes(a: string, b: string, cap?: number): Promise<PaneLinkState>;
+  unlinkPanes(linkId: string): Promise<void>;
+  resumePaneLink(linkId: string): Promise<PaneLinkState>;
+  onPaneLinks(callback: (snapshot: PaneLinkSnapshot) => void): () => void;
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
   removeHistory(entryId: string): Promise<boolean>;
