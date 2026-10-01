@@ -40,7 +40,8 @@
     "start": "electron .",
     "package:win": "npm run build && electron-builder --win nsis portable --x64 --publish never",
     "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "proto:pane-link": "node prototype/pane-link/run.mjs"
   },
   "build": {
     "appId": "com.happymonkeyai.zerogterm",

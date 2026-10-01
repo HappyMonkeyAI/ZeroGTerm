@@ -7,3 +7,6 @@ coverage/
 .env
 .env.*
 !.env.example
+prototype/pane-link/run.log
+prototype/pane-link/transcript.json
+prototype/pane-link/stdout.txt
