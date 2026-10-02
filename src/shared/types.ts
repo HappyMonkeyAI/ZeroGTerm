@@ -399,6 +399,8 @@ export interface AgentStatus {
   phase: AgentPhase;
   /** The agent is waiting on the user (permission prompt and the like). */
   needsAttention: boolean;
+  /** The agent has finished a turn that ZeroG saw, so its last reply can be relayed by hand. */
+  hasReply: boolean;
   linkId?: string;
 }
 
@@ -430,6 +432,8 @@ export interface TerminalApi {
   launchLinkedAgent(sessionId: string, agentCommand: string): Promise<void>;
   listPaneLinks(): Promise<PaneLinkSnapshot>;
   linkPanes(a: string, b: string, cap?: number): Promise<PaneLinkState>;
+  /** Relay an agent's most recent reply to its linked partner now, instead of waiting for its next turn. */
+  relayLastReply(linkId: string, fromSessionId: string): Promise<PaneLinkState>;
   unlinkPanes(linkId: string): Promise<void>;
   resumePaneLink(linkId: string): Promise<PaneLinkState>;
   onPaneLinks(callback: (snapshot: PaneLinkSnapshot) => void): () => void;

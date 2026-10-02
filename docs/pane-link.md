@@ -12,7 +12,10 @@ copying a reply from one agent pane and pasting it into another.
    the agent's hooks at ZeroG; nothing in your own Claude settings is edited.
 2. In either pane, click the link button again and choose **Link with ...**.
 3. Prompt either agent as normal. When its turn finishes, the whole reply is typed
-   into the other pane as a prompt, and so on back and forth.
+   into the other pane as a prompt, and so on back and forth. Nothing is relayed by
+   itself at link time: the first relay happens when an agent's turn ends *after*
+   the link exists. If an agent already finished a reply before you linked, click
+   **Send last reply** in its bar to relay it now.
 4. A bar under each pane's header shows the state, the number of relays used, and
    **Break link** (or **Resume** when paused).
 
@@ -97,4 +100,10 @@ visible, easy break.
   the AI button, the launch command is typed exactly as shown in the status line.
 - A user's own Stop hooks may or may not run alongside the injected ones; this has
   not been verified.
-- Verified on Windows with Claude Code 2.1.286.
+- The link cannot tell that an agent failed to start (for example Claude is parked at
+  its "trust this folder" prompt, or the command did not run). The bar will say it is
+  waiting for a reply and nothing will move. Check both panes show a Claude prompt.
+- A freshly opened shell was seen to swallow the first keystroke of the launch
+  command, so the command is typed with one leading space.
+- Verified on Windows with Claude Code 2.1.286 and 2.1.287, including a scripted run
+  of the built app through its real buttons (two panes, link, 6 relays, limit).

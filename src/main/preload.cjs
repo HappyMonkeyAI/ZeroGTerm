@@ -52,6 +52,7 @@ const api = {
   launchLinkedAgent: (sessionId, agentCommand) => ipcRenderer.invoke('paneLinks:launchAgent', sessionId, agentCommand),
   listPaneLinks: () => ipcRenderer.invoke('paneLinks:list'),
   linkPanes: (a, b, cap) => ipcRenderer.invoke('paneLinks:link', a, b, cap),
+  relayLastReply: (linkId, fromSessionId) => ipcRenderer.invoke('paneLinks:relayLast', linkId, fromSessionId),
   unlinkPanes: (linkId) => ipcRenderer.invoke('paneLinks:unlink', linkId),
   resumePaneLink: (linkId) => ipcRenderer.invoke('paneLinks:resume', linkId),
   onPaneLinks: (callback) => {

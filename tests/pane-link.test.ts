@@ -310,6 +310,76 @@ describe('ending a link', () => {
   });
 });
 
+describe('relaying the last reply by hand', () => {
+  it('lets a link made after a turn finished still use that turn', () => {
+    const h = harness();
+    h.controller.handle(prompt('s2'));
+    h.controller.handle(stop('s2', 'review finished before the link existed'));
+    expect(h.controller.snapshot().agents.find((agent) => agent.sessionId === 's2')?.hasReply).toBe(true);
+
+    const link = h.controller.link('s1', 's2');
+    expect(h.delivered).toEqual([]); // nothing happens by itself: no turn has ended since the link
+    h.controller.relayLast(link.id, 's2');
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0].to).toBe('s1');
+    expect(h.delivered[0].text).toContain('review finished before the link existed');
+    expect(linkState(h)).toMatchObject({ turns: 1, waitingOn: 's1' });
+  });
+
+  it('keeps the chain going afterwards like any other relay', () => {
+    const h = harness();
+    h.controller.handle(stop('s2', 'first'));
+    const link = h.controller.link('s1', 's2');
+    h.controller.relayLast(link.id, 's2');
+    h.controller.handle(stop('s1', 'answer'));
+    expect(h.delivered.map((d) => d.to)).toEqual(['s1', 's2']);
+  });
+
+  it('does not offer a reply that was never produced, and not for a pane outside the link', () => {
+    const h = harness();
+    h.controller.registerAgent('s3', 'Pane Three');
+    const link = h.controller.link('s1', 's2');
+    expect(h.controller.snapshot().agents.every((agent) => !agent.hasReply)).toBe(true);
+    expect(() => h.controller.relayLast(link.id, 's1')).toThrow(/not finished/);
+    h.controller.handle(stop('s3', 'elsewhere'));
+    expect(() => h.controller.relayLast(link.id, 's3')).toThrow(/not part/);
+  });
+
+  it('ignores an empty turn when remembering replies', () => {
+    const h = harness();
+    h.controller.handle(stop('s1', '   '));
+    expect(h.controller.snapshot().agents.find((agent) => agent.sessionId === 's1')?.hasReply).toBe(false);
+  });
+
+  it('refuses while a relayed message is already being worked on, and after the link ended', () => {
+    const h = harness({ cap: 1 });
+    h.controller.handle(stop('s1', 'a'));
+    const link = h.controller.link('s1', 's2');
+    h.controller.relayLast(link.id, 's1');
+    expect(() => h.controller.relayLast(link.id, 's1')).toThrow(/already working/);
+    h.controller.handle(stop('s2', 'b')); // cap of 1 reached, link ends
+    expect(() => h.controller.relayLast(link.id, 's2')).toThrow(/ended/);
+  });
+
+  it('is still bound by the relay limit and by a busy partner', () => {
+    const h = harness();
+    h.controller.handle(stop('s1', 'a'));
+    const link = h.controller.link('s1', 's2');
+    h.controller.handle(prompt('s2')); // the partner is being used
+    h.controller.relayLast(link.id, 's1');
+    expect(h.delivered).toEqual([]);
+    expect(linkState(h)).toMatchObject({ status: 'paused', holding: true });
+  });
+
+  it('forgets the reply when the pane goes away', () => {
+    const h = harness();
+    h.controller.handle(stop('s1', 'a'));
+    h.controller.unregisterAgent('s1');
+    h.controller.registerAgent('s1', 'Pane One again');
+    expect(h.controller.snapshot().agents.find((agent) => agent.sessionId === 's1')?.hasReply).toBe(false);
+  });
+});
+
 describe('change notifications', () => {
   it('emits a snapshot on each state change', () => {
     const h = harness();

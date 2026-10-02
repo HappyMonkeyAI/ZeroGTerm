@@ -93,7 +93,11 @@ ipcMain.handle('paneLinks:launchAgent', async (_event, sessionId: unknown, agent
   try {
     const line = buildLaunchCommand(command, settingsPath);
     paneLinks.registerAgent(id, info.name);
-    service.write(id, `${line}\r`);
+    // One leading space: a freshly opened shell was seen to swallow the first
+    // keystroke ("laude: command not found"). If it is the space that goes, the
+    // command is intact; if nothing goes, a leading space is harmless in bash,
+    // PowerShell and cmd.
+    service.write(id, ` ${line}\r`);
   } catch (error) {
     await agentHooks.unregister(id);
     throw error;
@@ -102,6 +106,8 @@ ipcMain.handle('paneLinks:launchAgent', async (_event, sessionId: unknown, agent
 ipcMain.handle('paneLinks:list', () => paneLinks.snapshot());
 ipcMain.handle('paneLinks:link', (_event, a: unknown, b: unknown, cap: unknown) =>
   paneLinks.link(requireString(a, 'A pane'), requireString(b, 'A pane'), typeof cap === 'number' ? cap : undefined));
+ipcMain.handle('paneLinks:relayLast', (_event, linkId: unknown, from: unknown) =>
+  paneLinks.relayLast(requireString(linkId, 'A link'), requireString(from, 'A pane')));
 ipcMain.handle('paneLinks:unlink', (_event, linkId: unknown) => paneLinks.unlink(requireString(linkId, 'A link')));
 ipcMain.handle('paneLinks:resume', (_event, linkId: unknown) => paneLinks.resume(requireString(linkId, 'A link')));
 

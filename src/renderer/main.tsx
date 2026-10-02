@@ -3353,6 +3353,10 @@ function App() {
     }
   };
 
+  const relayLastReply = (link: PaneLinkState, fromSessionId: string) => {
+    void api()?.relayLastReply(link.id, fromSessionId).then(() => setStatus('Relayed the last reply')).catch((error) => setStatus(ipcMessage(error)));
+  };
+
   const unlinkPanes = (link: PaneLinkState) => {
     void api()?.unlinkPanes(link.id).then(() => setStatus('Link removed')).catch((error) => setStatus(ipcMessage(error)));
   };
@@ -3418,7 +3422,11 @@ function App() {
     const partnerId = link.a === paneSession.id ? link.b : link.a;
     const partnerName = sessions.find((candidate) => candidate.id === partnerId)?.name ?? 'another pane';
     const waiting = agentFor(paneSession.id)?.needsAttention;
+    const waitingName = link.waitingOn ? (sessions.find((candidate) => candidate.id === link.waitingOn)?.name ?? 'the other pane') : null;
     let text = `Linked with ${partnerName} · ${link.turns}/${link.cap} relays`;
+    if (link.status === 'active') {
+      text += waitingName ? ` · waiting for ${waitingName} to reply` : ' · relays start when either agent finishes a reply';
+    }
     if (link.status === 'paused') text = `Link paused: ${link.reason ?? 'stopped'}`;
     if (link.status === 'broken') text = `Link ended: ${link.reason ?? 'stopped'}`;
     if (waiting && link.status === 'active') text += ' · waiting for you';
@@ -3426,6 +3434,11 @@ function App() {
       <div className={`pane-link-bar ${link.status}`} role="status">
         <Icon name="link" />
         <span className="pane-link-text">{text}</span>
+        {link.status !== 'broken' && !link.waitingOn && agentFor(paneSession.id)?.hasReply && (
+          <button type="button" onClick={() => relayLastReply(link, paneSession.id)} title="Send this agent's most recent reply to the other pane now">
+            Send last reply
+          </button>
+        )}
         {link.status === 'paused' && (
           <button type="button" onClick={() => resumePaneLink(link)}>
             Resume

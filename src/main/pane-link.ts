@@ -127,6 +127,8 @@ export function pasteAndSubmit(
 export class PaneLinkController {
   private readonly agents = new Map<string, AgentStatus>();
   private readonly links = new Map<string, Link>();
+  /** Each agent's most recent finished reply, kept so a link made after the turn can still use it. */
+  private readonly lastReplies = new Map<string, string>();
   private readonly options: PaneLinkOptions;
   private readonly stallMs: number;
   private readonly defaultCap: number;
@@ -155,7 +157,7 @@ export class PaneLinkController {
     if (existing) {
       existing.label = label;
     } else {
-      this.agents.set(sessionId, { sessionId, label, phase: 'idle', needsAttention: false });
+      this.agents.set(sessionId, { sessionId, label, phase: 'idle', needsAttention: false, hasReply: false });
     }
     this.emit();
   }
@@ -166,6 +168,7 @@ export class PaneLinkController {
     if (!agent) return;
     if (agent.linkId) this.breakLink(agent.linkId, `The agent in "${agent.label}" exited.`);
     this.agents.delete(sessionId);
+    this.lastReplies.delete(sessionId);
     this.emit();
   }
 
@@ -218,6 +221,26 @@ export class PaneLinkController {
     return this.describe(link);
   }
 
+  /**
+   * Relay an agent's most recent reply now. For a link made after the agent's turn
+   * finished (nothing else would ever trigger it) and for resuming by hand.
+   */
+  relayLast(linkId: string, fromSessionId: string): PaneLinkState {
+    const link = this.links.get(linkId);
+    if (!link) throw new Error('That link no longer exists.');
+    if (link.status === 'broken') throw new Error('That link has ended. Link the panes again first.');
+    if (fromSessionId !== link.a && fromSessionId !== link.b) throw new Error('That pane is not part of this link.');
+    const reply = this.lastReplies.get(fromSessionId);
+    if (!reply) throw new Error('That agent has not finished a reply yet.');
+    if (link.waitingOn) throw new Error('Wait for the agent that is already working on a relayed message.');
+    link.status = 'active';
+    link.reason = undefined;
+    link.held = undefined;
+    this.relay(link, fromSessionId, reply);
+    this.emit();
+    return this.describe(link);
+  }
+
   /** Feed an event reported by an agent's hooks. */
   handle(event: AgentHookEvent): void {
     const agent = this.agents.get(event.sessionId);
@@ -240,6 +263,10 @@ export class PaneLinkController {
       case 'Stop':
         agent.phase = 'idle';
         agent.needsAttention = false;
+        if (sanitizeRelayText(event.message ?? '')) {
+          this.lastReplies.set(agent.sessionId, event.message ?? '');
+          agent.hasReply = true;
+        }
         if (link) this.onTurnFinished(link, agent, event.message ?? '');
         break;
     }
