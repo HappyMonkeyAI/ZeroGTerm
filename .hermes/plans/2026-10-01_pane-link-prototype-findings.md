@@ -1,7 +1,7 @@
-# Pane link prototype - THROWAWAY (delete or absorb before merge)
+# Pane link prototype findings
 
-Run: `PROTO_CWD=<trusted dir> CLAUDE_BIN=<full path to claude.exe> npm run proto:pane-link`
-(`q` breaks the link; log goes to `run.log`, transcript to `transcript.json`; both are gitignored.)
+Two throwaway prototypes (a quiet-timer relay and a Stop-hook relay) were run on 2026-10-01 and then deleted.
+The production code is `src/main/pane-link.ts` and `src/main/agent-hook-server.ts`. Their results are kept here.
 
 ## Question
 Can the "other agent's reply" be recovered from a raw PTY stream with only an output-quiet timer

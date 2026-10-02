@@ -1072,6 +1072,7 @@ input:focus-visible {
 .pane-close,
 .pane-proceed,
 .pane-ai,
+.pane-link,
 .pane-browse,
 .pane-mic {
   width: 19px;
@@ -3247,3 +3248,148 @@ input:focus-visible {
 
 :root[data-theme='light'] .settings-test-error,
 :root[data-theme='light'] .sftp-error b { color: #b3213b; }
+
+/* Pane link: the button sits with the other pane actions; teal marks a pane that is
+   (or can be) part of a relay, distinct from the green proceed and blue AI buttons. */
+.pane-link-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.pane-link:hover:not(:disabled) {
+  color: #73daca;
+  background: rgba(115, 218, 202, 0.14);
+  border-color: rgba(115, 218, 202, 0.45);
+}
+
+.pane-link.ready,
+.pane-link.active {
+  color: #73daca;
+}
+
+.pane-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pane-link .icon-svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pane-link-menu {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  z-index: 20;
+  min-width: 190px;
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  background: #141922;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.pane-link-menu button {
+  padding: 5px 8px;
+  text-align: left;
+  color: #d8dee9;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  font: 10px JetBrains Mono, monospace;
+}
+
+.pane-link-menu button:hover:not(:disabled) {
+  background: #1f2733;
+}
+
+.pane-link-empty {
+  padding: 5px 8px;
+  color: #8b93a3;
+  font: 10px JetBrains Mono, monospace;
+}
+
+.pane-link-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  color: #73daca;
+  background: rgba(115, 218, 202, 0.08);
+  border-bottom: 1px solid #202630;
+  font: 10px JetBrains Mono, monospace;
+}
+
+.pane-link-bar.paused {
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.1);
+}
+
+.pane-link-bar.broken {
+  color: #8b93a3;
+  background: transparent;
+}
+
+.pane-link-bar .icon-svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
+.pane-link-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-link-bar button {
+  padding: 1px 7px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font: inherit;
+  opacity: 0.85;
+}
+
+.pane-link-bar button:hover {
+  opacity: 1;
+}
+
+:root[data-theme='light'] .pane-link-bar {
+  color: #0f766e;
+  background: rgba(15, 118, 110, 0.08);
+}
+
+:root[data-theme='light'] .pane-link-bar.paused {
+  color: #92600a;
+  background: rgba(146, 96, 10, 0.1);
+}
+
+:root[data-theme='light'] .pane-link-bar.broken {
+  color: #5b6475;
+  background: transparent;
+}
+
+:root[data-theme='light'] .pane-link.ready,
+:root[data-theme='light'] .pane-link.active {
+  color: #0f766e;
+}
+
+:root[data-theme='light'] .pane-link-menu {
+  background: #ffffff;
+  border-color: #cfd6e2;
+}
+
+:root[data-theme='light'] .pane-link-menu button {
+  color: #1f2733;
+}
+
+:root[data-theme='light'] .pane-link-menu button:hover:not(:disabled) {
+  background: #eef1f6;
+}

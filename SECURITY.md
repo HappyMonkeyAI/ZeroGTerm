@@ -192,6 +192,28 @@ localStorage — a plain file. So the key is not kept there:
 
 These controls are not a guarantee of security. Please report bypasses or regressions privately.
 
+## Pane link
+
+Pane link (`docs/pane-link.md`) is the one place ZeroG types one agent's output into
+another, so it is built as a bounded, visible, user-started loop:
+
+- ZeroG launches the agents itself with `--settings`, pointing four hook events at a
+  listener bound to `127.0.0.1` on an ephemeral port. Each agent has its own random
+  192-bit token in the URL; the settings file holds that token, is written 0600, and
+  is deleted when the pane closes or the app quits. Unknown tokens get a 404; bodies
+  over 2 MiB are refused; the hook response is always `{}`, so ZeroG observes agents
+  and never steers them.
+- Only the agent's own final message (`last_assistant_message`) is relayed. Terminal
+  output is not read, so password, passphrase, OTP and host-key prompts are never
+  forwarded.
+- Relayed text is untrusted input to the receiving agent. It is stripped of control
+  characters, capped at 16,000 characters, and labelled as another agent's message.
+  A reply is only ever typed into an idle partner; otherwise the link pauses.
+- A link ends on a relay limit (default 6, maximum 50), a stall timeout, either agent
+  exiting, or the user breaking it.
+- Not covered: a prompt-injected agent can still say persuasive things to its partner.
+  The limit and the pause-on-approval behaviour are the mitigations, not a guarantee.
+
 ## The command history
 
 The command history palette is the only part of ZeroG that stores what the user

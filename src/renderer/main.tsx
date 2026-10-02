@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PaneLinkSnapshot, PaneLinkState, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -983,6 +983,8 @@ function App() {
   ]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
   const [status, setStatus] = useState('Ready');
+  const [paneLinks, setPaneLinks] = useState<PaneLinkSnapshot>({ agents: [], links: [] });
+  const [linkMenuFor, setLinkMenuFor] = useState<string | null>(null);
   const [mcpStatus, setMcpStatus] = useState<McpControlStatus>({ state: 'disabled', capabilities: [] });
   const [mcpExecutions, setMcpExecutions] = useState<McpExecutionRequest[]>([]);
   const [mcpInfo, setMcpInfo] = useState<{ endpoint: string; token: string } | null>(null);
@@ -1123,6 +1125,11 @@ function App() {
     void api()?.appVersion?.()
       .then((version) => setAppVersion(formatVersion(version)))
       .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const currentApi = api();
+    void currentApi?.listPaneLinks?.().then(setPaneLinks).catch(() => undefined);
+    return currentApi?.onPaneLinks?.(setPaneLinks);
   }, []);
   useEffect(() => {
     const currentApi = api();
@@ -3312,6 +3319,125 @@ function App() {
     focusTerminal(session.id);
   };
 
+  const agentFor = (sessionId: string) => paneLinks.agents.find((agent) => agent.sessionId === sessionId);
+  /** The live link for a pane, or else the ended one whose reason is still worth reading. */
+  const linkFor = (sessionId: string) => {
+    const mine = paneLinks.links.filter((link) => link.a === sessionId || link.b === sessionId);
+    return mine.find((link) => link.status !== 'broken') ?? mine[0];
+  };
+
+  /**
+   * Launch the AI command in a pane with ZeroG's hooks attached, so the pane's
+   * finished replies can be relayed to another pane. The main process refuses
+   * SSH and WSL panes and says why.
+   */
+  const launchLinkedAgent = async (session: SessionInfo) => {
+    const currentApi = api();
+    if (!currentApi) return;
+    try {
+      await currentApi.launchLinkedAgent(session.id, resolveAiCommand(settings.ai));
+      setStatus(`Started a linked agent in ${session.name}`);
+      focusTerminal(session.id);
+    } catch (error) {
+      setStatus(ipcMessage(error));
+    }
+  };
+
+  const linkPanes = async (from: SessionInfo, to: SessionInfo) => {
+    setLinkMenuFor(null);
+    try {
+      await api()?.linkPanes(from.id, to.id);
+      setStatus(`Linked ${from.name} with ${to.name}. Prompt either agent; its reply goes to the other.`);
+    } catch (error) {
+      setStatus(ipcMessage(error));
+    }
+  };
+
+  const unlinkPanes = (link: PaneLinkState) => {
+    void api()?.unlinkPanes(link.id).then(() => setStatus('Link removed')).catch((error) => setStatus(ipcMessage(error)));
+  };
+
+  const resumePaneLink = (link: PaneLinkState) => {
+    void api()?.resumePaneLink(link.id).then(() => setStatus('Link resumed')).catch((error) => setStatus(ipcMessage(error)));
+  };
+
+  const renderLinkButton = (paneSession: SessionInfo) => {
+    const agent = agentFor(paneSession.id);
+    const link = linkFor(paneSession.id);
+    const linked = Boolean(link && link.status !== 'broken');
+    const canLaunch = paneSession.kind === 'local' && paneSession.backend !== 'wsl';
+    const partners = paneLinks.agents.filter((candidate) => candidate.sessionId !== paneSession.id && !candidate.linkId);
+    let title = canLaunch
+      ? `Start a linked agent: runs "${aiCommand}" with ZeroG hooks so its replies can be relayed to another pane`
+      : 'Linked agents run in local panes only (not SSH or WSL)';
+    if (agent && !linked) title = 'Link this agent with another linked agent';
+    if (linked) title = 'This pane is linked';
+    return (
+      <span className="pane-link-wrap">
+        <button
+          type="button"
+          className={linked ? 'pane-link active' : agent ? 'pane-link ready' : 'pane-link'}
+          onClick={() => {
+            if (!agent) void launchLinkedAgent(paneSession);
+            else setLinkMenuFor(linkMenuFor === paneSession.id ? null : paneSession.id);
+          }}
+          disabled={linked || (!agent && !canLaunch)}
+          title={title}
+          aria-label={agent ? `Link ${paneSession.name} with another agent` : `Start a linked agent in ${paneSession.name}`}
+          aria-haspopup={agent ? 'menu' : undefined}
+          aria-expanded={agent ? linkMenuFor === paneSession.id : undefined}
+        >
+          <Icon name="link" />
+        </button>
+        {linkMenuFor === paneSession.id && agent && !linked && (
+          <div className="pane-link-menu" role="menu">
+            {partners.length === 0 && <div className="pane-link-empty">Start a linked agent in another pane first.</div>}
+            {partners.map((partner) => {
+              const partnerSession = sessions.find((candidate) => candidate.id === partner.sessionId);
+              return (
+                <button
+                  type="button"
+                  role="menuitem"
+                  key={partner.sessionId}
+                  disabled={!partnerSession}
+                  onClick={() => partnerSession && void linkPanes(paneSession, partnerSession)}
+                >
+                  Link with {partner.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </span>
+    );
+  };
+
+  const renderLinkBar = (paneSession: SessionInfo) => {
+    const link = linkFor(paneSession.id);
+    if (!link) return null;
+    const partnerId = link.a === paneSession.id ? link.b : link.a;
+    const partnerName = sessions.find((candidate) => candidate.id === partnerId)?.name ?? 'another pane';
+    const waiting = agentFor(paneSession.id)?.needsAttention;
+    let text = `Linked with ${partnerName} · ${link.turns}/${link.cap} relays`;
+    if (link.status === 'paused') text = `Link paused: ${link.reason ?? 'stopped'}`;
+    if (link.status === 'broken') text = `Link ended: ${link.reason ?? 'stopped'}`;
+    if (waiting && link.status === 'active') text += ' · waiting for you';
+    return (
+      <div className={`pane-link-bar ${link.status}`} role="status">
+        <Icon name="link" />
+        <span className="pane-link-text">{text}</span>
+        {link.status === 'paused' && (
+          <button type="button" onClick={() => resumePaneLink(link)}>
+            Resume
+          </button>
+        )}
+        <button type="button" onClick={() => unlinkPanes(link)}>
+          {link.status === 'broken' ? 'Dismiss' : 'Break link'}
+        </button>
+      </div>
+    );
+  };
+
   const finishSpeechTest = async () => {
     const recorder = speechTestRecorderRef.current;
     if (!recorder) return;
@@ -3978,6 +4104,7 @@ function App() {
                       >
                         <Icon name="bot" />
                       </button>
+                      {renderLinkButton(paneSession)}
                       <button
                         type="button"
                         className={paneVoice ? `pane-mic ${paneVoice}` : 'pane-mic'}
@@ -3996,6 +4123,7 @@ function App() {
                       </button>
                     </span>
                   </div>
+                  {renderLinkBar(paneSession)}
                   <PaneBody
                     open={browserOpen}
                     ratio={browserRatioFor(paneSession.id)}

@@ -1,6 +1,6 @@
 # Pane Link (Agent-to-Agent Relay) Plan
 
-> Status: DRAFT for user review. Research only; no code written. Branch: `feat/pane-link` (from `dev`).
+> Status: IN PROGRESS on `feat/pane-link` (from `dev`). Phase 1 (two-way, Claude Code, local panes) is implemented; see `docs/pane-link.md` and `FEATURE-DEV.md`. Prototype findings: `2026-10-01_pane-link-prototype-findings.md`.
 
 **Goal:** Let the user link two panes that each run an AI agent (e.g. `claude`) so that the finished reply in pane A is typed into pane B as its next prompt, B's finished reply is typed back into A, and so on until the user breaks the link. This replaces manual copy/paste between agent panes.
 

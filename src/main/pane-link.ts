@@ -177,6 +177,10 @@ export class PaneLinkController {
     if (!a || !b) throw new Error('Both panes must be running an agent started with "Start linked agent".');
     if (a.linkId || b.linkId) throw new Error('A pane can only be in one link at a time. Break the existing link first.');
     if (a.phase !== 'idle' || b.phase !== 'idle') throw new Error('Wait for both agents to finish their current turn before linking.');
+    // A broken link stays listed so its reason can be read; starting a new one retires it.
+    for (const stale of Array.from(this.links.values())) {
+      if (stale.status === 'broken' && [stale.a, stale.b].some((id) => id === aSessionId || id === bSessionId)) this.links.delete(stale.id);
+    }
     const relays = cap === undefined ? this.defaultCap : cap;
     if (!Number.isInteger(relays) || relays < 1 || relays > MAX_RELAY_CAP) {
       throw new Error(`The relay limit must be a whole number from 1 to ${MAX_RELAY_CAP}.`);

@@ -63,6 +63,22 @@ The AI button (bot icon, runs a configurable command such as `claude`) shipped a
 - [ ] Keep "OK, proceed" and the AI command as the two seeded defaults, so existing users see no behavior change on upgrade.
 - [ ] Decide whether buttons are global or per-pane-kind (e.g. only offering the AI button on local shells, not SSH panes).
 
+## Pane link (agent-to-agent relay)
+
+Design and behaviour: `docs/pane-link.md`. Plan: `.hermes/plans/2026-10-01_pane-link-agent-relay.md`.
+
+- [x] Controller with turn cap, stall timeout, pause on busy or waiting partner, sanitised and labelled relays.
+- [x] Loopback hook listener with per-agent tokens and settings files; Claude Code only.
+- [x] Pane button, link menu, and per-pane status bar with Resume / Break link.
+- [ ] Live GUI acceptance in the Electron app (two panes, real agents) - not yet done by a person.
+- [ ] One-way relay (A to B only).
+- [ ] Inject your own message mid-loop (pause, type, resume).
+- [ ] Other agents (Codex, Gemini CLI) via their own turn source.
+- [ ] SSH panes: needs a channel from the remote hook back to ZeroG.
+- [ ] N-way links with a moderator pane or turn order, optional judge/stop condition.
+- [ ] Fix `src/shared/ansi.ts` CSI pattern to cover private-parameter sequences such as `ESC[>4m`.
+- [ ] Verify whether a user's own Stop hooks still run alongside the injected `--settings` hooks.
+
 ## Security boundaries
 
 - [x] Loopback-only MCP transport.

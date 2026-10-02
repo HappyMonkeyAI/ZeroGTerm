@@ -297,6 +297,17 @@ describe('ending a link', () => {
     h.controller.handle(stop('s2', 'two')); // cap reached
     expect(() => h.controller.link('s1', 's2')).not.toThrow();
   });
+
+  it('retires the ended link when the same panes are linked again', () => {
+    const h = harness({ cap: 1 });
+    const first = h.controller.link('s1', 's2');
+    h.controller.handle(stop('s1', 'one'));
+    h.controller.handle(stop('s2', 'two')); // cap reached, link stays listed as broken
+    expect(h.controller.snapshot().links.map((link) => link.status)).toEqual(['broken']);
+    const second = h.controller.link('s1', 's2');
+    expect(second.id).not.toBe(first.id);
+    expect(h.controller.snapshot().links.map((link) => link.status)).toEqual(['active']);
+  });
 });
 
 describe('change notifications', () => {
