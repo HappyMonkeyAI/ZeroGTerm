@@ -53,15 +53,47 @@ Reliable exit status would require switching to a supervised child-process model
 
 ## Pane action buttons
 
-The AI button (bot icon, runs a configurable command such as `claude`) shipped as a second hardcoded button alongside the existing proceed button (tick icon, sends a configurable phrase), following the same settings-field-and-button pattern. Both remain fixed, single-purpose controls — there is still no generic mechanism for the user to define their own set of pane buttons.
+The AI button (bot icon, runs a configurable command such as `claude`) and the proceed button (tick icon, sends a configurable phrase) remain fixed, single-purpose controls. The AI command is also what a linked agent launches (see Pane link), which is why they were not folded into the custom list below.
 
-### 1. Configurable custom buttons — proposed
+### 1. Configurable custom buttons — shipped
 
-- [ ] Replace the two hardcoded fields (`proceedPhrase`, `aiCommand`) with an ordered list of user-defined entries, each with a label, an icon choice, the text to send, and whether it presses Enter.
-- [ ] Add/remove/reorder UI in the Settings panel (the app's first array-based settings editor — no existing list-editing pattern to copy from).
-- [ ] Render the list dynamically in the pane's `pane-actions` row instead of two fixed `<button>` elements.
-- [ ] Keep "OK, proceed" and the AI command as the two seeded defaults, so existing users see no behavior change on upgrade.
-- [ ] Decide whether buttons are global or per-pane-kind (e.g. only offering the AI button on local shells, not SSH panes).
+Ten user-defined slots, numbered 0–9. Each has a label (the tooltip) and the text to send; a slot with text shows as a numbered square on every pane's top bar and types the text with Enter. Settings: `ai.customButtons`; logic in `src/renderer/pane-buttons.ts`; tests in `tests/settings.test.ts` and `tests/pane-buttons.test.ts`.
+
+- [x] Ordered, fixed-length list in Settings, with a label and text per slot, sanitised like the proceed phrase (no newline or escape can reach the terminal).
+- [x] Rendered dynamically in the pane's `pane-actions` row, only for slots that have text.
+- [x] "OK, proceed" and the AI command left as they were, so existing users see no behaviour change.
+- [x] Buttons are global and appear on every pane, local and SSH.
+- [ ] An icon choice per button.
+- [ ] An option to type the text without pressing Enter.
+- [ ] More than ten slots, or reordering (slot numbers are fixed by position today).
+- [ ] Per-pane-kind buttons (e.g. only offering one on local shells).
+
+## Workspace and pane layout
+
+- [x] Workspace rename from the tab's right-click menu. The menu closed on `pointerdown` before its item's click arrived, so no menu command ever ran; presses inside the menu no longer dismiss it (`src/renderer/context-menu.tsx`).
+- [x] Choose which two panes a 2-way split shows when the workspace holds three or four: left/right arrows on each visible pane swap its slot for the next or previous pane the other slot is not showing. Saved per workspace, follows a pane that reconnects under a new session id. Logic in `src/renderer/pane-selection.ts`.
+- [ ] Selecting a hidden pane in the sidebar still widens the layout to the four-pane grid; swapping it into a slot instead may suit this feature better.
+- [ ] Rename gives no message when a name fails `WORKSPACE_NAME_PATTERN`; the input's `pattern` attribute normally blocks it, but a status message would be clearer.
+
+## SSH session labels
+
+- [x] The SSH dialog prefills "Session label" with the label last used for the host, and saves it after a successful connect. Stored in `host-labels.json` in userData, keyed on the bare lowercased host (`src/main/host-label-store.ts`, `src/renderer/host-labels.ts`).
+- [ ] Labels are only saved from the dialog; reconnecting from a saved connection or restoring a pane neither reads nor writes one.
+- [ ] A way to see or edit remembered labels.
+
+## Built-in text editor
+
+Design and decisions: `docs/editor-design.md`. Local and SSH files, up to 1 MiB, in an overlay over the panes or docked into the right-hand side of the terminal's own pane.
+
+- [x] Local files: read and write with size, binary and UTF-8 checks; CRLF preserved; a save is refused if the file changed on disk after it was opened; writes in place so symlinks and permissions survive (`src/main/local-fs.ts`).
+- [x] SSH files: read via a private temp directory, save by re-fetching and comparing content, then a plain `put` so an existing file keeps its permissions (`src/main/remote-file.ts`).
+- [x] Dock beside the terminal as a sidecar, keeping the open file and unsaved edits across overlay and docked.
+- [ ] Answer a password or host-key prompt from inside the editor; today it can only be answered in the transfer panel.
+- [ ] Edit remote files whose names contain quotes, backslashes, wildcards or control characters.
+- [ ] Remember a docked editor across restarts; more than one open file per pane.
+- [ ] A true separate editor pane rather than a sidecar. Needs the pane model, persistence and session restore to learn about non-terminal panes.
+- [ ] A richer widget (syntax colouring, search, large files), e.g. CodeMirror 6, behind the same `editor-state` module.
+- [ ] Verify remote editing against a real host with a password-prompted login, and measure save latency.
 
 ## Pane link (agent-to-agent relay)
 
