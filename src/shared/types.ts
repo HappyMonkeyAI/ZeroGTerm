@@ -177,6 +177,8 @@ export interface StoredWorkspaceView {
   maximizedSessionId?: string | null;
   /** Directory browser state per pane, keyed by session id. */
   browsers?: Record<string, { open: boolean; ratio?: number }>;
+  /** The panes a two-pane split shows, in slot order, when it holds more than two. */
+  visiblePanes?: string[];
 }
 
 export interface StoredWorkspace {

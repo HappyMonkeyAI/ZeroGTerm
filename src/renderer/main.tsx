@@ -87,6 +87,7 @@ import {
   type Theme
 } from './settings';
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { canCycle, cycleSlot, resolveVisible, SPLIT_SLOTS } from './pane-selection';
 import { buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
 import { EMPTY_HOST_LABELS, labelFor, withLabel } from './host-labels';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
@@ -1863,8 +1864,26 @@ function App() {
   // breadcrumb and sidebar name one session while keystrokes go to another.
   const stackedSessionId =
     paneSessions.find((session) => session.id === active?.id)?.id ?? paneSessions[0]?.id;
+  // Only a two-pane split has hidden panes to choose between: the grid shows up
+  // to four, and the stack shows one.
+  const choosesPanes = layout === 'split-v' || layout === 'split-h';
+  const paneIds = paneSessions.map((session) => session.id);
+  const visibleIds = choosesPanes ? resolveVisible(paneIds, view.visiblePanes, SPLIT_SLOTS) : null;
   const isPaneVisible = (session: SessionInfo, index: number) =>
-    layout === 'stack' ? session.id === stackedSessionId : index < paneCount;
+    layout === 'stack' ? session.id === stackedSessionId : visibleIds ? visibleIds.includes(session.id) : index < paneCount;
+
+  /** Swap the pane in one slot for the next or previous one the other slot is not showing. */
+  const cyclePaneSlot = (sessionId: string, direction: -1 | 1) => {
+    if (!visibleIds) return;
+    const next = cycleSlot(paneIds, visibleIds, visibleIds.indexOf(sessionId), direction);
+    patchView({ visiblePanes: next });
+    // The pane that came in is the one the user is about to use.
+    const incoming = paneSessions.find((session) => session.id === next[visibleIds.indexOf(sessionId)]);
+    if (incoming) {
+      setActive(incoming);
+      focusTerminal(incoming.id);
+    }
+  };
 
   useEffect(() => {
     // Selecting a local terminal takes the panel's host away from under it.
@@ -1889,7 +1908,7 @@ function App() {
       // A maximized pane is effectively single-pane: follow the selection
       // rather than leaving the chosen terminal off screen.
       setMaximizedSessionId(session.id);
-    } else if (index >= paneCount && layout !== 'stack') {
+    } else if (index >= 0 && layout !== 'stack' && !isPaneVisible(session, index)) {
       // The current split does not render this pane; widen so it is visible.
       setLayout('grid');
     }
@@ -3358,7 +3377,8 @@ function App() {
   const sendCustomButton = (session: SessionInfo, button: PaneButton) => {
     const currentApi = api();
     if (!currentApi) return;
-    currentApi.write(session.id, `${button.command}`);
+    currentApi.write(session.id, `${button.command}
+`);
     setStatus(`Sent "${button.command}" to ${session.name}`);
     focusTerminal(session.id);
   };
@@ -4108,6 +4128,10 @@ function App() {
                 <article
                   className={`pane terminal-pane ${dormant ? 'dormant-pane' : ''} ${!dormant && focusedSessionId === paneSession.id ? 'focused' : ''} ${!dormant && maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${dormant || isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
                   key={paneSession.id}
+                  // Auto-placement honours `order`, so a slot's pane lands in its
+                  // own cell without the panes being moved in the DOM — moving one
+                  // would risk its terminal.
+                  style={visibleIds && visibleIds.includes(paneSession.id) ? { order: visibleIds.indexOf(paneSession.id) } : undefined}
                   onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
                   <div className="pane-title">
@@ -4121,6 +4145,28 @@ function App() {
                             <Icon name="chevron-left" />
                           </button>
                           <button type="button" className="pane-nav" onClick={() => cycleMaximizedSession(1)} title="Next session">
+                            <Icon name="chevron-right" />
+                          </button>
+                        </>
+                      )}
+                      {visibleIds && !maximizedPaneId && canCycle(paneIds, SPLIT_SLOTS) && !dormant && (
+                        <>
+                          <button
+                            type="button"
+                            className="pane-nav"
+                            onClick={() => cyclePaneSlot(paneSession.id, -1)}
+                            title="Show the previous pane here"
+                            aria-label={`Show the previous pane in place of ${paneSession.name}`}
+                          >
+                            <Icon name="chevron-left" />
+                          </button>
+                          <button
+                            type="button"
+                            className="pane-nav"
+                            onClick={() => cyclePaneSlot(paneSession.id, 1)}
+                            title="Show the next pane here"
+                            aria-label={`Show the next pane in place of ${paneSession.name}`}
+                          >
                             <Icon name="chevron-right" />
                           </button>
                         </>

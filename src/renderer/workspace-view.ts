@@ -48,6 +48,11 @@ export type WorkspaceView = {
   maximizedSessionId?: string | null;
   /** Per-pane directory browser state, keyed by session id. */
   browsers?: Record<string, PaneBrowserState>;
+  /**
+   * The panes a two-pane split shows, in slot order. What the user last chose,
+   * so it may name a pane that has since gone — pane-selection resolves it.
+   */
+  visiblePanes?: string[];
 };
 
 export type Workspace = {
@@ -215,7 +220,9 @@ export function reconcileView(view: WorkspaceView, memberIds: string[]): Workspa
   // A browser belongs to a pane. When the pane goes, so does the entry —
   // otherwise a new session reusing that id would inherit a stranger's divider.
   const browsers = pruneBrowsers(view.browsers, members);
+  const visiblePanes = pruneVisible(view.visiblePanes, members);
   if (
+    visiblePanes === view.visiblePanes &&
     active === view.activeSessionId &&
     focused === view.focusedSessionId &&
     maximized === (view.maximizedSessionId ?? null) &&
@@ -223,7 +230,15 @@ export function reconcileView(view: WorkspaceView, memberIds: string[]): Workspa
   ) {
     return view;
   }
-  return { ...view, activeSessionId: active, focusedSessionId: focused, maximizedSessionId: maximized, browsers };
+  return { ...view, activeSessionId: active, focusedSessionId: focused, maximizedSessionId: maximized, browsers, visiblePanes };
+}
+
+/** The same list when every pane is still a member, so callers can skip a render. */
+function pruneVisible(visible: string[] | undefined, members: Set<string>): string[] | undefined {
+  if (!visible) return visible;
+  const kept = visible.filter((id) => members.has(id));
+  if (kept.length === visible.length) return visible;
+  return kept.length ? kept : undefined;
 }
 
 /** The same map when every key is still a member, so callers can skip a render. */
@@ -463,9 +478,11 @@ export function adoptLiveSessions(
 }
 
 function renameViewSession(view: WorkspaceView, from: string, to: string): WorkspaceView {
-  if (view.activeSessionId !== from && view.focusedSessionId !== from && view.maximizedSessionId !== from) return view;
+  const names = view.visiblePanes?.includes(from) ?? false;
+  if (view.activeSessionId !== from && view.focusedSessionId !== from && view.maximizedSessionId !== from && !names) return view;
   return {
     ...view,
+    ...(names ? { visiblePanes: view.visiblePanes?.map((id) => (id === from ? to : id)) } : {}),
     activeSessionId: view.activeSessionId === from ? to : view.activeSessionId,
     focusedSessionId: view.focusedSessionId === from ? to : view.focusedSessionId,
     maximizedSessionId: view.maximizedSessionId === from ? to : view.maximizedSessionId
@@ -501,7 +518,8 @@ export function toStoredFile(
         activeSessionId: workspace.view.activeSessionId,
         focusedSessionId: workspace.view.focusedSessionId,
         maximizedSessionId: workspace.view.maximizedSessionId ?? null,
-        browsers: workspace.view.browsers
+        browsers: workspace.view.browsers,
+        ...(workspace.view.visiblePanes?.length ? { visiblePanes: workspace.view.visiblePanes } : {})
       },
       members: [
         ...workspace.sessionIds
@@ -540,6 +558,12 @@ function describeMember(session: SessionInfo): StoredWorkspaceMember {
  * shows the default split, which is what a pane with no remembered position
  * shows anyway.
  */
+function readVisiblePanes(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = [...new Set(value.filter((id): id is string => typeof id === 'string' && id.length > 0))].slice(0, 2);
+  return ids.length ? ids : undefined;
+}
+
 function readBrowsers(value: unknown): Record<string, PaneBrowserState> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const out: Record<string, PaneBrowserState> = {};
@@ -595,7 +619,8 @@ export function fromStoredFile(
         activeSessionId: stored.view?.activeSessionId,
         focusedSessionId: stored.view?.focusedSessionId,
         maximizedSessionId: stored.view?.maximizedSessionId ?? null,
-        browsers: readBrowsers(stored.view?.browsers)
+        browsers: readBrowsers(stored.view?.browsers),
+        ...(readVisiblePanes(stored.view?.visiblePanes) ? { visiblePanes: readVisiblePanes(stored.view?.visiblePanes) } : {})
       }
     } satisfies Workspace;
   });

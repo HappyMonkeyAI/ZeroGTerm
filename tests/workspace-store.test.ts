@@ -180,6 +180,32 @@ describe('normalizeFile', () => {
     });
   });
 
+  it('keeps the visible panes in slot order, only for panes the workspace holds', () => {
+    const result = normalizeFile({
+      version: 1,
+      workspaces: [{
+        id: 'ws-1',
+        name: 'Workspace',
+        view: { visiblePanes: ['local:b', 'ssh:elsewhere', 'local:b', 'local:a', 'local:c', 4] },
+        members: ['a', 'b', 'c'].map((id) => ({ sessionId: `local:${id}`, kind: 'local', name: id }))
+      }]
+    });
+    expect(result?.workspaces[0].view.visiblePanes).toEqual(['local:b', 'local:a']);
+  });
+
+  it('leaves the visible panes off when the file names none that exist', () => {
+    const result = normalizeFile({
+      version: 1,
+      workspaces: [{
+        id: 'ws-1',
+        name: 'Workspace',
+        view: { visiblePanes: ['ssh:elsewhere'] },
+        members: [{ sessionId: 'local:a', kind: 'local', name: 'a' }]
+      }]
+    });
+    expect(result?.workspaces[0].view).not.toHaveProperty('visiblePanes');
+  });
+
   it('drops a duplicated workspace id', () => {
     const result = normalizeFile({
       version: 1,
