@@ -1072,6 +1072,7 @@ input:focus-visible {
 .pane-close,
 .pane-proceed,
 .pane-ai,
+.pane-custom,
 .pane-link,
 .pane-browse,
 .pane-mic {
@@ -1107,6 +1108,18 @@ input:focus-visible {
   color: #9ece6a;
   background: rgba(158, 206, 106, 0.14);
   border-color: rgba(158, 206, 106, 0.45);
+}
+
+/* The user's own buttons show a number rather than an icon, in the same square. */
+.pane-custom {
+  font: 600 10px/1 inherit;
+  cursor: pointer;
+}
+
+.pane-custom:hover {
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.14);
+  border-color: rgba(224, 175, 104, 0.45);
 }
 
 /* Blue on hover, distinct from the proceed button's green: this one runs a
@@ -3132,6 +3145,7 @@ input:focus-visible {
 :root[data-theme='light'] .pane-close,
 :root[data-theme='light'] .pane-proceed,
 :root[data-theme='light'] .pane-ai,
+:root[data-theme='light'] .pane-custom,
 :root[data-theme='light'] .pane-mic { color: #68768a; }
 
 :root[data-theme='light'] .pane-nav:hover,
@@ -3392,4 +3406,18 @@ input:focus-visible {
 
 :root[data-theme='light'] .pane-link-menu button:hover:not(:disabled) {
   background: #eef1f6;
+}
+
+.custom-button-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.custom-button-slot {
+  color: #697386;
+  font: 600 11px/1 inherit;
+  text-align: center;
 }

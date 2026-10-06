@@ -87,6 +87,7 @@ import {
   type Theme
 } from './settings';
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
 import { EMPTY_HOST_LABELS, labelFor, withLabel } from './host-labels';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
@@ -1814,6 +1815,7 @@ function App() {
   // an emptied setting falls back to.
   const proceedPhrase = resolveProceedPhrase(settings.ai);
   const aiCommand = resolveAiCommand(settings.ai);
+  const customButtons = configuredButtons(settings.ai.customButtons);
   // The host the transfer panel would talk to, and why the button is or is not
   // offered. Both come from the session the user is actually working in.
   const transferTarget = sftpTargetForSession(active);
@@ -3347,6 +3349,20 @@ function App() {
     focusTerminal(session.id);
   };
 
+  /**
+   * Type one of the user's own buttons into a pane, Enter included.
+   *
+   * Sent exactly as written, and the status line says what went, for the same
+   * reason as the other two: ZeroG cannot tell what the pane is waiting for.
+   */
+  const sendCustomButton = (session: SessionInfo, button: PaneButton) => {
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.write(session.id, `${button.command}`);
+    setStatus(`Sent "${button.command}" to ${session.name}`);
+    focusTerminal(session.id);
+  };
+
   const agentFor = (sessionId: string) => paneLinks.agents.find((agent) => agent.sessionId === sessionId);
   /** The live link for a pane, or else the ended one whose reason is still worth reading. */
   const linkFor = (sessionId: string) => {
@@ -4146,6 +4162,18 @@ function App() {
                         <Icon name="bot" />
                       </button>
                       {renderLinkButton(paneSession)}
+                      {customButtons.map((button) => (
+                        <button
+                          key={button.slot}
+                          type="button"
+                          className="pane-custom"
+                          onClick={() => sendCustomButton(paneSession, button)}
+                          title={buttonTitle(button)}
+                          aria-label={`${button.label || `Button ${button.slot}`}: send "${button.command}" to ${paneSession.name}`}
+                        >
+                          {button.slot}
+                        </button>
+                      ))}
                       <button
                         type="button"
                         className={paneVoice ? `pane-mic ${paneVoice}` : 'pane-mic'}
