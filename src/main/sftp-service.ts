@@ -247,6 +247,19 @@ export class SftpService {
     await this.enqueue(connection, () => this.checked(connection, command, TRANSFER_IDLE_MS, true));
   }
 
+  /**
+   * Upload one file to an exact remote path.
+   *
+   * No `-p`, unlike upload(): that would stamp the remote file with the local
+   * file's permissions, and the editor's local file is a temp copy. Without it an
+   * existing remote file keeps its own mode — a 600 `.env` stays 600.
+   */
+  async putFile(sessionId: string, localPath: string, remotePath: string): Promise<void> {
+    const connection = this.get(sessionId);
+    const command = `put ${quoteLocalPath(localPath)} ${quoteRemotePath(remotePath)}`;
+    await this.enqueue(connection, () => this.checked(connection, command, TRANSFER_IDLE_MS, true));
+  }
+
   async download(sessionId: string, remotePath: string, localDir: string, kind: FileEntry['kind']): Promise<void> {
     const connection = this.get(sessionId);
     const name = baseName(remotePath);

@@ -12,7 +12,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { EDIT_CONFLICT_MESSAGE } from '../shared/editing';
 import { baseName } from '../shared/files';
-import type { DirectoryListing, LocalFileContent, LocalFileStamp } from '../shared/types';
+import type { DirectoryListing } from '../shared/types';
+import type { EditorBackend, FileVersion } from './editor-backend';
 import {
   cursorPosition,
   detectLineEnding,
@@ -29,10 +30,6 @@ import { PaneBrowser } from './pane-browser';
 import type { PathKind } from './pane-directory';
 import type { SessionInfo } from '../shared/types';
 
-export type EditorApi = {
-  readLocalFile(path: string): Promise<LocalFileContent>;
-  writeLocalFile(path: string, text: string, expectedMtimeMs: number, overwrite?: boolean): Promise<LocalFileStamp>;
-};
 
 type Loaded = {
   path: string;
@@ -40,7 +37,7 @@ type Loaded = {
   saved: string;
   ending: LineEnding;
   /** When the file was last changed on disk, as far as this editor knows. */
-  mtimeMs: number;
+  version: FileVersion;
 };
 
 export type EditorOverlayProps = {
@@ -50,14 +47,18 @@ export type EditorOverlayProps = {
   pathKind: PathKind;
   shellPathFor: (path: string) => string;
   list: (path?: string) => Promise<DirectoryListing>;
-  api: EditorApi;
+  backend: EditorBackend;
+  /** An SSH pane can list before its shell has said anything; the connection knows where it is. */
+  unanchored?: boolean;
+  /** What the host is waiting to be asked, shown by the browser; answered in the transfer panel. */
+  question?: string | null;
   /** Shut the editor. Only called once there is nothing unsaved, or the user said to discard it. */
   onClose: () => void;
   /** Filled with this editor's own close request, so Escape from outside can ask the same question. */
   closeRef: React.MutableRefObject<(() => void) | null>;
 };
 
-export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list, api, onClose, closeRef }: EditorOverlayProps) {
+export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list, backend, unanchored, question, onClose, closeRef }: EditorOverlayProps) {
   const [browsePath, setBrowsePath] = useState<string | null>(startPath);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [text, setText] = useState('');
@@ -103,11 +104,11 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
       setBusy('opening');
       setMessage(null);
       setConflict(false);
-      api
-        .readLocalFile(path)
+      backend
+        .read(path)
         .then((file) => {
           const editable = toEditorText(file.text);
-          setLoaded({ path: file.path, saved: editable, ending: detectLineEnding(file.text), mtimeMs: file.mtimeMs });
+          setLoaded({ path: file.path, saved: editable, ending: detectLineEnding(file.text), version: file.version });
           setText(editable);
           setCaret(0);
           requestAnimationFrame(() => area.current?.focus());
@@ -115,7 +116,7 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
         .catch((error: unknown) => setMessage(ipcMessage(error)))
         .finally(() => setBusy(null));
     },
-    [api, discardOk, loaded?.path]
+    [backend, discardOk, loaded?.path]
   );
 
   const save = useCallback(
@@ -127,10 +128,10 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
       }
       setBusy('saving');
       setMessage(null);
-      api
-        .writeLocalFile(loaded.path, fromEditorText(text, loaded.ending), loaded.mtimeMs, overwrite)
-        .then((stamp) => {
-          setLoaded({ ...loaded, saved: text, mtimeMs: stamp.mtimeMs });
+      backend
+        .write(loaded.path, fromEditorText(text, loaded.ending), loaded.version, overwrite)
+        .then((version) => {
+          setLoaded({ ...loaded, saved: text, version });
           setConflict(false);
           setMessage(`Saved ${baseName(loaded.path)}`);
         })
@@ -141,7 +142,7 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
         })
         .finally(() => setBusy(null));
     },
-    [api, busy, loaded, text]
+    [backend, busy, loaded, text]
   );
 
   /** Throw away the edits and read the file again — the other answer to a conflict. */
@@ -149,11 +150,11 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
     if (!loaded) return;
     if (!window.confirm(`Discard your changes to ${baseName(loaded.path)} and load what is on disk?`)) return;
     setBusy('opening');
-    api
-      .readLocalFile(loaded.path)
+    backend
+      .read(loaded.path)
       .then((file) => {
         const editable = toEditorText(file.text);
-        setLoaded({ path: file.path, saved: editable, ending: detectLineEnding(file.text), mtimeMs: file.mtimeMs });
+        setLoaded({ path: file.path, saved: editable, ending: detectLineEnding(file.text), version: file.version });
         setText(editable);
         setConflict(false);
         setMessage(null);
@@ -200,6 +201,8 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
             <PaneBrowser
               session={session}
               path={browsePath}
+              unanchored={unanchored}
+              question={question}
               pathKind={pathKind}
               shellPath={browsePath ? shellPathFor(browsePath) : null}
               list={list}

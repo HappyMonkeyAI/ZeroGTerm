@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
 import type { DirectoryListing, FileEntry, LocalFileContent, LocalFileStamp } from '../shared/types.js';
 import { EDIT_CONFLICT_MESSAGE, MAX_EDIT_BYTES } from '../shared/editing.js';
+import { checkEditableSize, decodeEditable, megabytes } from './editable.js';
 import { sortEntries } from '../shared/files.js';
 
 /**
@@ -118,18 +119,9 @@ export async function removeLocalEntry(path: string, kind: FileEntry['kind']): P
   else await rm(target, { force: false });
 }
 
-function megabytes(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
 /**
- * Read one file as text for the editor, or say why it cannot be edited.
- *
- * Refused rather than coaxed: a file past the size limit, one with a NUL byte
- * (the usual mark of a binary), and one that is not valid UTF-8 would each be
- * damaged by a round trip through a text box, and a refused open costs nothing
- * where a corrupted save does. The BOM is kept as a character so a save writes it
- * back.
+ * Read one file as text for the editor, or say why it cannot be edited (see
+ * decodeEditable for what is refused).
  *
  * Follows a symlink, as opening it in any editor would.
  */
@@ -137,18 +129,10 @@ export async function readLocalFile(path: string): Promise<LocalFileContent> {
   const target = resolveLocalPath(path);
   const info = await stat(target);
   if (!info.isFile()) throw new Error('That is not a file.');
-  if (info.size > MAX_EDIT_BYTES) {
-    throw new Error(`That file is ${megabytes(info.size)}; the editor opens files up to ${megabytes(MAX_EDIT_BYTES)}.`);
-  }
+  // Checked before reading, so a huge file is refused without being loaded.
+  checkEditableSize(info.size);
   const bytes = await readFile(target);
-  if (bytes.includes(0)) throw new Error('That looks like a binary file, so it was not opened.');
-  let text: string;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    throw new Error('That file is not valid UTF-8, so it was not opened.');
-  }
-  return { path: target, text, size: bytes.length, mtimeMs: info.mtimeMs };
+  return { path: target, text: decodeEditable(bytes), size: bytes.length, mtimeMs: info.mtimeMs };
 }
 
 /**

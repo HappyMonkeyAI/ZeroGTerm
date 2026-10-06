@@ -89,6 +89,7 @@ import {
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
 import { ipcMessage } from './ipc-message';
 import { EditorOverlay } from './editor-overlay';
+import { localBackend, remoteBackend, type EditorBackend } from './editor-backend';
 import { canCycle, cycleSlot, resolveVisible, SPLIT_SLOTS } from './pane-selection';
 import { buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
 import { EMPTY_HOST_LABELS, labelFor, withLabel } from './host-labels';
@@ -1861,6 +1862,14 @@ function App() {
   // Only a two-pane split has hidden panes to choose between: the grid shows up
   // to four, and the stack shows one.
   const editorPathKind = editorFor ? pathKindFor(editorFor) : null;
+  // Local files go straight to the main process; an SSH pane's go over the
+  // connection its browser already opened.
+  const editorBackendFor = (session: SessionInfo): EditorBackend => {
+    const bridge = api() as TerminalApi;
+    return session.kind === 'ssh'
+      ? remoteBackend(bridge, (run) => listingSource.withHandle(session, run))
+      : localBackend(bridge);
+  };
   const choosesPanes = layout === 'split-v' || layout === 'split-h';
   const paneIds = paneSessions.map((session) => session.id);
   const visibleIds = choosesPanes ? resolveVisible(paneIds, view.visiblePanes, SPLIT_SLOTS) : null;
@@ -4206,13 +4215,13 @@ function App() {
                         type="button"
                         className="pane-edit"
                         onClick={() => setEditorFor(paneSession)}
-                        disabled={paneSession.kind !== 'local' || !browsePathKind}
+                        disabled={!browsePathKind}
                         title={
-                          paneSession.kind !== 'local'
-                            ? 'Editing files on an SSH host is not available yet'
-                            : browsePathKind
-                              ? 'Edit a file'
-                              : 'ZeroG cannot tell what kind of paths this pane uses'
+                          browsePathKind
+                            ? paneSession.kind === 'ssh'
+                              ? `Edit a file on ${paneSession.host}`
+                              : 'Edit a file'
+                            : 'ZeroG cannot tell what kind of paths this pane uses'
                         }
                         aria-label={`Edit a file from ${paneSession.name}`}
                       >
@@ -4343,7 +4352,9 @@ function App() {
           pathKind={editorPathKind}
           shellPathFor={(path) => shellPathFor(editorFor, path) ?? path}
           list={listerFor(editorFor)}
-          api={api() as TerminalApi}
+          unanchored={editorFor.kind === 'ssh'}
+          question={editorFor.kind === 'ssh' ? sftpQuestion : null}
+          backend={editorBackendFor(editorFor)}
           closeRef={editorCloseRef}
           onClose={() => {
             const session = editorFor;

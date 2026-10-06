@@ -109,6 +109,8 @@ const api = {
   sftpUpload: (sessionId, localPath, remoteDir) => ipcRenderer.invoke('sftp:upload', sessionId, localPath, remoteDir),
   sftpDownload: (sessionId, remotePath, localDir, kind) => ipcRenderer.invoke('sftp:download', sessionId, remotePath, localDir, kind),
   sftpAnswerPrompt: (sessionId, answer) => ipcRenderer.invoke('sftp:answerPrompt', sessionId, answer),
+  sftpReadFile: (sessionId, path) => ipcRenderer.invoke('sftp:readFile', sessionId, path),
+  sftpWriteFile: (sessionId, path, text, opened, overwrite) => ipcRenderer.invoke('sftp:writeFile', sessionId, path, text, opened, overwrite),
   sftpClose: (sessionId) => ipcRenderer.invoke('sftp:close', sessionId),
   onSftpEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);

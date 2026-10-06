@@ -10,6 +10,7 @@ import { CommandHistoryStore, defaultCommandHistoryPath } from './command-histor
 import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
 import { PortForwardService } from './port-forward-service.js';
 import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.js';
+import { readRemoteFile, writeRemoteFile } from './remote-file.js';
 import { HostLabelStore, defaultHostLabelPath } from './host-label-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, readLocalFile, removeLocalEntry, renameLocalEntry, writeLocalFile } from './local-fs.js';
@@ -727,6 +728,11 @@ ipcMain.handle('sftp:download', (_event, id: unknown, remotePath: unknown, local
 ipcMain.handle('sftp:answerPrompt', (_event, id: unknown, answer: unknown) => {
   if (typeof answer !== 'string') throw new Error('An answer is required.');
   sftp.answerPrompt(requireString(id, 'A transfer connection'), answer);
+});
+ipcMain.handle('sftp:readFile', (_event, id: unknown, path: unknown) => readRemoteFile(sftp, requireString(id, 'A transfer connection'), requireString(path, 'A remote file')));
+ipcMain.handle('sftp:writeFile', (_event, id: unknown, path: unknown, text: unknown, opened: unknown, overwrite: unknown) => {
+  if (typeof text !== 'string' || typeof opened !== 'string') throw new Error('There is no text to save.');
+  return writeRemoteFile(sftp, requireString(id, 'A transfer connection'), requireString(path, 'A remote file'), text, opened, overwrite === true);
 });
 ipcMain.handle('sftp:close', (_event, id: unknown) => sftp.close(requireString(id, 'A transfer connection')));
 

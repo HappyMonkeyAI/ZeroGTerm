@@ -400,6 +400,18 @@ export interface LocalFileContent {
   mtimeMs: number;
 }
 
+/** A remote text file read for the editor. */
+export interface RemoteFileContent {
+  path: string;
+  text: string;
+  size: number;
+}
+
+/** What a remote save wrote. */
+export interface RemoteFileStamp {
+  size: number;
+}
+
 /** What a file looks like after a save, so the next one is checked against it. */
 export interface LocalFileStamp {
   size: number;
@@ -572,6 +584,8 @@ export interface TerminalApi {
   sftpRemove(sessionId: string, path: string, kind: FileEntry['kind']): Promise<void>;
   sftpUpload(sessionId: string, localPath: string, remoteDir: string): Promise<void>;
   sftpDownload(sessionId: string, remotePath: string, localDir: string, kind: FileEntry['kind']): Promise<void>;
+  sftpReadFile(sessionId: string, path: string): Promise<RemoteFileContent>;
+  sftpWriteFile(sessionId: string, path: string, text: string, opened: string, overwrite?: boolean): Promise<RemoteFileStamp>;
   /** Answer a password/passphrase prompt, or accept a host key with `yes`. */
   sftpAnswerPrompt(sessionId: string, answer: string): Promise<void>;
   sftpClose(sessionId: string): Promise<void>;
