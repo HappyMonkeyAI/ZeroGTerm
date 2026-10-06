@@ -29,7 +29,7 @@ export type RemoteFileTransport = {
 async function withTempDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
   // mkdtemp makes the directory private to this user where the platform has
   // such a thing.
-  const dir = await mkdtemp(join(tmpdir(), 'zerog-edit-'));
+  const dir = await mkdtemp(join(tmpdir(), 'zerog-remote-edit-'));
   try {
     return await run(dir);
   } finally {

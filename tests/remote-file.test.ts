@@ -38,7 +38,7 @@ function fakeHost(files: Record<string, Buffer | { kind: 'symlink'; size: number
 }
 
 async function leftovers(): Promise<string[]> {
-  return (await readdir(tmpdir())).filter((name) => name.startsWith('zerog-edit-'));
+  return (await readdir(tmpdir())).filter((name) => name.startsWith('zerog-remote-edit-'));
 }
 
 describe('readRemoteFile', () => {
