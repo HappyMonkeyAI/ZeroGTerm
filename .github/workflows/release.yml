@@ -112,6 +112,15 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      # actions/checkout fetches every tag and then re-fetches this one by commit
+      # SHA, which overwrites the annotated tag object with a plain reference to the
+      # commit. The check below asks for an annotated tag, so without this it saw
+      # "commit" and failed for every release. Fetching the tag ref itself, forced
+      # because it replaces the local one, brings the annotated object back.
+      - name: Restore the annotated release tag
+        shell: bash
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
       - name: Verify release version and assets
         shell: bash
         run: |
