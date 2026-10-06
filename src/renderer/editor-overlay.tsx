@@ -1,15 +1,18 @@
-// The built-in text editor, opened over the panes.
+// The built-in text editor: opened over the panes, or docked beside a terminal.
 //
-// An overlay rather than a pane, so the terminal behind it is untouched: still
-// running, still holding its scrollback, and focused again the moment this
-// closes. Files are chosen with the same directory browser the panes use, and
-// read and written one at a time through the main process — see local-fs.ts for
-// the limits it enforces and why.
+// Not a pane, so the terminal it was opened from is untouched: still running,
+// still holding its scrollback, and focused again the moment this closes. Docked,
+// it takes the right-hand side of that terminal's own pane — the space the
+// directory browser uses — rather than a pane slot of its own, which would have
+// meant teaching every part of the workspace about panes that are not terminals.
+// Files are chosen with the same directory browser the panes use, and read and
+// written one at a time — see local-fs.ts and remote-file.ts for the limits.
 //
 // Nothing here closes without asking if there is unsaved text, because the
 // usual reason to be in this editor is a file the user is about to depend on.
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { EDIT_CONFLICT_MESSAGE } from '../shared/editing';
 import { baseName } from '../shared/files';
 import type { DirectoryListing } from '../shared/types';
@@ -40,8 +43,20 @@ type Loaded = {
   version: FileVersion;
 };
 
-export type EditorOverlayProps = {
+export type EditorMode = 'overlay' | 'docked';
+
+/**
+ * Asks to close the editor. Resolves to whether it did: false when there was
+ * unsaved text and the user chose to keep it.
+ */
+export type EditorCloser = () => boolean;
+
+export type EditorHostProps = {
   session: SessionInfo;
+  mode: EditorMode;
+  /** The pane's slot to render into when docked. Null until the pane has made one. */
+  dock: HTMLElement | null;
+  onModeChange: (mode: EditorMode) => void;
   /** Where the browser starts: the pane's directory. */
   startPath: string | null;
   pathKind: PathKind;
@@ -54,11 +69,28 @@ export type EditorOverlayProps = {
   question?: string | null;
   /** Shut the editor. Only called once there is nothing unsaved, or the user said to discard it. */
   onClose: () => void;
-  /** Filled with this editor's own close request, so Escape from outside can ask the same question. */
-  closeRef: React.MutableRefObject<(() => void) | null>;
+  /** Told this editor's own close request, so Escape and closing the pane can ask the same question. */
+  register: (closer: EditorCloser | null) => void;
 };
 
-export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list, backend, unanchored, question, onClose, closeRef }: EditorOverlayProps) {
+export function EditorHost({
+  session,
+  mode,
+  dock,
+  onModeChange,
+  startPath,
+  pathKind,
+  shellPathFor,
+  list,
+  backend,
+  unanchored,
+  question,
+  onClose,
+  register
+}: EditorHostProps) {
+  // Docked, the file list is out of the way once a file is open: the pane is half
+  // a window wide, and the text is what the user came for.
+  const [filesOpen, setFilesOpen] = useState(true);
   const [browsePath, setBrowsePath] = useState<string | null>(startPath);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [text, setText] = useState('');
@@ -76,18 +108,18 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
     [dirty, loaded]
   );
 
-  const requestClose = useCallback(() => {
-    if (discardOk('Close the editor and lose them?')) onClose();
+  const requestClose = useCallback((): boolean => {
+    if (!discardOk('Close the editor and lose them?')) return false;
+    onClose();
+    return true;
   }, [discardOk, onClose]);
 
-  // Always the latest, so the window's Escape handler never asks with a stale
-  // idea of whether there is anything unsaved.
+  // Always the latest, so whoever asks never does so with a stale idea of
+  // whether there is anything unsaved.
   useEffect(() => {
-    closeRef.current = requestClose;
-    return () => {
-      closeRef.current = null;
-    };
-  }, [closeRef, requestClose]);
+    register(requestClose);
+    return () => register(null);
+  }, [register, requestClose]);
 
   // A Tab typed into the box moves the caret after React has put the new text
   // in, or it would land at the end.
@@ -111,12 +143,13 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
           setLoaded({ path: file.path, saved: editable, ending: detectLineEnding(file.text), version: file.version });
           setText(editable);
           setCaret(0);
+          if (mode === 'docked') setFilesOpen(false);
           requestAnimationFrame(() => area.current?.focus());
         })
         .catch((error: unknown) => setMessage(ipcMessage(error)))
         .finally(() => setBusy(null));
     },
-    [backend, discardOk, loaded?.path]
+    [backend, discardOk, loaded?.path, mode]
   );
 
   const save = useCallback(
@@ -165,6 +198,128 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
 
   const position = cursorPosition(text, caret);
   const name = loaded ? baseName(loaded.path) : null;
+  const docked = mode === 'docked';
+
+  const saveButton = (
+    <button type="button" className="primary-button" disabled={!loaded || !dirty || busy !== null} onClick={() => save()}>
+      {busy === 'saving' ? 'Saving…' : 'Save'}
+    </button>
+  );
+  const dirtyMark = dirty ? <span className="editor-dirty" title="Unsaved changes" aria-label="Unsaved changes"> ●</span> : null;
+
+  const files = (
+    <PaneBrowser
+      session={session}
+      path={browsePath}
+      unanchored={unanchored}
+      question={question}
+      pathKind={pathKind}
+      shellPath={browsePath ? shellPathFor(browsePath) : null}
+      list={list}
+      onOpen={setBrowsePath}
+      onBrowse={setBrowsePath}
+      // Docked, closing the list just gives the text the room; the editor stays.
+      onClose={docked ? () => setFilesOpen(false) : requestClose}
+      onOpenFile={openFile}
+      openFile={loaded?.path ?? null}
+    />
+  );
+
+  const main = (
+    <div className="editor-main">
+      {conflict ? (
+        <div className="editor-banner" role="alert">
+          <span>{EDIT_CONFLICT_MESSAGE} Saving now would replace those changes.</span>
+          <button type="button" onClick={() => save(true)}>Overwrite</button>
+          <button type="button" onClick={reload}>Reload from disk</button>
+          <button type="button" onClick={() => setConflict(false)}>Keep editing</button>
+        </div>
+      ) : null}
+
+      {loaded ? (
+        <textarea
+          ref={area}
+          className="editor-text"
+          value={text}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          wrap="off"
+          aria-label={`Contents of ${name}`}
+          onChange={(event) => {
+            setText(event.target.value);
+            setCaret(event.target.selectionStart);
+            setMessage(null);
+          }}
+          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onKeyDown={(event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+              event.preventDefault();
+              if (dirty) save();
+              return;
+            }
+            if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+              event.preventDefault();
+              const target = event.currentTarget;
+              const next = insertTab(text, target.selectionStart, target.selectionEnd);
+              pendingCaret.current = next.caret;
+              setText(next.text);
+              setCaret(next.caret);
+            }
+          }}
+        />
+      ) : (
+        <div className="editor-empty">
+          <Icon name="file" />
+          <p>{busy === 'opening' ? 'Opening…' : 'Pick a file to edit it. The terminal keeps running.'}</p>
+        </div>
+      )}
+    </div>
+  );
+
+  const foot = (
+    <footer className="editor-foot">
+      <span className="editor-status" role="status">{message ?? (loaded ? loaded.path : '')}</span>
+      {loaded ? (
+        <span className="editor-position">
+          Ln {position.line}, Col {position.column} · {loaded.ending === 'crlf' ? 'CRLF' : 'LF'} · UTF-8
+        </span>
+      ) : null}
+    </footer>
+  );
+
+  // Docked, the editor lives in the pane it was opened from, beside the
+  // terminal. Rendered into that pane's slot as a portal so this component —
+  // and the file it holds — stays mounted when it moves between the two.
+  if (docked) {
+    if (!dock) return null;
+    return createPortal(
+      <section className="editor-docked" aria-label={`Editor for ${session.name}`}>
+        <header className="editor-dock-head">
+          <span className="editor-dock-name" title={loaded?.path ?? ''}>
+            {name ?? 'Editor'}
+            {dirtyMark}
+          </span>
+          <span className="editor-dock-actions">
+            {saveButton}
+            <button type="button" className="pane-nav" onClick={() => setFilesOpen((open) => !open)} aria-pressed={filesOpen} title="Show or hide the file list">
+              <Icon name="folder" />
+            </button>
+            <button type="button" className="pane-nav" onClick={() => onModeChange('overlay')} title="Pop out over the panes">
+              <Icon name="maximize" />
+            </button>
+            <button type="button" className="pane-nav" onClick={() => requestClose()} title="Close the editor" aria-label="Close the editor">
+              <Icon name="x" />
+            </button>
+          </span>
+        </header>
+        {filesOpen || !loaded ? <div className="editor-files editor-files-docked">{files}</div> : null}
+        {main}
+        {foot}
+      </section>,
+      dock
+    );
+  }
 
   return (
     <div
@@ -185,94 +340,24 @@ export function EditorOverlay({ session, startPath, pathKind, shellPathFor, list
             <span className="eyebrow">Editor · {session.name}</span>
             <h2>
               {name ?? 'Choose a file'}
-              {dirty ? <span className="editor-dirty" title="Unsaved changes" aria-label="Unsaved changes"> ●</span> : null}
+              {dirtyMark}
             </h2>
           </div>
           <div className="editor-actions">
-            <button type="button" className="primary-button" disabled={!loaded || !dirty || busy !== null} onClick={() => save()}>
-              {busy === 'saving' ? 'Saving…' : 'Save'}
+            {saveButton}
+            <button type="button" onClick={() => onModeChange('docked')} title="Keep the editor beside this terminal instead of over it">
+              Dock
             </button>
-            <button type="button" className="close-button" onClick={requestClose} title="Close the editor">Esc</button>
+            <button type="button" className="close-button" onClick={() => requestClose()} title="Close the editor">Esc</button>
           </div>
         </header>
 
         <div className="editor-body">
-          <div className="editor-files">
-            <PaneBrowser
-              session={session}
-              path={browsePath}
-              unanchored={unanchored}
-              question={question}
-              pathKind={pathKind}
-              shellPath={browsePath ? shellPathFor(browsePath) : null}
-              list={list}
-              onOpen={setBrowsePath}
-              onBrowse={setBrowsePath}
-              onClose={requestClose}
-              onOpenFile={openFile}
-              openFile={loaded?.path ?? null}
-            />
-          </div>
-
-          <div className="editor-main">
-            {conflict ? (
-              <div className="editor-banner" role="alert">
-                <span>{EDIT_CONFLICT_MESSAGE} Saving now would replace those changes.</span>
-                <button type="button" onClick={() => save(true)}>Overwrite</button>
-                <button type="button" onClick={reload}>Reload from disk</button>
-                <button type="button" onClick={() => setConflict(false)}>Keep editing</button>
-              </div>
-            ) : null}
-
-            {loaded ? (
-              <textarea
-                ref={area}
-                className="editor-text"
-                value={text}
-                spellCheck={false}
-                autoCapitalize="off"
-                autoCorrect="off"
-                wrap="off"
-                aria-label={`Contents of ${name}`}
-                onChange={(event) => {
-                  setText(event.target.value);
-                  setCaret(event.target.selectionStart);
-                  setMessage(null);
-                }}
-                onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
-                onKeyDown={(event) => {
-                  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-                    event.preventDefault();
-                    if (dirty) save();
-                    return;
-                  }
-                  if (event.key === 'Tab' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
-                    event.preventDefault();
-                    const target = event.currentTarget;
-                    const next = insertTab(text, target.selectionStart, target.selectionEnd);
-                    pendingCaret.current = next.caret;
-                    setText(next.text);
-                    setCaret(next.caret);
-                  }
-                }}
-              />
-            ) : (
-              <div className="editor-empty">
-                <Icon name="file" />
-                <p>{busy === 'opening' ? 'Opening…' : 'Pick a file on the left to edit it. The terminal behind keeps running.'}</p>
-              </div>
-            )}
-          </div>
+          <div className="editor-files">{files}</div>
+          {main}
         </div>
 
-        <footer className="editor-foot">
-          <span className="editor-status" role="status">{message ?? (loaded ? loaded.path : '')}</span>
-          {loaded ? (
-            <span className="editor-position">
-              Ln {position.line}, Col {position.column} · {loaded.ending === 'crlf' ? 'CRLF' : 'LF'} · UTF-8
-            </span>
-          ) : null}
-        </footer>
+        {foot}
       </section>
     </div>
   );

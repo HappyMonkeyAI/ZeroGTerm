@@ -88,7 +88,7 @@ import {
 } from './settings';
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
 import { ipcMessage } from './ipc-message';
-import { EditorOverlay } from './editor-overlay';
+import { EditorHost, type EditorCloser, type EditorMode } from './editor-overlay';
 import { localBackend, remoteBackend, type EditorBackend } from './editor-backend';
 import { canCycle, cycleSlot, resolveVisible, SPLIT_SLOTS } from './pane-selection';
 import { buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
@@ -825,6 +825,7 @@ function PaneBody({
   open,
   ratio,
   browser,
+  dock,
   onRatio,
   children
 }: {
@@ -832,6 +833,11 @@ function PaneBody({
   /** The share of the pane's width the terminal keeps, as a percentage. */
   ratio: number;
   browser: React.ReactNode;
+  /**
+   * Set while an editor is docked here: the side shows an empty slot for it to
+   * draw into, handed back through this callback, instead of the browser.
+   */
+  dock?: ((element: HTMLElement | null) => void) | null;
   onRatio: (ratio: number) => void;
   children: React.ReactNode;
 }) {
@@ -852,7 +858,7 @@ function PaneBody({
           <ResizeHandle
             orientation="vertical"
             className="pane-resizer pane-browser-resizer"
-            label="Directory browser split"
+            label={dock ? 'Editor split' : 'Directory browser split'}
             valuePercent={shown}
             style={{ left: `calc((100% - 1px) * ${shown / 100} + 0.5px)` }}
             onDrag={(position) => {
@@ -867,7 +873,7 @@ function PaneBody({
             onNudge={(direction) => onRatio(clamp(shown + direction * 2))}
             onReset={() => onRatio(DEFAULT_BROWSER_RATIO)}
           />
-          {browser}
+          {dock ? <div className="pane-dock" ref={dock} /> : browser}
         </>
       ) : null}
     </div>
@@ -997,10 +1003,14 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  // The pane the editor was opened from, and its own close request, which asks
-  // about unsaved text — so Escape from outside the overlay asks the same thing.
-  const [editorFor, setEditorFor] = useState<SessionInfo | null>(null);
-  const editorCloseRef = useRef<(() => void) | null>(null);
+  // The editors that are open, by the pane each was opened from, and how each is
+  // showing: over the panes or docked beside its terminal. Each one's own close
+  // request is kept so Escape and closing the pane ask about unsaved text the
+  // same way; and a docked editor draws into a slot its pane provides.
+  const [editors, setEditors] = useState<Record<string, EditorMode>>({});
+  const editorClosers = useRef(new Map<string, EditorCloser>());
+  const [editorDocks, setEditorDocks] = useState<Record<string, HTMLElement | null>>({});
+  const overlayEditorId = Object.keys(editors).find((id) => editors[id] === 'overlay');
   // The chords in force. Everywhere the interface names one it asks this,
   // because a chord written into a tooltip becomes a lie the moment the user
   // moves that shortcut in Settings.
@@ -1503,6 +1513,17 @@ function App() {
     setWorkspaces((current) => reconcileWorkspaces(current, sessions));
   }, [sessions, sessionsLoading, workspacesLoaded]);
 
+  // An editor belongs to a pane. When the session behind it ends on its own —
+  // the host dropped, the shell exited — there is nothing left to dock it to, and
+  // an editor that outlived it would sit over the panes pointing at nothing.
+  useEffect(() => {
+    if (sessionsLoading) return;
+    setEditors((current) => {
+      const live = Object.keys(current).filter((id) => sessions.some((session) => session.id === id));
+      return live.length === Object.keys(current).length ? current : Object.fromEntries(live.map((id) => [id, current[id]]));
+    });
+  }, [sessions, sessionsLoading]);
+
   /**
    * Read the stored workspaces back, once, before anything can overwrite them.
    *
@@ -1723,7 +1744,7 @@ function App() {
         }
         const target = topDismissTarget({
           help: helpOpen,
-          editor: Boolean(editorFor),
+          editor: Boolean(overlayEditorId),
           transfer: transferOpen,
           settings: settingsOpen,
           voiceReview: Boolean(voiceReview),
@@ -1736,7 +1757,7 @@ function App() {
         if (!target) return;
         event.preventDefault();
         if (target === 'help') setHelpOpen(false);
-        if (target === 'editor') editorCloseRef.current?.();
+        if (target === 'editor' && overlayEditorId) editorClosers.current.get(overlayEditorId)?.();
         if (target === 'transfer') setTransferOpen(false);
         if (target === 'settings') setSettingsOpen(false);
         if (target === 'voiceReview') closeVoiceReview();
@@ -1805,7 +1826,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, editorFor, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, overlayEditorId, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -1859,9 +1880,6 @@ function App() {
   // breadcrumb and sidebar name one session while keystrokes go to another.
   const stackedSessionId =
     paneSessions.find((session) => session.id === active?.id)?.id ?? paneSessions[0]?.id;
-  // Only a two-pane split has hidden panes to choose between: the grid shows up
-  // to four, and the stack shows one.
-  const editorPathKind = editorFor ? pathKindFor(editorFor) : null;
   // Local files go straight to the main process; an SSH pane's go over the
   // connection its browser already opened.
   const editorBackendFor = (session: SessionInfo): EditorBackend => {
@@ -1870,6 +1888,38 @@ function App() {
       ? remoteBackend(bridge, (run) => listingSource.withHandle(session, run))
       : localBackend(bridge);
   };
+  const openEditor = (session: SessionInfo) => setEditors((current) => ({ ...current, [session.id]: 'overlay' }));
+  const setEditorMode = (sessionId: string, mode: EditorMode) =>
+    setEditors((current) => (current[sessionId] ? { ...current, [sessionId]: mode } : current));
+  const closeEditor = (sessionId: string) => {
+    setEditors((current) => {
+      const { [sessionId]: _closed, ...rest } = current;
+      return rest;
+    });
+    focusTerminal(sessionId);
+  };
+  /** The slot a pane offers a docked editor, kept only when it actually changes. */
+  const setEditorDock = useCallback((sessionId: string, element: HTMLElement | null) => {
+    setEditorDocks((current) => (current[sessionId] === element ? current : { ...current, [sessionId]: element }));
+  }, []);
+  // One callback per pane, kept for as long as the pane lives. A fresh arrow each
+  // render would be called with null and then the element again every time, and
+  // each of those is a state update — a render loop.
+  const dockRefs = useRef(new Map<string, (element: HTMLElement | null) => void>());
+  const dockRefFor = (sessionId: string) => {
+    let callback = dockRefs.current.get(sessionId);
+    if (!callback) {
+      callback = (element) => setEditorDock(sessionId, element);
+      dockRefs.current.set(sessionId, callback);
+    }
+    return callback;
+  };
+  const registerEditorCloser = useCallback((sessionId: string, closer: EditorCloser | null) => {
+    if (closer) editorClosers.current.set(sessionId, closer);
+    else editorClosers.current.delete(sessionId);
+  }, []);
+  // Only a two-pane split has hidden panes to choose between: the grid shows up
+  // to four, and the stack shows one.
   const choosesPanes = layout === 'split-v' || layout === 'split-h';
   const paneIds = paneSessions.map((session) => session.id);
   const visibleIds = choosesPanes ? resolveVisible(paneIds, view.visiblePanes, SPLIT_SLOTS) : null;
@@ -3604,6 +3654,10 @@ function App() {
   }, []);
 
   const closePane = async (session: SessionInfo) => {
+    // An editor open on this pane may hold text that is not saved. Ask, and if
+    // the answer is to keep it, the pane stays too.
+    const editorCloser = editorClosers.current.get(session.id);
+    if (editorCloser && !editorCloser()) return;
     if (voice.sessionId === session.id) cancelVoice();
     // The pane is going, so its listing state should not outlive it. The
     // transfer connection is left alone: the panel may be sharing it, and the
@@ -4180,13 +4234,15 @@ function App() {
                         type="button"
                         className={browserOpen ? 'pane-browse active' : 'pane-browse'}
                         onClick={() => toggleBrowser(paneSession.id)}
-                        disabled={!browsePathKind}
+                        disabled={!browsePathKind || editors[paneSession.id] === 'docked'}
                         title={
-                          browsePathKind
-                            ? browserOpen
-                              ? 'Hide the directory browser'
-                              : 'Browse directories'
-                            : 'ZeroG cannot tell what kind of paths this pane uses'
+                          editors[paneSession.id] === 'docked'
+                            ? 'The editor is docked here; close it to browse directories'
+                            : browsePathKind
+                              ? browserOpen
+                                ? 'Hide the directory browser'
+                                : 'Browse directories'
+                              : 'ZeroG cannot tell what kind of paths this pane uses'
                         }
                         aria-label={`${browserOpen ? 'Hide' : 'Show'} the directory browser for ${paneSession.name}`}
                         aria-pressed={browserOpen}
@@ -4214,7 +4270,7 @@ function App() {
                       <button
                         type="button"
                         className="pane-edit"
-                        onClick={() => setEditorFor(paneSession)}
+                        onClick={() => openEditor(paneSession)}
                         disabled={!browsePathKind}
                         title={
                           browsePathKind
@@ -4260,7 +4316,8 @@ function App() {
                   </div>
                   {renderLinkBar(paneSession)}
                   <PaneBody
-                    open={browserOpen}
+                    open={browserOpen || editors[paneSession.id] === 'docked'}
+                    dock={editors[paneSession.id] === 'docked' ? dockRefFor(paneSession.id) : null}
                     ratio={browserRatioFor(paneSession.id)}
                     onRatio={(ratio) => patchBrowser(paneSession.id, { ratio })}
                     browser={
@@ -4342,27 +4399,31 @@ function App() {
 
       {helpOpen && <HelpPanel version={appVersion} bindings={bindings} onClose={() => setHelpOpen(false)} />}
 
-      {editorFor && api() && editorPathKind && (
-        <EditorOverlay
-          // Keyed by pane, so opening it from another pane starts afresh rather
-          // than carrying a file over from the last one.
-          key={editorFor.id}
-          session={editorFor}
-          startPath={browserPathFor(editorFor)}
-          pathKind={editorPathKind}
-          shellPathFor={(path) => shellPathFor(editorFor, path) ?? path}
-          list={listerFor(editorFor)}
-          unanchored={editorFor.kind === 'ssh'}
-          question={editorFor.kind === 'ssh' ? sftpQuestion : null}
-          backend={editorBackendFor(editorFor)}
-          closeRef={editorCloseRef}
-          onClose={() => {
-            const session = editorFor;
-            setEditorFor(null);
-            focusTerminal(session.id);
-          }}
-        />
-      )}
+      {Object.entries(editors).map(([sessionId, mode]) => {
+        const editing = sessions.find((session) => session.id === sessionId);
+        const pathKind = editing ? pathKindFor(editing) : null;
+        if (!editing || !pathKind || !api()) return null;
+        return (
+          <EditorHost
+            // Keyed by pane, so each pane has an editor of its own, and moving
+            // between overlay and docked keeps the file that is open.
+            key={sessionId}
+            session={editing}
+            mode={mode}
+            dock={editorDocks[sessionId] ?? null}
+            onModeChange={(next) => setEditorMode(sessionId, next)}
+            startPath={browserPathFor(editing)}
+            pathKind={pathKind}
+            shellPathFor={(path) => shellPathFor(editing, path) ?? path}
+            list={listerFor(editing)}
+            unanchored={editing.kind === 'ssh'}
+            question={editing.kind === 'ssh' ? sftpQuestion : null}
+            backend={editorBackendFor(editing)}
+            register={(closer) => registerEditorCloser(sessionId, closer)}
+            onClose={() => closeEditor(sessionId)}
+          />
+        );
+      })}
 
       {overview && (
         <div className="overview-layer" role="presentation" {...dismissOverview}>
