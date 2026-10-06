@@ -14,6 +14,8 @@ const api = {
   answerForwardPrompt: (id, answer) => ipcRenderer.invoke('forwards:answerPrompt', id, answer),
   loadForwards: () => ipcRenderer.invoke('forwards:load'),
   saveForwards: (file) => ipcRenderer.invoke('forwards:save', file),
+  loadHostLabels: () => ipcRenderer.invoke('hostLabels:load'),
+  saveHostLabels: (file) => ipcRenderer.invoke('hostLabels:save', file),
   onForwardEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('forwards:event', listener);

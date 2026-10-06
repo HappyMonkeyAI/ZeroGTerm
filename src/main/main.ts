@@ -10,6 +10,7 @@ import { CommandHistoryStore, defaultCommandHistoryPath } from './command-histor
 import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
 import { PortForwardService } from './port-forward-service.js';
 import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.js';
+import { HostLabelStore, defaultHostLabelPath } from './host-label-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
 import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
 import { wslHomeDirectory } from './wsl-home.js';
@@ -36,6 +37,7 @@ const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPa
 const commands = new CommandHistoryStore({ filePath: defaultCommandHistoryPath(app.getPath('userData')) });
 const workspaceStore = new WorkspaceStore({ filePath: defaultWorkspacePath(app.getPath('userData')) });
 const forwardStore = new PortForwardStore({ filePath: defaultPortForwardPath(app.getPath('userData')) });
+const hostLabelStore = new HostLabelStore({ filePath: defaultHostLabelPath(app.getPath('userData')) });
 // Tunnels outlive the Ports view being closed: authenticating again is a real
 // cost to pay for having looked away.
 const forwards = new PortForwardService({ onEvent: (event) => win?.webContents.send('forwards:event', event) });
@@ -375,6 +377,8 @@ ipcMain.handle('forwards:answerPrompt', (_event, id: unknown, answer: unknown) =
   forwards.answerPrompt(requireString(id, 'A shared port'), requireString(answer, 'An answer')));
 ipcMain.handle('forwards:load', () => forwardStore.load());
 ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(file));
+ipcMain.handle('hostLabels:load', () => hostLabelStore.load());
+ipcMain.handle('hostLabels:save', (_event, file: unknown) => hostLabelStore.save(file));
 
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));

@@ -390,6 +390,12 @@ export interface StoredPortForwardFile {
   forwards: Array<Omit<PortForwardInfo, 'status' | 'message'>>;
 }
 
+/** The session label last given to each host, oldest first. */
+export interface StoredHostLabelFile {
+  version: number;
+  hosts: Array<{ host: string; label: string }>;
+}
+
 /* Pane link: relaying one launched agent's finished reply into another's prompt. */
 export type AgentPhase = 'idle' | 'busy';
 
@@ -489,6 +495,8 @@ export interface TerminalApi {
   answerForwardPrompt(id: string, answer: string): Promise<void>;
   loadForwards(): Promise<StoredPortForwardFile>;
   saveForwards(file: StoredPortForwardFile): Promise<StoredPortForwardFile>;
+  loadHostLabels(): Promise<StoredHostLabelFile>;
+  saveHostLabels(file: StoredHostLabelFile): Promise<StoredHostLabelFile>;
   onForwardEvent(callback: (event: PortForwardEvent) => void): () => void;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;

@@ -87,6 +87,7 @@ import {
   type Theme
 } from './settings';
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { EMPTY_HOST_LABELS, labelFor, withLabel } from './host-labels';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
   SPLIT_BUTTONS,
@@ -1025,6 +1026,10 @@ function App() {
   const [visitedWorkspaces, setVisitedWorkspaces] = useState<string[]>([]);
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
+  // Remembered label per host, and whether the user has typed in the label box
+  // since the dialog opened: a label they are typing is never overwritten.
+  const [hostLabels, setHostLabels] = useState(EMPTY_HOST_LABELS);
+  const sshNameTouched = useRef(false);
   const [sshTarget, setSshTarget] = useState('');
   const [suggest, setSuggest] = useState<SuggestPhase | null>(null);
   const [aiKey, setAiKey] = useState<SpeechKeyState>({ status: 'idle', stored: false, encryptionAvailable: true, sessionOnly: false });
@@ -1620,6 +1625,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    api()?.loadHostLabels?.().then(setHostLabels).catch(() => {
+      // A label that cannot be remembered is only a label typed again.
+    });
+  }, []);
+
+  useEffect(() => {
     if (!forwardsLoaded) return;
     const currentApi = api();
     if (!currentApi?.saveForwards) return;
@@ -1983,7 +1994,20 @@ function App() {
 
   const createSsh = async (event: React.FormEvent) => {
     event.preventDefault();
-    await connectSsh(sshTarget, sshName);
+    const session = await connectSsh(sshTarget, sshName);
+    if (!session) return;
+    const next = withLabel(hostLabels, sshTarget, sshName);
+    if (next === hostLabels) return;
+    setHostLabels(next);
+    api()?.saveHostLabels?.(next).catch(() => {
+      // Remembering a label must never interrupt the terminals.
+    });
+  };
+
+  /** Offer the label this host last had, unless the user has started typing one. */
+  const changeSshTarget = (value: string) => {
+    setSshTarget(value);
+    if (!sshNameTouched.current) setSshName(labelFor(hostLabels, value) ?? '');
   };
 
   /**
@@ -2829,7 +2853,11 @@ function App() {
     setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
     setSelectedBackend(resolveDefaultBackend(settings.sessions.defaultBackend, localBackends));
     setWslDistribution(settings.sessions.defaultWslDistribution);
-    if (options?.sshTarget !== undefined) setSshTarget(options.sshTarget);
+    sshNameTouched.current = false;
+    if (options?.sshTarget !== undefined) {
+      setSshTarget(options.sshTarget);
+      setSshName(labelFor(hostLabels, options.sshTarget) ?? '');
+    }
     setModal(kind);
   };
 
@@ -4586,14 +4614,21 @@ function App() {
                       <input
                         autoFocus
                         value={sshTarget}
-                        onChange={(event) => setSshTarget(event.target.value)}
+                        onChange={(event) => changeSshTarget(event.target.value)}
                         placeholder="user@server:22"
                         required
                       />
                     </label>
                     <label>
                       Session label <span className="muted-text">optional</span>
-                      <input value={sshName} onChange={(event) => setSshName(event.target.value)} placeholder="server" />
+                      <input
+                        value={sshName}
+                        onChange={(event) => {
+                          sshNameTouched.current = true;
+                          setSshName(event.target.value);
+                        }}
+                        placeholder="server"
+                      />
                     </label>
                   </>
                 )}
