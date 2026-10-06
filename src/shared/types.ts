@@ -392,6 +392,20 @@ export interface StoredPortForwardFile {
   forwards: Array<Omit<PortForwardInfo, 'status' | 'message'>>;
 }
 
+/** A text file read for the editor. `mtimeMs` is what a later save is checked against. */
+export interface LocalFileContent {
+  path: string;
+  text: string;
+  size: number;
+  mtimeMs: number;
+}
+
+/** What a file looks like after a save, so the next one is checked against it. */
+export interface LocalFileStamp {
+  size: number;
+  mtimeMs: number;
+}
+
 /** The session label last given to each host, oldest first. */
 export interface StoredHostLabelFile {
   version: number;
@@ -548,6 +562,8 @@ export interface TerminalApi {
   createLocalDirectory(path: string): Promise<void>;
   renameLocalEntry(from: string, to: string): Promise<void>;
   removeLocalEntry(path: string, kind: FileEntry['kind']): Promise<void>;
+  readLocalFile(path: string): Promise<LocalFileContent>;
+  writeLocalFile(path: string, text: string, expectedMtimeMs: number, overwrite?: boolean): Promise<LocalFileStamp>;
   /** Open an SFTP connection to an SSH target, starting at `cwd` when given. */
   sftpOpen(target: string, cwd?: string): Promise<SftpSessionInfo>;
   sftpList(sessionId: string, path?: string): Promise<DirectoryListing>;

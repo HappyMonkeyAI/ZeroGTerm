@@ -12,7 +12,7 @@ import { PortForwardService } from './port-forward-service.js';
 import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.js';
 import { HostLabelStore, defaultHostLabelPath } from './host-label-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
-import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
+import { createLocalDirectory, listLocalDirectory, localHome, readLocalFile, removeLocalEntry, renameLocalEntry, writeLocalFile } from './local-fs.js';
 import { wslHomeDirectory } from './wsl-home.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
@@ -707,6 +707,12 @@ ipcMain.handle('fs:wslHome', async (_event, distribution: unknown) => {
 ipcMain.handle('fs:listLocal', (_event, path: unknown) => listLocalDirectory(typeof path === 'string' && path ? path : undefined));
 ipcMain.handle('fs:mkdirLocal', (_event, path: unknown) => createLocalDirectory(requireString(path, 'A folder path')));
 ipcMain.handle('fs:renameLocal', (_event, from: unknown, to: unknown) => renameLocalEntry(requireString(from, 'The current path'), requireString(to, 'The new path')));
+ipcMain.handle('fs:readLocalFile', (_event, path: unknown) => readLocalFile(requireString(path, 'A file path')));
+ipcMain.handle('fs:writeLocalFile', (_event, path: unknown, text: unknown, expectedMtimeMs: unknown, overwrite: unknown) => {
+  if (typeof text !== 'string') throw new Error('There is no text to save.');
+  if (typeof expectedMtimeMs !== 'number' || !Number.isFinite(expectedMtimeMs)) throw new Error('When the file was opened is required.');
+  return writeLocalFile(requireString(path, 'A file path'), text, expectedMtimeMs, overwrite === true);
+});
 ipcMain.handle('fs:removeLocal', (_event, path: unknown, kind: unknown) => removeLocalEntry(requireString(path, 'A path'), requireEntryKind(kind)));
 
 ipcMain.handle('sftp:open', (_event, target: unknown, cwd: unknown) => sftp.open(requireString(target, 'An SSH target'), typeof cwd === 'string' && cwd ? cwd : undefined));

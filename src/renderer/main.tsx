@@ -87,6 +87,8 @@ import {
   type Theme
 } from './settings';
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { ipcMessage } from './ipc-message';
+import { EditorOverlay } from './editor-overlay';
 import { canCycle, cycleSlot, resolveVisible, SPLIT_SLOTS } from './pane-selection';
 import { buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
 import { EMPTY_HOST_LABELS, labelFor, withLabel } from './host-labels';
@@ -123,20 +125,6 @@ const PROMPT_BUFFER_CHARS = 512;
  */
 const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
 
-/**
- * The message a main-process error actually carries.
- *
- * Electron wraps a rejected ipcMain handler as "Error invoking remote method
- * 'channel': Error: …", which buries a sentence written for the user behind two
- * layers of plumbing they have no use for. The main process takes trouble over
- * those sentences — "Port 3000 is already shared from build.example.com", "Could
- * not reach http://…/v1/chat/completions. Is the server running?" — and they are
- * worth showing as written.
- */
-function ipcMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:Error|TypeError):\s*/, '');
-}
 
 /** A stored pane as the restore planner wants it. */
 function memberDescriptor(member: StoredWorkspaceMember): SessionDescriptor {
@@ -1008,6 +996,10 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // The pane the editor was opened from, and its own close request, which asks
+  // about unsaved text — so Escape from outside the overlay asks the same thing.
+  const [editorFor, setEditorFor] = useState<SessionInfo | null>(null);
+  const editorCloseRef = useRef<(() => void) | null>(null);
   // The chords in force. Everywhere the interface names one it asks this,
   // because a chord written into a tooltip becomes a lie the moment the user
   // moves that shortcut in Settings.
@@ -1730,6 +1722,7 @@ function App() {
         }
         const target = topDismissTarget({
           help: helpOpen,
+          editor: Boolean(editorFor),
           transfer: transferOpen,
           settings: settingsOpen,
           voiceReview: Boolean(voiceReview),
@@ -1742,6 +1735,7 @@ function App() {
         if (!target) return;
         event.preventDefault();
         if (target === 'help') setHelpOpen(false);
+        if (target === 'editor') editorCloseRef.current?.();
         if (target === 'transfer') setTransferOpen(false);
         if (target === 'settings') setSettingsOpen(false);
         if (target === 'voiceReview') closeVoiceReview();
@@ -1810,7 +1804,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, editorFor, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -1866,6 +1860,7 @@ function App() {
     paneSessions.find((session) => session.id === active?.id)?.id ?? paneSessions[0]?.id;
   // Only a two-pane split has hidden panes to choose between: the grid shows up
   // to four, and the stack shows one.
+  const editorPathKind = editorFor ? pathKindFor(editorFor) : null;
   const choosesPanes = layout === 'split-v' || layout === 'split-h';
   const paneIds = paneSessions.map((session) => session.id);
   const visibleIds = choosesPanes ? resolveVisible(paneIds, view.visiblePanes, SPLIT_SLOTS) : null;
@@ -4207,6 +4202,22 @@ function App() {
                       >
                         <Icon name="bot" />
                       </button>
+                      <button
+                        type="button"
+                        className="pane-edit"
+                        onClick={() => setEditorFor(paneSession)}
+                        disabled={paneSession.kind !== 'local' || !browsePathKind}
+                        title={
+                          paneSession.kind !== 'local'
+                            ? 'Editing files on an SSH host is not available yet'
+                            : browsePathKind
+                              ? 'Edit a file'
+                              : 'ZeroG cannot tell what kind of paths this pane uses'
+                        }
+                        aria-label={`Edit a file from ${paneSession.name}`}
+                      >
+                        <Icon name="file" />
+                      </button>
                       {renderLinkButton(paneSession)}
                       {customButtons.map((button) => (
                         <button
@@ -4321,6 +4332,26 @@ function App() {
       })()}
 
       {helpOpen && <HelpPanel version={appVersion} bindings={bindings} onClose={() => setHelpOpen(false)} />}
+
+      {editorFor && api() && editorPathKind && (
+        <EditorOverlay
+          // Keyed by pane, so opening it from another pane starts afresh rather
+          // than carrying a file over from the last one.
+          key={editorFor.id}
+          session={editorFor}
+          startPath={browserPathFor(editorFor)}
+          pathKind={editorPathKind}
+          shellPathFor={(path) => shellPathFor(editorFor, path) ?? path}
+          list={listerFor(editorFor)}
+          api={api() as TerminalApi}
+          closeRef={editorCloseRef}
+          onClose={() => {
+            const session = editorFor;
+            setEditorFor(null);
+            focusTerminal(session.id);
+          }}
+        />
+      )}
 
       {overview && (
         <div className="overview-layer" role="presentation" {...dismissOverview}>
