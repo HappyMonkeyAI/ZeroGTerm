@@ -26,6 +26,7 @@ import {
   speechFieldVisibility,
   type CursorStyle,
   type FontChoice,
+  type CustomButton,
   type Layout,
   type LocalBackend,
   type Settings,
@@ -1020,6 +1021,35 @@ export function SettingsPanel({
                     onChange={(event) => onChange('ai', { aiCommand: event.target.value })}
                   />
                 </Field>
+                <div className="settings-field">
+                  <span className="settings-field-label">Custom pane buttons</span>
+                  {settings.ai.customButtons.map((button, slot) => {
+                    const edit = (patch: Partial<CustomButton>) =>
+                      onChange('ai', {
+                        customButtons: settings.ai.customButtons.map((current, index) => (index === slot ? { ...current, ...patch } : current))
+                      });
+                    return (
+                      <div className="custom-button-row" key={slot}>
+                        <span className="custom-button-slot" aria-hidden="true">{slot}</span>
+                        <input
+                          value={button.label}
+                          placeholder="Label"
+                          aria-label={`Button ${slot} label`}
+                          onChange={(event) => edit({ label: event.target.value })}
+                        />
+                        <input
+                          value={button.command}
+                          placeholder="Text to send"
+                          aria-label={`Button ${slot} text to send`}
+                          onChange={(event) => edit({ command: event.target.value })}
+                        />
+                      </div>
+                    );
+                  })}
+                  <small>
+                    Each button with text to send appears on every pane's top bar, showing its number, and types that text and presses Enter. A button with no text is not shown. The label is only the tooltip.
+                  </small>
+                </div>
 
                 <CommandHistorySection
                   enabled={settings.ai.recordCommands}

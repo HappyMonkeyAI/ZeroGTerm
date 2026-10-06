@@ -137,6 +137,12 @@ function normalizeView(value: unknown, memberIds: Set<string>): StoredView {
   if (focused) view.focusedSessionId = focused;
   const browsers = normalizeBrowsers(item.browsers, memberIds);
   if (browsers) view.browsers = browsers;
+  // Slot order matters, so the list is kept as given, minus anything the
+  // workspace does not hold and any repeat.
+  const visible = Array.isArray(item.visiblePanes)
+    ? [...new Set(item.visiblePanes.map(member).filter((id): id is string => id !== undefined))].slice(0, 2)
+    : [];
+  if (visible.length) view.visiblePanes = visible;
   return view;
 }
 

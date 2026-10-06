@@ -1087,6 +1087,9 @@ input:focus-visible {
 .pane-close,
 .pane-proceed,
 .pane-ai,
+.pane-custom,
+.pane-edit,
+.pane-link,
 .pane-browse,
 .pane-mic {
   width: 19px;
@@ -1123,6 +1126,18 @@ input:focus-visible {
   border-color: rgba(158, 206, 106, 0.45);
 }
 
+/* The user's own buttons show a number rather than an icon, in the same square. */
+.pane-custom {
+  font: 600 10px/1 inherit;
+  cursor: pointer;
+}
+
+.pane-custom:hover {
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.14);
+  border-color: rgba(224, 175, 104, 0.45);
+}
+
 /* Blue on hover, distinct from the proceed button's green: this one runs a
    command rather than replying to something already waiting. */
 .pane-ai:hover {
@@ -1131,6 +1146,13 @@ input:focus-visible {
   border-color: rgba(122, 162, 247, 0.45);
 }
 
+.pane-edit:hover:not(:disabled) {
+  color: #d8dee9;
+  background: #1a202a;
+  border-color: #2a3340;
+}
+
+.pane-edit:disabled,
 .pane-mic:disabled,
 .pane-browse:disabled {
   opacity: 0.4;
@@ -1161,6 +1183,7 @@ input:focus-visible {
 .pane-close .icon-svg,
 .pane-proceed .icon-svg,
 .pane-ai .icon-svg,
+.pane-edit .icon-svg,
 .pane-mic .icon-svg {
   width: 13px;
   height: 13px;
@@ -3164,6 +3187,8 @@ input:focus-visible {
 :root[data-theme='light'] .pane-close,
 :root[data-theme='light'] .pane-proceed,
 :root[data-theme='light'] .pane-ai,
+:root[data-theme='light'] .pane-custom,
+:root[data-theme='light'] .pane-edit,
 :root[data-theme='light'] .pane-mic { color: #68768a; }
 
 :root[data-theme='light'] .pane-nav:hover,
@@ -3280,3 +3305,370 @@ input:focus-visible {
 
 :root[data-theme='light'] .settings-test-error,
 :root[data-theme='light'] .sftp-error b { color: #b3213b; }
+
+/* Pane link: the button sits with the other pane actions; teal marks a pane that is
+   (or can be) part of a relay, distinct from the green proceed and blue AI buttons. */
+.pane-link-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.pane-link:hover:not(:disabled) {
+  color: #73daca;
+  background: rgba(115, 218, 202, 0.14);
+  border-color: rgba(115, 218, 202, 0.45);
+}
+
+.pane-link.ready,
+.pane-link.active {
+  color: #73daca;
+}
+
+.pane-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pane-link .icon-svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pane-link-menu {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  z-index: 20;
+  min-width: 190px;
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  background: #141922;
+  border: 1px solid #2a3340;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.pane-link-menu button {
+  padding: 5px 8px;
+  text-align: left;
+  color: #d8dee9;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  font: 10px JetBrains Mono, monospace;
+}
+
+.pane-link-menu button:hover:not(:disabled) {
+  background: #1f2733;
+}
+
+.pane-link-empty {
+  padding: 5px 8px;
+  color: #8b93a3;
+  font: 10px JetBrains Mono, monospace;
+}
+
+.pane-link-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  color: #73daca;
+  background: rgba(115, 218, 202, 0.08);
+  border-bottom: 1px solid #202630;
+  font: 10px JetBrains Mono, monospace;
+}
+
+.pane-link-bar.paused {
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.1);
+}
+
+.pane-link-bar.broken {
+  color: #8b93a3;
+  background: transparent;
+}
+
+.pane-link-bar .icon-svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
+.pane-link-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-link-bar button {
+  padding: 1px 7px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font: inherit;
+  opacity: 0.85;
+}
+
+.pane-link-bar button:hover {
+  opacity: 1;
+}
+
+:root[data-theme='light'] .pane-link-bar {
+  color: #0f766e;
+  background: rgba(15, 118, 110, 0.08);
+}
+
+:root[data-theme='light'] .pane-link-bar.paused {
+  color: #92600a;
+  background: rgba(146, 96, 10, 0.1);
+}
+
+:root[data-theme='light'] .pane-link-bar.broken {
+  color: #5b6475;
+  background: transparent;
+}
+
+:root[data-theme='light'] .pane-link.ready,
+:root[data-theme='light'] .pane-link.active {
+  color: #0f766e;
+}
+
+:root[data-theme='light'] .pane-link-menu {
+  background: #ffffff;
+  border-color: #cfd6e2;
+}
+
+:root[data-theme='light'] .pane-link-menu button {
+  color: #1f2733;
+}
+
+:root[data-theme='light'] .pane-link-menu button:hover:not(:disabled) {
+  background: #eef1f6;
+}
+
+.custom-button-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.custom-button-slot {
+  color: #697386;
+  font: 600 11px/1 inherit;
+  text-align: center;
+}
+
+/* The editor overlay. */
+.editor-card {
+  width: min(1100px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  background: #11161e;
+  border: 1px solid #303b4b;
+  border-radius: 8px;
+  box-shadow: 0 20px 80px #0009;
+  overflow: hidden;
+}
+
+.editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid #202630;
+}
+
+.editor-title h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.editor-dirty {
+  color: #e0af68;
+}
+
+.editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+
+.editor-files {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #202630;
+}
+
+.editor-files .pane-browser {
+  flex: 1;
+}
+
+.editor-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-text {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: #0a0c10;
+  color: #d8dee9;
+  font: 13px/1.5 JetBrains Mono, Cascadia Code, Consolas, monospace;
+  tab-size: 4;
+  white-space: pre;
+  overflow: auto;
+}
+
+.editor-empty {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: #697386;
+  background: #0a0c10;
+  font-size: 12px;
+}
+
+.editor-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgba(224, 175, 104, 0.12);
+  border-bottom: 1px solid rgba(224, 175, 104, 0.4);
+  color: #e0af68;
+  font-size: 12px;
+}
+
+.editor-banner span {
+  flex: 1 1 280px;
+}
+
+.editor-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 14px;
+  border-top: 1px solid #202630;
+  color: #697386;
+  font: 11px JetBrains Mono, monospace;
+}
+
+.editor-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-browser-file-choice {
+  cursor: pointer;
+}
+
+.pane-browser-current {
+  color: #7aa2f7;
+  background: #151b24;
+}
+
+:root[data-theme='light'] .editor-card { background: #f7f8fa; border-color: #cdd3dc; }
+:root[data-theme='light'] .editor-head,
+:root[data-theme='light'] .editor-files,
+:root[data-theme='light'] .editor-foot { border-color: #dde1e8; }
+:root[data-theme='light'] .editor-text,
+:root[data-theme='light'] .editor-empty { background: #ffffff; color: #1f2733; }
+
+/* The editor docked beside a terminal, in the pane's right-hand side. */
+.pane-dock {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-docked {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0b0e13;
+  border-left: 1px solid #202630;
+}
+
+.editor-dock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #202630;
+  font: 11px JetBrains Mono, monospace;
+  color: #8b93a3;
+}
+
+.editor-dock-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-dock-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.editor-dock-actions .primary-button {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.editor-dock-actions .pane-nav .icon-svg {
+  width: 13px;
+  height: 13px;
+}
+
+.editor-files-docked {
+  flex: 0 1 40%;
+  min-height: 90px;
+  border-right: 0;
+  border-bottom: 1px solid #202630;
+}
+
+.editor-docked .editor-main {
+  flex: 1;
+}
+
+:root[data-theme='light'] .editor-docked { background: #f7f8fa; border-color: #dde1e8; }
+:root[data-theme='light'] .editor-dock-head,
+:root[data-theme='light'] .editor-files-docked { border-color: #dde1e8; }

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CUSTOM_BUTTON_COUNT,
   DEFAULT_SETTINGS,
   LEGACY_THEME_KEY,
   SETTINGS_KEY,
   SETTING_LIMITS,
+  emptyCustomButtons,
   fontStack,
   loadSettings,
   parseSettings,
@@ -376,5 +378,61 @@ describe('shortcut overrides', () => {
     const settings = parseSettings({ shortcuts: { 'toggle-overview': 'Ctrl+Alt+O' } });
     saveSettings(storage, settings);
     expect(loadSettings(storage).shortcuts).toEqual({ 'toggle-overview': 'Ctrl+Alt+O' });
+  });
+});
+
+describe('custom pane buttons', () => {
+  it('start as ten empty slots', () => {
+    expect(DEFAULT_SETTINGS.ai.customButtons).toHaveLength(CUSTOM_BUTTON_COUNT);
+    expect(DEFAULT_SETTINGS.ai.customButtons.every((button) => button.label === '' && button.command === '')).toBe(true);
+  });
+
+  it('are ten long whatever the file holds', () => {
+    expect(parseSettings({ ai: { customButtons: [] } }).ai.customButtons).toHaveLength(10);
+    expect(parseSettings({ ai: { customButtons: 'nope' } }).ai.customButtons).toHaveLength(10);
+    expect(parseSettings({ ai: { customButtons: Array.from({ length: 30 }, () => ({ label: 'a', command: 'b' })) } }).ai.customButtons).toHaveLength(10);
+  });
+
+  it('keep each entry in its own slot', () => {
+    const stored = [{ label: 'zero', command: 'ls' }, null, { label: 'two', command: 'pwd' }];
+    const parsed = parseSettings({ ai: { customButtons: stored } }).ai.customButtons;
+    expect(parsed[0]).toEqual({ label: 'zero', command: 'ls' });
+    expect(parsed[1]).toEqual({ label: '', command: '' });
+    expect(parsed[2]).toEqual({ label: 'two', command: 'pwd' });
+  });
+
+  it('treat a malformed entry as an empty slot', () => {
+    const parsed = parseSettings({ ai: { customButtons: [42, 'x', { label: 7, command: false }] } }).ai.customButtons;
+    expect(parsed.slice(0, 3)).toEqual([
+      { label: '', command: '' },
+      { label: '', command: '' },
+      { label: '', command: '' }
+    ]);
+  });
+
+  it('cannot carry a newline or escape into the terminal', () => {
+    const parsed = parseSettings({ ai: { customButtons: [{ label: 'x', command: 'go\r\nrm -rf /\x1b[31m' }] } }).ai.customButtons;
+    expect(parsed[0].command).toBe('go  rm -rf / [31m');
+  });
+
+  it('cap the length of both fields', () => {
+    const parsed = parseSettings({ ai: { customButtons: [{ label: 'l'.repeat(500), command: 'c'.repeat(5000) }] } }).ai.customButtons;
+    expect(parsed[0].label).toHaveLength(48);
+    expect(parsed[0].command).toHaveLength(200);
+  });
+
+  it('leave the existing proceed phrase and AI command alone', () => {
+    const parsed = parseSettings({ ai: { proceedPhrase: 'go on', aiCommand: 'aider' } }).ai;
+    expect(parsed.proceedPhrase).toBe('go on');
+    expect(parsed.aiCommand).toBe('aider');
+    expect(parsed.customButtons).toHaveLength(10);
+  });
+
+  it('survive a save and load', () => {
+    const storage = fakeStorage();
+    const customButtons = emptyCustomButtons();
+    customButtons[3] = { label: 'status', command: 'git status' };
+    saveSettings(storage, updateSection(DEFAULT_SETTINGS, 'ai', { customButtons }));
+    expect(loadSettings(storage).ai.customButtons[3]).toEqual({ label: 'status', command: 'git status' });
   });
 });

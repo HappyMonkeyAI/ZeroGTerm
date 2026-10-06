@@ -1,4 +1,4 @@
-name: Release Windows desktop build
+name: Release desktop builds
 
 on:
   push:
@@ -6,11 +6,11 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish Windows x64 release
+  windows:
+    name: Build Windows x64 release assets
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -31,27 +31,123 @@ jobs:
         run: |
           npm run typecheck
           npm test
-          npm run build
 
       - name: Build Windows installer and portable executable
         run: npm run package:win
+
+      - name: Upload Windows release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            dist/*.exe
+            !dist/**/*__uninstaller*
+          if-no-files-found: error
+          retention-days: 1
+
+  linux:
+    name: Build Linux x64 release assets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install packaging dependency
+        run: sudo apt-get update && sudo apt-get install --yes libfuse2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify source
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Build Linux AppImage and Debian package
+        run: npm run package:linux
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub prerelease
+    needs:
+      - windows
+      - linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Verify release version and assets
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          tag_type="$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")"
+          [[ "$package_version" == "$tag_version" ]]
+          [[ "$tag_type" == "tag" ]]
+          shopt -s nullglob
+          windows_assets=(release-assets/*.exe)
+          appimages=(release-assets/*.AppImage)
+          debs=(release-assets/*.deb)
+          ((${#windows_assets[@]} == 2))
+          ((${#appimages[@]} == 1))
+          ((${#debs[@]} == 1))
+          chmod +x "${appimages[0]}"
+
+      - name: Generate asset checksums
+        shell: bash
+        run: |
+          (
+            cd release-assets
+            sha256sum ./*.AppImage ./*.deb ./*.exe > SHA256SUMS
+          )
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          assets=(dist/*Setup*.exe)
-          for file in dist/*.exe; do
-            if [[ "$file" != *Setup* && "$file" != *__uninstaller* ]]; then
-              assets+=("$file")
-            fi
-          done
-          ((${#assets[@]} == 2))
+          shopt -s nullglob
+          assets=(release-assets/*)
           gh release create "${GITHUB_REF_NAME}" \
             "${assets[@]}" \
             --verify-tag \
             --title "ZeroG Terminal ${GITHUB_REF_NAME}" \
             --prerelease \
             --generate-notes \
-            --notes "Windows x64 alpha build. These binaries are unsigned; Windows SmartScreen may warn on first launch. See the README for installation and host prerequisites."
+            --notes "Windows x64 installer and portable executable plus Linux x64 AppImage and Debian package. These alpha builds are unsigned; Windows SmartScreen may warn on first launch. See the README for installation and host prerequisites."

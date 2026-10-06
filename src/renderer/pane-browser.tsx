@@ -53,6 +53,14 @@ export type PaneBrowserProps = {
   /** Navigating without moving the shell, which is the browser's own business. */
   onBrowse: (path: string) => void;
   onClose: () => void;
+  /**
+   * Present when the browser is choosing a file rather than orienting a shell
+   * (the editor's). Files become clickable and open through this; the "take the
+   * shell there" footer, which means nothing then, is replaced by a hint.
+   */
+  onOpenFile?: (path: string) => void;
+  /** The file already open, marked in the list. */
+  openFile?: string | null;
   /** The Settings default for the "show hidden files" checkbox below. */
   defaultShowHidden: boolean;
 };
@@ -74,6 +82,8 @@ export function PaneBrowser({
   onOpen,
   onBrowse,
   onClose,
+  onOpenFile,
+  openFile,
   defaultShowHidden
 }: PaneBrowserProps) {
   const [state, setState] = useState<State>({ phase: 'idle' });
@@ -192,18 +202,23 @@ export function PaneBrowser({
               />
             ) : null}
 
-            {sorted.map((entry) => (
-              <BrowserRow
-                key={entry.name}
-                label={entry.name}
-                icon={isNavigable(entry) ? 'folder' : 'file'}
-                target={joinPath(here ?? '', entry.name, pathKind)}
-                navigable={isNavigable(entry)}
-                link={entry.kind === 'symlink'}
-                onOpen={onOpen}
-                onBrowse={onBrowse}
-              />
-            ))}
+            {sorted.map((entry) => {
+              const target = joinPath(here ?? '', entry.name, pathKind);
+              return (
+                <BrowserRow
+                  key={entry.name}
+                  label={entry.name}
+                  icon={isNavigable(entry) ? 'folder' : 'file'}
+                  target={target}
+                  navigable={isNavigable(entry)}
+                  link={entry.kind === 'symlink'}
+                  onOpen={onOpen}
+                  onBrowse={onBrowse}
+                  onFile={onOpenFile}
+                  current={openFile === target}
+                />
+              );
+            })}
 
             {state.phase === 'ready' && !sorted.length ? (
               <p className="pane-browser-note">
@@ -215,6 +230,11 @@ export function PaneBrowser({
         )}
       </div>
 
+      {onOpenFile ? (
+        <div className="pane-browser-foot">
+          <small>Click a file to open it.</small>
+        </div>
+      ) : (
       <div className="pane-browser-foot">
         <small>Double-click a folder to take the shell there.</small>
         {/* The same action as a double-click, on the directory already open.
@@ -232,6 +252,7 @@ export function PaneBrowser({
           <Icon name="send-right" />
         </button>
       </div>
+      )}
     </div>
   );
 }
@@ -244,7 +265,9 @@ function BrowserRow({
   link,
   className = '',
   onOpen,
-  onBrowse
+  onBrowse,
+  onFile,
+  current = false
 }: {
   label: string;
   icon: string;
@@ -254,6 +277,9 @@ function BrowserRow({
   className?: string;
   onOpen: (path: string) => void;
   onBrowse: (path: string) => void;
+  /** Set when files can be chosen; a file row is then a button like a folder's. */
+  onFile?: (path: string) => void;
+  current?: boolean;
 }) {
   // The single click is held back until a double-click could no longer arrive.
   // Acting on it at once broke the gesture rather than pre-empting it: browsing
@@ -264,6 +290,24 @@ function BrowserRow({
     () => navigable && onBrowse(target),
     () => navigable && onOpen(target)
   );
+  // A file is only actionable when something asked to choose one; otherwise it
+  // stays greyed, as it always was.
+  const openable = !navigable && Boolean(onFile);
+  if (openable) {
+    return (
+      <button
+        type="button"
+        className={`pane-browser-row pane-browser-file-choice ${current ? 'pane-browser-current' : ''} ${className}`.trim()}
+        onClick={() => onFile?.(target)}
+        title={`${label} — click to open`}
+        aria-current={current || undefined}
+      >
+        <Icon name={icon} />
+        <span className="pane-browser-name">{label}</span>
+        {link ? <span className="pane-browser-kind">link</span> : null}
+      </button>
+    );
+  }
   return (
     <button
       type="button"

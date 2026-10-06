@@ -192,9 +192,10 @@ Voice control uses an adapter interface. Talon, local speech recognition, or ano
 1. Can the Toolbox process reliably discover and attach to host-user `screen` sockets?
 2. Should the development app run inside Toolbox while the session helper runs on the host?
 3. ~~Will the first release use Electron packaging, AppImage, RPM, or Flatpak?~~
-   Answered for Windows: `electron-builder` produces an NSIS installer and a
-   portable `.exe`, published to GitHub Releases (`package.json`'s `build`
-   config, `npm run package:win`). Linux packaging format is still open.
+   Answered: `electron-builder` produces a Windows NSIS installer and portable
+   `.exe`, plus a Linux AppImage and Debian package. GitHub Actions builds the
+   platform assets natively and publishes them together as GitHub prereleases
+   (`package.json`'s `build` config and `.github/workflows/release.yml`).
 4. Which AI agent protocols/adapters are required first?
 5. What Talon functionality is available and practical on this Fedora setup?
 6. Should remote sessions use `screen` directly, or support tmux as a later backend?
