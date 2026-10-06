@@ -20,12 +20,12 @@ export function detectLineEnding(text: string): LineEnding {
 
 /** The text as the textarea holds it: every line break a bare newline. */
 export function toEditorText(text: string): string {
-  return text.replace(/\r\n/g, '\n');
+  return text.replaceAll('\r\n', '\n');
 }
 
 /** The text as it is written: the file's own line ending put back. */
 export function fromEditorText(text: string, ending: LineEnding): string {
-  return ending === 'crlf' ? text.replace(/\n/g, '\r\n') : text;
+  return ending === 'crlf' ? text.replaceAll('\n', '\r\n') : text;
 }
 
 /** Whether there is anything to lose by closing. */

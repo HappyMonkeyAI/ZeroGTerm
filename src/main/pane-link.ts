@@ -184,7 +184,7 @@ export class PaneLinkController {
     for (const stale of Array.from(this.links.values())) {
       if (stale.status === 'broken' && [stale.a, stale.b].some((id) => id === aSessionId || id === bSessionId)) this.links.delete(stale.id);
     }
-    const relays = cap === undefined ? this.defaultCap : cap;
+    const relays = cap ?? this.defaultCap;
     if (!Number.isInteger(relays) || relays < 1 || relays > MAX_RELAY_CAP) {
       throw new Error(`The relay limit must be a whole number from 1 to ${MAX_RELAY_CAP}.`);
     }

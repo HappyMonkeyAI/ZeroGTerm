@@ -23,6 +23,11 @@ export function configuredButtons(buttons: readonly CustomButton[]): PaneButton[
   return shown;
 }
 
+/** What the button is called to assistive technology: its label, or its number when it has none. */
+export function buttonName(button: PaneButton): string {
+  return button.label || `Button ${button.slot}`;
+}
+
 /** The tooltip: the label when there is one, always with what will be sent. */
 export function buttonTitle(button: PaneButton): string {
   const action = `Send "${button.command}" and press Enter`;

@@ -35,7 +35,7 @@ export function withLabel(file: StoredHostLabelFile, target: string, label: stri
   const key = hostLabelKey(target);
   const text = label.trim();
   if (!key || !text) return file;
-  if (labelFor(file, target) === text && file.hosts[file.hosts.length - 1]?.host === key) return file;
+  if (labelFor(file, target) === text && file.hosts.at(-1)?.host === key) return file;
   return { version: file.version, hosts: [...file.hosts.filter((entry) => entry.host !== key), { host: key, label: text }] };
 }
 

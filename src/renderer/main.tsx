@@ -91,7 +91,7 @@ import { ipcMessage } from './ipc-message';
 import { EditorHost, type EditorCloser, type EditorMode } from './editor-overlay';
 import { localBackend, remoteBackend, type EditorBackend } from './editor-backend';
 import { canCycle, cycleSlot, resolveVisible, SPLIT_SLOTS } from './pane-selection';
-import { buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
+import { buttonName, buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
 import { EMPTY_HOST_LABELS, labelFor, withLabel } from './host-labels';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
@@ -4176,6 +4176,9 @@ function App() {
             )}
             {allPanes.map(({ session: paneSession, index, dormant }) => {
               const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
+              // Which slot of a two-pane split this pane sits in, or -1 when it
+              // is not one that is being chosen between.
+              const slotOrder = visibleIds?.indexOf(paneSession.id) ?? -1;
               // Null where ZeroG cannot tell how to read a path for this pane, in
               // which case the button is offered disabled rather than hidden: the
               // reason is more use than a missing control.
@@ -4189,7 +4192,7 @@ function App() {
                   // Auto-placement honours `order`, so a slot's pane lands in its
                   // own cell without the panes being moved in the DOM — moving one
                   // would risk its terminal.
-                  style={visibleIds && visibleIds.includes(paneSession.id) ? { order: visibleIds.indexOf(paneSession.id) } : undefined}
+                  style={slotOrder >= 0 ? { order: slotOrder } : undefined}
                   onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
                   <div className="pane-title">
@@ -4291,7 +4294,7 @@ function App() {
                           className="pane-custom"
                           onClick={() => sendCustomButton(paneSession, button)}
                           title={buttonTitle(button)}
-                          aria-label={`${button.label || `Button ${button.slot}`}: send "${button.command}" to ${paneSession.name}`}
+                          aria-label={`${buttonName(button)}: send "${button.command}" to ${paneSession.name}`}
                         >
                           {button.slot}
                         </button>

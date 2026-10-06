@@ -137,6 +137,11 @@ export class AgentHookServer {
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
+        // Past the limit a chunk is counted and dropped, never kept, so a larger
+        // body costs no more memory than the limit. The request is read to its end
+        // rather than torn down so the 413 below actually reaches the sender, and
+        // Node's own requestTimeout (five minutes) bounds a sender that never
+        // finishes — one that also needs this agent's token to get this far.
         tooLarge = true;
         return;
       }
@@ -169,7 +174,7 @@ export function buildLaunchCommand(agentCommand: string, settingsPath: string): 
     const code = ch.codePointAt(0) ?? 0;
     if (code < 0x20 || code === 0x7f) throw new Error('The AI command must be a single line with no control characters.');
   }
-  const path = settingsPath.replace(/\\/g, '/');
+  const path = settingsPath.replaceAll('\\', '/');
   if (path.includes('"')) throw new Error('The settings path cannot contain a quote.');
   return `${command} --settings "${path}"`;
 }

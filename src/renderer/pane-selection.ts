@@ -46,8 +46,8 @@ export function canCycle(ids: readonly string[], slots = SPLIT_SLOTS): boolean {
 export function cycleSlot(ids: readonly string[], visible: readonly string[], slot: number, direction: -1 | 1): string[] {
   const current = visible[slot];
   if (current === undefined || !ids.includes(current)) return [...visible];
-  const others = visible.filter((_, index) => index !== slot);
-  const candidates = ids.filter((id) => !others.includes(id));
+  const others = new Set(visible.filter((_, index) => index !== slot));
+  const candidates = ids.filter((id) => !others.has(id));
   if (candidates.length < 2) return [...visible];
   const at = candidates.indexOf(current);
   const next = candidates[(at + direction + candidates.length) % candidates.length];

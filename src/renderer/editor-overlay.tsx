@@ -15,7 +15,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import { EDIT_CONFLICT_MESSAGE } from '../shared/editing';
 import { baseName } from '../shared/files';
-import type { DirectoryListing } from '../shared/types';
+import type { DirectoryListing, SessionInfo } from '../shared/types';
 import type { EditorBackend, FileVersion } from './editor-backend';
 import {
   cursorPosition,
@@ -31,7 +31,6 @@ import { ipcMessage } from './ipc-message';
 import { Icon } from './icons';
 import { PaneBrowser } from './pane-browser';
 import type { PathKind } from './pane-directory';
-import type { SessionInfo } from '../shared/types';
 
 
 type Loaded = {

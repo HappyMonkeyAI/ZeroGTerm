@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buttonTitle, configuredButtons } from '../src/renderer/pane-buttons';
+import { buttonName, buttonTitle, configuredButtons } from '../src/renderer/pane-buttons';
 import { emptyCustomButtons } from '../src/renderer/settings';
 
 describe('configuredButtons', () => {
@@ -27,6 +27,13 @@ describe('configuredButtons', () => {
     const buttons = emptyCustomButtons();
     buttons[1] = { label: ' tidy ', command: '  ls -la  ' };
     expect(configuredButtons(buttons)[0]).toEqual({ slot: 1, label: 'tidy', command: 'ls -la' });
+  });
+});
+
+describe('buttonName', () => {
+  it('is the label, or the number when there is none', () => {
+    expect(buttonName({ slot: 3, label: 'status', command: 'git status' })).toBe('status');
+    expect(buttonName({ slot: 3, label: '', command: 'git status' })).toBe('Button 3');
   });
 });
 

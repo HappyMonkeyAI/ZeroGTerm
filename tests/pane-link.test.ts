@@ -386,7 +386,7 @@ describe('change notifications', () => {
     const before = h.snapshots.length;
     h.controller.link('s1', 's2');
     h.controller.handle(prompt('s1'));
-    expect(h.snapshots.length).toBe(before + 2);
+    expect(h.snapshots).toHaveLength(before + 2);
     expect(h.snapshots.at(-1)?.agents.find((agent) => agent.sessionId === 's1')?.phase).toBe('busy');
   });
 });
