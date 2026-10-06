@@ -1,6 +1,6 @@
 # Built-in text editor: design note (task 5, phase 0)
 
-Status: **slices 1 (local files, overlay) and 2 (SSH files) are built; slice 3 (dock as a pane) is not.** The decisions at the end were taken as recommended: textarea, 1 MiB cap, local first, in-place writes.
+Status: **slices 1 (local files, overlay), 2 (SSH files) and 3 (dock as a sidecar in the terminal pane) are built. A dock as a full pane of its own is not, and would need the pane model, persistence and restore to learn about non-terminal panes.** The decisions at the end were taken as recommended: textarea, 1 MiB cap, local first, in-place writes.
 
 ## Goal
 
