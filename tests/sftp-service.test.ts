@@ -94,6 +94,15 @@ describe('SFTP connections', () => {
     await expect(upload).resolves.toBeUndefined();
   });
 
+  it('puts a file to an exact path without -p, so the remote file keeps its permissions', async () => {
+    const { service, pty, connection } = await connect();
+    const upload = service.putFile(connection.id, 'C:\\Temp\\zerog-edit-x\\.env', '/srv/app/.env');
+    await settle();
+    expect(pty.writes[pty.writes.length - 1]).toBe('put "C:/Temp/zerog-edit-x/.env" "/srv/app/.env"\n');
+    reply(pty);
+    await expect(upload).resolves.toBeUndefined();
+  });
+
   it('downloads into the local folder that is on screen', async () => {
     const { service, pty, connection } = await connect();
     const download = service.download(connection.id, '/srv/app/notes.md', 'C:\\Users\\dev\\project', 'file');

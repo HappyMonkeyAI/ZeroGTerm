@@ -84,7 +84,31 @@ export type SessionSettings = {
    */
   splitColumnRatio: number;
   splitRowRatio: number;
+  /**
+   * Show dotfiles in the directory browser and the transfer panel.
+   *
+   * Off by default: a fresh listing of a home directory is mostly dotfiles on
+   * a typical Linux host, which buries what the user actually came to look
+   * at. Both browsers also carry their own per-view checkbox that starts from
+   * this default but does not write back to it.
+   */
+  showHiddenFiles: boolean;
 };
+
+/** One user-defined pane button. A button with no command is not shown. */
+export type CustomButton = {
+  /** What the tooltip says; the button itself shows only its number. */
+  label: string;
+  /** Typed into the pane with Enter pressed, exactly as written. */
+  command: string;
+};
+
+/** Slots are numbered 0–9, and the list is always exactly this long. */
+export const CUSTOM_BUTTON_COUNT = 10;
+
+export function emptyCustomButtons(): CustomButton[] {
+  return Array.from({ length: CUSTOM_BUTTON_COUNT }, () => ({ label: '', command: '' }));
+}
 
 export type AiSettings = {
   /**
@@ -108,6 +132,12 @@ export type AiSettings = {
    * (e.g. "claude") in a pane that is sitting at a shell prompt.
    */
   aiCommand: string;
+  /**
+   * Up to ten extra pane buttons, numbered 0–9 by position. Separate from the
+   * two above, which stay fixed: aiCommand is also what a linked agent launches,
+   * so it cannot become just another slot.
+   */
+  customButtons: CustomButton[];
   /**
    * Record the commands run in each pane, for the history palette.
    *
@@ -192,13 +222,15 @@ export const DEFAULT_SETTINGS: Settings = {
     startSidebarCollapsed: false,
     sidebarWidth: 238,
     splitColumnRatio: 0.5,
-    splitRowRatio: 0.5
+    splitRowRatio: 0.5,
+    showHiddenFiles: false
   },
   ai: {
     requireApproval: true,
     voiceInsert: 'type',
     proceedPhrase: 'OK, proceed',
     aiCommand: 'claude',
+    customButtons: emptyCustomButtons(),
     recordCommands: false,
     // Ollama's default, because a local model is the case with no key to set up
     // and nothing leaving the machine.
@@ -344,6 +376,22 @@ export function resolveAiCommand(ai: AiSettings): string {
   return ai.aiCommand.trim() || DEFAULT_SETTINGS.ai.aiCommand;
 }
 
+/**
+ * The ten slots out of the stored file, always ten long.
+ *
+ * Stored entries are matched to slots by position, so a file with fewer is
+ * padded and one with more is cut. Text is cleaned like any phrase the app types
+ * for the user — and with the same care for what is left alone, since this runs
+ * on every keystroke in the settings panel.
+ */
+function pickCustomButtons(value: unknown): CustomButton[] {
+  const stored = Array.isArray(value) ? value : [];
+  return emptyCustomButtons().map((blank, slot) => {
+    const entry = isRecord(stored[slot]) ? (stored[slot] as Record<string, unknown>) : {};
+    return { label: pickPhrase(entry.label, blank.label, 48), command: pickPhrase(entry.command, blank.command) };
+  });
+}
+
 const THEMES: readonly Theme[] = ['dark', 'light'];
 const LAYOUTS: readonly Layout[] = ['stack', 'split-v', 'split-h', 'grid'];
 const BACKENDS: readonly LocalBackend[] = ['bash', 'zsh', 'fish', 'sh', 'powershell', 'pwsh', 'cmd', 'wsl'];
@@ -411,13 +459,15 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       startSidebarCollapsed: pickBoolean(sessions.startSidebarCollapsed, DEFAULT_SETTINGS.sessions.startSidebarCollapsed),
       sidebarWidth: Math.round(pickNumber(sessions.sidebarWidth, SETTING_LIMITS.sidebarWidth, DEFAULT_SETTINGS.sessions.sidebarWidth)),
       splitColumnRatio: pickNumber(sessions.splitColumnRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitColumnRatio),
-      splitRowRatio: pickNumber(sessions.splitRowRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitRowRatio)
+      splitRowRatio: pickNumber(sessions.splitRowRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitRowRatio),
+      showHiddenFiles: pickBoolean(sessions.showHiddenFiles, DEFAULT_SETTINGS.sessions.showHiddenFiles)
     },
     ai: {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),
       voiceInsert: pickEnum(ai.voiceInsert, VOICE_INSERTS, DEFAULT_SETTINGS.ai.voiceInsert),
       proceedPhrase: pickPhrase(ai.proceedPhrase, DEFAULT_SETTINGS.ai.proceedPhrase),
       aiCommand: pickPhrase(ai.aiCommand, DEFAULT_SETTINGS.ai.aiCommand),
+      customButtons: pickCustomButtons(ai.customButtons),
       recordCommands: pickBoolean(ai.recordCommands, DEFAULT_SETTINGS.ai.recordCommands),
       baseUrl: pickString(ai.baseUrl, DEFAULT_SETTINGS.ai.baseUrl, 512),
       model: pickString(ai.model, DEFAULT_SETTINGS.ai.model, 200),

@@ -1,16 +1,20 @@
 // The local half of the transfer panel: directory listings and the three edits
-// the panel can make locally.
+// the panel can make locally, plus reading and writing one text file for the
+// built-in editor.
 //
-// Nothing here reads file *contents*. The renderer is sandboxed and has no
-// filesystem access of its own, and this module is deliberately the narrowest
-// widening of that boundary that a file browser needs: names, sizes, kinds, and
-// explicit create/rename/delete on a path the user pointed at.
+// The renderer is sandboxed and has no filesystem access of its own, and this
+// module is deliberately the narrowest widening of that boundary that a file
+// browser needs: names, sizes, kinds, and explicit create/rename/delete on a path
+// the user pointed at. File *contents* are only ever read or written by the
+// editor's two functions at the bottom, one file at a time, with limits.
 
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, readdir, rename, rm, rmdir } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, normalize, resolve } from 'node:path';
-import type { DirectoryListing, FileEntry } from '../shared/types.js';
+import type { DirectoryListing, FileEntry, LocalFileContent, LocalFileStamp } from '../shared/types.js';
+import { EDIT_CONFLICT_MESSAGE, MAX_EDIT_BYTES } from '../shared/editing.js';
+import { checkEditableSize, decodeEditable, megabytes } from './editable.js';
 import { sortEntries } from '../shared/files.js';
 
 /**
@@ -113,4 +117,56 @@ export async function removeLocalEntry(path: string, kind: FileEntry['kind']): P
   if (target === resolve(homedir())) throw new Error('Refusing to delete the home directory.');
   if (kind === 'directory') await rmdir(target);
   else await rm(target, { force: false });
+}
+
+/**
+ * Read one file as text for the editor, or say why it cannot be edited (see
+ * decodeEditable for what is refused).
+ *
+ * Follows a symlink, as opening it in any editor would.
+ */
+export async function readLocalFile(path: string): Promise<LocalFileContent> {
+  const target = resolveLocalPath(path);
+  const info = await stat(target);
+  if (!info.isFile()) throw new Error('That is not a file.');
+  // Checked before reading, so a huge file is refused without being loaded.
+  checkEditableSize(info.size);
+  const bytes = await readFile(target);
+  return { path: target, text: decodeEditable(bytes), size: bytes.length, mtimeMs: info.mtimeMs };
+}
+
+/**
+ * Save the editor's text back over the file it came from.
+ *
+ * Refused when the file's modified time is not the one it was opened with, so a
+ * change made meanwhile — an agent writing the same `.env` in the pane behind —
+ * is flagged instead of silently lost. `overwrite` is the user saying they have
+ * seen that and mean it.
+ *
+ * Written in place rather than through a temp file and a rename, which would
+ * replace a symlink with a plain file and reset the file's owner and mode. The
+ * price is that a write interrupted halfway leaves a short file, which for the
+ * small text files this opens is the lesser harm.
+ */
+export async function writeLocalFile(
+  path: string,
+  text: string,
+  expectedMtimeMs: number,
+  overwrite = false
+): Promise<LocalFileStamp> {
+  const target = resolveLocalPath(path);
+  if (typeof text !== 'string') throw new Error('There is no text to save.');
+  if (Buffer.byteLength(text, 'utf8') > MAX_EDIT_BYTES) {
+    throw new Error(`That is more than ${megabytes(MAX_EDIT_BYTES)}, which is more than the editor saves.`);
+  }
+  const current = await stat(target).then(
+    (info) => info,
+    () => undefined
+  );
+  if (!current) throw new Error('That file no longer exists, so it was not saved.');
+  if (!current.isFile()) throw new Error('That is not a file.');
+  if (!overwrite && current.mtimeMs !== expectedMtimeMs) throw new Error(EDIT_CONFLICT_MESSAGE);
+  await writeFile(target, text, 'utf8');
+  const saved = await stat(target);
+  return { size: saved.size, mtimeMs: saved.mtimeMs };
 }

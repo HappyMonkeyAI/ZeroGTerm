@@ -10,8 +10,10 @@ import { CommandHistoryStore, defaultCommandHistoryPath } from './command-histor
 import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
 import { PortForwardService } from './port-forward-service.js';
 import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.js';
+import { readRemoteFile, writeRemoteFile } from './remote-file.js';
+import { HostLabelStore, defaultHostLabelPath } from './host-label-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
-import { createLocalDirectory, listLocalDirectory, localHome, removeLocalEntry, renameLocalEntry } from './local-fs.js';
+import { createLocalDirectory, listLocalDirectory, localHome, readLocalFile, removeLocalEntry, renameLocalEntry, writeLocalFile } from './local-fs.js';
 import { wslHomeDirectory } from './wsl-home.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
@@ -24,6 +26,8 @@ import { McpAudit } from './mcp-audit.js';
 import { classifyMcpPrompt } from './prompt-classifier.js';
 import { isSafeRemoteCommand } from './mcp-execution-policy.js';
 import { requireWorkspaceName } from './mcp-protocol.js';
+import { PaneLinkController, pasteAndSubmit } from './pane-link.js';
+import { AgentHookServer, buildLaunchCommand } from './agent-hook-server.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -34,6 +38,7 @@ const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPa
 const commands = new CommandHistoryStore({ filePath: defaultCommandHistoryPath(app.getPath('userData')) });
 const workspaceStore = new WorkspaceStore({ filePath: defaultWorkspacePath(app.getPath('userData')) });
 const forwardStore = new PortForwardStore({ filePath: defaultPortForwardPath(app.getPath('userData')) });
+const hostLabelStore = new HostLabelStore({ filePath: defaultHostLabelPath(app.getPath('userData')) });
 // Tunnels outlive the Ports view being closed: authenticating again is a real
 // cost to pay for having looked away.
 const forwards = new PortForwardService({ onEvent: (event) => win?.webContents.send('forwards:event', event) });
@@ -66,6 +71,48 @@ function clearMcpExecution(requestId: string, sessionId?: string): void {
   }
 }
 let mcpHost: McpServerHost | undefined;
+
+// Pane link: agents ZeroG launches report their turns over loopback hooks, and the
+// controller relays a finished reply into the linked pane. See src/main/pane-link.ts.
+const paneLinks = new PaneLinkController({
+  deliver: (sessionId, text) => pasteAndSubmit((id, data) => service.write(id, data), sessionId, text),
+  onChange: (snapshot) => win?.webContents.send('paneLinks:changed', snapshot)
+});
+const agentHooks = new AgentHookServer({
+  settingsDir: join(app.getPath('userData'), 'pane-link'),
+  onEvent: (event) => paneLinks.handle(event)
+});
+
+ipcMain.handle('paneLinks:launchAgent', async (_event, sessionId: unknown, agentCommand: unknown) => {
+  const id = requireString(sessionId, 'A pane');
+  const command = requireString(agentCommand, 'The AI command');
+  const info = (await service.list()).find((candidate) => candidate.id === id);
+  if (!info) throw new Error('That pane is not available.');
+  // The hook URL is a Windows/Linux loopback address. An SSH host or a WSL2 guest cannot reach it.
+  if (info.kind !== 'local' || info.backend === 'wsl') {
+    throw new Error('Linked agents run in local panes only (not SSH or WSL).');
+  }
+  const { settingsPath } = await agentHooks.register(id);
+  try {
+    const line = buildLaunchCommand(command, settingsPath);
+    paneLinks.registerAgent(id, info.name);
+    // One leading space: a freshly opened shell was seen to swallow the first
+    // keystroke ("laude: command not found"). If it is the space that goes, the
+    // command is intact; if nothing goes, a leading space is harmless in bash,
+    // PowerShell and cmd.
+    service.write(id, ` ${line}\r`);
+  } catch (error) {
+    await agentHooks.unregister(id);
+    throw error;
+  }
+});
+ipcMain.handle('paneLinks:list', () => paneLinks.snapshot());
+ipcMain.handle('paneLinks:link', (_event, a: unknown, b: unknown, cap: unknown) =>
+  paneLinks.link(requireString(a, 'A pane'), requireString(b, 'A pane'), typeof cap === 'number' ? cap : undefined));
+ipcMain.handle('paneLinks:relayLast', (_event, linkId: unknown, from: unknown) =>
+  paneLinks.relayLast(requireString(linkId, 'A link'), requireString(from, 'A pane')));
+ipcMain.handle('paneLinks:unlink', (_event, linkId: unknown) => paneLinks.unlink(requireString(linkId, 'A link')));
+ipcMain.handle('paneLinks:resume', (_event, linkId: unknown) => paneLinks.resume(requireString(linkId, 'A link')));
 
 async function restoreWorkspace(workspaceId: string): Promise<unknown> {
   const file = await workspaceStore.load();
@@ -331,6 +378,8 @@ ipcMain.handle('forwards:answerPrompt', (_event, id: unknown, answer: unknown) =
   forwards.answerPrompt(requireString(id, 'A shared port'), requireString(answer, 'An answer')));
 ipcMain.handle('forwards:load', () => forwardStore.load());
 ipcMain.handle('forwards:save', (_event, file: unknown) => forwardStore.save(file));
+ipcMain.handle('hostLabels:load', () => hostLabelStore.load());
+ipcMain.handle('hostLabels:save', (_event, file: unknown) => hostLabelStore.save(file));
 
 ipcMain.handle('workspaces:load', () => workspaceStore.load());
 ipcMain.handle('workspaces:save', (_event, file: unknown) => workspaceStore.save(file));
@@ -533,6 +582,8 @@ ipcMain.handle('sessions:attach', (_event, id: unknown, size: unknown) => {
 ipcMain.handle('sessions:close', (_event, id: unknown) => {
   if (typeof id !== 'string' || !id) throw new Error('closeSession requires a session id');
   service.close(id);
+  paneLinks.unregisterAgent(id);
+  void agentHooks.unregister(id);
 });
 
 ipcMain.on('terminal:write', (_event, sessionId: unknown, data: unknown) => {
@@ -657,6 +708,12 @@ ipcMain.handle('fs:wslHome', async (_event, distribution: unknown) => {
 ipcMain.handle('fs:listLocal', (_event, path: unknown) => listLocalDirectory(typeof path === 'string' && path ? path : undefined));
 ipcMain.handle('fs:mkdirLocal', (_event, path: unknown) => createLocalDirectory(requireString(path, 'A folder path')));
 ipcMain.handle('fs:renameLocal', (_event, from: unknown, to: unknown) => renameLocalEntry(requireString(from, 'The current path'), requireString(to, 'The new path')));
+ipcMain.handle('fs:readLocalFile', (_event, path: unknown) => readLocalFile(requireString(path, 'A file path')));
+ipcMain.handle('fs:writeLocalFile', (_event, path: unknown, text: unknown, expectedMtimeMs: unknown, overwrite: unknown) => {
+  if (typeof text !== 'string') throw new Error('There is no text to save.');
+  if (typeof expectedMtimeMs !== 'number' || !Number.isFinite(expectedMtimeMs)) throw new Error('When the file was opened is required.');
+  return writeLocalFile(requireString(path, 'A file path'), text, expectedMtimeMs, overwrite === true);
+});
 ipcMain.handle('fs:removeLocal', (_event, path: unknown, kind: unknown) => removeLocalEntry(requireString(path, 'A path'), requireEntryKind(kind)));
 
 ipcMain.handle('sftp:open', (_event, target: unknown, cwd: unknown) => sftp.open(requireString(target, 'An SSH target'), typeof cwd === 'string' && cwd ? cwd : undefined));
@@ -671,6 +728,11 @@ ipcMain.handle('sftp:download', (_event, id: unknown, remotePath: unknown, local
 ipcMain.handle('sftp:answerPrompt', (_event, id: unknown, answer: unknown) => {
   if (typeof answer !== 'string') throw new Error('An answer is required.');
   sftp.answerPrompt(requireString(id, 'A transfer connection'), answer);
+});
+ipcMain.handle('sftp:readFile', (_event, id: unknown, path: unknown) => readRemoteFile(sftp, requireString(id, 'A transfer connection'), requireString(path, 'A remote file')));
+ipcMain.handle('sftp:writeFile', (_event, id: unknown, path: unknown, text: unknown, opened: unknown, overwrite: unknown) => {
+  if (typeof text !== 'string' || typeof opened !== 'string') throw new Error('There is no text to save.');
+  return writeRemoteFile(sftp, requireString(id, 'A transfer connection'), requireString(path, 'A remote file'), text, opened, overwrite === true);
 });
 ipcMain.handle('sftp:close', (_event, id: unknown) => sftp.close(requireString(id, 'A transfer connection')));
 
@@ -737,6 +799,10 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  void agentHooks.stop();
 });
 
 app.on('window-all-closed', () => {

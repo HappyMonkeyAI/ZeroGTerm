@@ -14,6 +14,8 @@ const api = {
   answerForwardPrompt: (id, answer) => ipcRenderer.invoke('forwards:answerPrompt', id, answer),
   loadForwards: () => ipcRenderer.invoke('forwards:load'),
   saveForwards: (file) => ipcRenderer.invoke('forwards:save', file),
+  loadHostLabels: () => ipcRenderer.invoke('hostLabels:load'),
+  saveHostLabels: (file) => ipcRenderer.invoke('hostLabels:save', file),
   onForwardEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('forwards:event', listener);
@@ -48,6 +50,17 @@ const api = {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('mcp:execution', listener);
     return () => ipcRenderer.removeListener('mcp:execution', listener);
+  },
+  launchLinkedAgent: (sessionId, agentCommand) => ipcRenderer.invoke('paneLinks:launchAgent', sessionId, agentCommand),
+  listPaneLinks: () => ipcRenderer.invoke('paneLinks:list'),
+  linkPanes: (a, b, cap) => ipcRenderer.invoke('paneLinks:link', a, b, cap),
+  relayLastReply: (linkId, fromSessionId) => ipcRenderer.invoke('paneLinks:relayLast', linkId, fromSessionId),
+  unlinkPanes: (linkId) => ipcRenderer.invoke('paneLinks:unlink', linkId),
+  resumePaneLink: (linkId) => ipcRenderer.invoke('paneLinks:resume', linkId),
+  onPaneLinks: (callback) => {
+    const listener = (_event, snapshot) => callback(snapshot);
+    ipcRenderer.on('paneLinks:changed', listener);
+    return () => ipcRenderer.removeListener('paneLinks:changed', listener);
   },
   listBackends: () => ipcRenderer.invoke('sessions:backends'),
   listWslDistributions: () => ipcRenderer.invoke('sessions:wslDistributions'),
@@ -86,6 +99,8 @@ const api = {
   createLocalDirectory: (path) => ipcRenderer.invoke('fs:mkdirLocal', path),
   renameLocalEntry: (from, to) => ipcRenderer.invoke('fs:renameLocal', from, to),
   removeLocalEntry: (path, kind) => ipcRenderer.invoke('fs:removeLocal', path, kind),
+  readLocalFile: (path) => ipcRenderer.invoke('fs:readLocalFile', path),
+  writeLocalFile: (path, text, expectedMtimeMs, overwrite) => ipcRenderer.invoke('fs:writeLocalFile', path, text, expectedMtimeMs, overwrite),
   sftpOpen: (target, cwd) => ipcRenderer.invoke('sftp:open', target, cwd),
   sftpList: (sessionId, path) => ipcRenderer.invoke('sftp:list', sessionId, path),
   sftpMkdir: (sessionId, path) => ipcRenderer.invoke('sftp:mkdir', sessionId, path),
@@ -94,6 +109,8 @@ const api = {
   sftpUpload: (sessionId, localPath, remoteDir) => ipcRenderer.invoke('sftp:upload', sessionId, localPath, remoteDir),
   sftpDownload: (sessionId, remotePath, localDir, kind) => ipcRenderer.invoke('sftp:download', sessionId, remotePath, localDir, kind),
   sftpAnswerPrompt: (sessionId, answer) => ipcRenderer.invoke('sftp:answerPrompt', sessionId, answer),
+  sftpReadFile: (sessionId, path) => ipcRenderer.invoke('sftp:readFile', sessionId, path),
+  sftpWriteFile: (sessionId, path, text, opened, overwrite) => ipcRenderer.invoke('sftp:writeFile', sessionId, path, text, opened, overwrite),
   sftpClose: (sessionId) => ipcRenderer.invoke('sftp:close', sessionId),
   onSftpEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);

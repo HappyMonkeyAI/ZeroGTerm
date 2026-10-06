@@ -149,6 +149,55 @@ describe('an SSH pane', () => {
     expect(state.lists.map((call) => call.handle)).toEqual(['sftp-1', 'sftp-1', 'sftp-2']);
   });
 
+  it('hands the editor the connection handle, sharing the one the browser opened', async () => {
+    const { api, state } = fakeApi();
+    const source = createPaneListingSource(() => api);
+    await source.listerFor(session())('/etc');
+    const used = await source.withHandle(session(), async (handle) => handle);
+    expect(used).toBe('sftp-1');
+    expect(state.opens).toHaveLength(1);
+  });
+
+  it('opens a connection for the editor when the browser has not', async () => {
+    const { api, state } = fakeApi();
+    const source = createPaneListingSource(() => api);
+    expect(await source.withHandle(session(), async (handle) => handle)).toBe('sftp-1');
+    expect(state.opens).toHaveLength(1);
+  });
+
+  it('runs the editor’s work again on a fresh connection when the first had closed', async () => {
+    const { api, state } = fakeApi();
+    const source = createPaneListingSource(() => api);
+    await source.listerFor(session())('/etc');
+    const attempts: string[] = [];
+    const result = await source.withHandle(session(), async (handle) => {
+      attempts.push(handle);
+      if (handle === 'sftp-1') throw new Error('This transfer connection is closed. Reopen the transfer panel.');
+      return 'saved';
+    });
+    expect(result).toBe('saved');
+    expect(attempts).toEqual(['sftp-1', 'sftp-2']);
+    expect(state.opens).toHaveLength(2);
+  });
+
+  it('does not retry the editor’s work for a failure that is not the connection', async () => {
+    const { api, state } = fakeApi();
+    const source = createPaneListingSource(() => api);
+    const work = vi.fn(async () => {
+      throw new Error('That file changed on disk after it was opened.');
+    });
+    await expect(source.withHandle(session(), work)).rejects.toThrow('changed on disk');
+    expect(work).toHaveBeenCalledTimes(1);
+    expect(state.opens).toHaveLength(1);
+  });
+
+  it('refuses to give a local pane a connection', async () => {
+    const { api } = fakeApi();
+    const source = createPaneListingSource(() => api);
+    const local = session({ id: 'local:1', kind: 'local', sshTarget: undefined });
+    await expect(source.withHandle(local, async (handle) => handle)).rejects.toThrow(/not an SSH pane/);
+  });
+
   it('reports a failure that is not the connection, without retrying', async () => {
     // A path that does not exist is the user's answer to have, and reopening a
     // working connection would only hide it.

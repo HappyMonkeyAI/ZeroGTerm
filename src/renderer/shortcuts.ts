@@ -292,6 +292,7 @@ export function matchShortcut(event: ShortcutEvent, bindings: Bindings = DEFAULT
  */
 export const DISMISS_ORDER = [
   'help',
+  'editor',
   'transfer',
   'settings',
   'voiceReview',

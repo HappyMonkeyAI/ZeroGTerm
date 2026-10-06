@@ -44,6 +44,14 @@ export type PaneListingSource = {
    * changes, so a fresh closure per render would list in a loop.
    */
   listerFor(session: SessionInfo): (path?: string) => Promise<DirectoryListing>;
+  /**
+   * Run something against this pane's sftp connection, opening one if needed and
+   * once more on a fresh one if the connection turns out to have gone.
+   *
+   * What the editor uses to read and save, so it shares the connection the
+   * browser has already authenticated.
+   */
+  withHandle<T>(session: SessionInfo, run: (handle: string) => Promise<T>): Promise<T>;
   /** The login directory of this pane's host, once a connection has reported it. */
   homeFor(sessionId: string): string | undefined;
   /**
@@ -133,18 +141,26 @@ export function createPaneListingSource(
     return home;
   }
 
-  async function listRemote(session: SessionInfo, path?: string): Promise<DirectoryListing> {
+  async function withConnection<T>(
+    session: SessionInfo,
+    run: (connection: Connection) => Promise<T>
+  ): Promise<T> {
     const connection = await connect(session);
     try {
-      return await required().sftpList(connection.handle, remotePath(path, connection.home));
+      return await run(connection);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!GONE.test(message)) throw error;
       // Someone closed the connection out from under this pane. Opening again
       // is cheaper than telling the user to go and do it themselves.
-      const revived = await connect(session, true);
-      return await required().sftpList(revived.handle, remotePath(path, revived.home));
+      return await run(await connect(session, true));
     }
+  }
+
+  function listRemote(session: SessionInfo, path?: string): Promise<DirectoryListing> {
+    return withConnection(session, (connection) =>
+      required().sftpList(connection.handle, remotePath(path, connection.home))
+    );
   }
 
   return {
@@ -157,6 +173,11 @@ export function createPaneListingSource(
           : Promise.resolve().then(() => required().listLocalDirectory(path));
       listers.set(session.id, lister);
       return lister;
+    },
+
+    withHandle<T>(session: SessionInfo, run: (handle: string) => Promise<T>) {
+      if (session.kind !== 'ssh') return Promise.reject(new Error(`${session.name} is not an SSH pane.`));
+      return withConnection(session, (connection) => run(connection.handle));
     },
 
     homeFor(sessionId: string) {

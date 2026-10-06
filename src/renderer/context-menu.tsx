@@ -60,14 +60,20 @@ export function ContextMenu({
     };
     const dismiss = () => onClose();
     // Capture phase, so the press that dismisses the menu does not also land on
-    // whatever is underneath it.
+    // whatever is underneath it. A press on the menu itself is left alone: this
+    // listener runs before React's own handlers, so closing on it would unmount
+    // the item before its click arrived and no command would ever run.
+    const dismissOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && card.current?.contains(event.target)) return;
+      onClose();
+    };
     window.addEventListener('keydown', onKey, true);
-    window.addEventListener('pointerdown', dismiss, true);
+    window.addEventListener('pointerdown', dismissOutside, true);
     window.addEventListener('blur', dismiss);
     window.addEventListener('wheel', dismiss, { passive: true });
     return () => {
       window.removeEventListener('keydown', onKey, true);
-      window.removeEventListener('pointerdown', dismiss, true);
+      window.removeEventListener('pointerdown', dismissOutside, true);
       window.removeEventListener('blur', dismiss);
       window.removeEventListener('wheel', dismiss);
     };
@@ -80,8 +86,6 @@ export function ContextMenu({
       aria-label={label}
       ref={card}
       style={{ left: position.x, top: position.y }}
-      // The menu's own presses must not reach the dismissing listener above.
-      onPointerDown={(event) => event.stopPropagation()}
     >
       {items.map((item) => (
         <button

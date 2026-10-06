@@ -177,6 +177,8 @@ export interface StoredWorkspaceView {
   maximizedSessionId?: string | null;
   /** Directory browser state per pane, keyed by session id. */
   browsers?: Record<string, { open: boolean; ratio?: number }>;
+  /** The panes a two-pane split shows, in slot order, when it holds more than two. */
+  visiblePanes?: string[];
 }
 
 export interface StoredWorkspace {
@@ -390,7 +392,85 @@ export interface StoredPortForwardFile {
   forwards: Array<Omit<PortForwardInfo, 'status' | 'message'>>;
 }
 
+/** A text file read for the editor. `mtimeMs` is what a later save is checked against. */
+export interface LocalFileContent {
+  path: string;
+  text: string;
+  size: number;
+  mtimeMs: number;
+}
+
+/** A remote text file read for the editor. */
+export interface RemoteFileContent {
+  path: string;
+  text: string;
+  size: number;
+}
+
+/** What a remote save wrote. */
+export interface RemoteFileStamp {
+  size: number;
+}
+
+/** What a file looks like after a save, so the next one is checked against it. */
+export interface LocalFileStamp {
+  size: number;
+  mtimeMs: number;
+}
+
+/** The session label last given to each host, oldest first. */
+export interface StoredHostLabelFile {
+  version: number;
+  hosts: Array<{ host: string; label: string }>;
+}
+
+/* Pane link: relaying one launched agent's finished reply into another's prompt. */
+export type AgentPhase = 'idle' | 'busy';
+
+export interface AgentStatus {
+  sessionId: string;
+  label: string;
+  phase: AgentPhase;
+  /** The agent is waiting on the user (permission prompt and the like). */
+  needsAttention: boolean;
+  /** The agent has finished a turn that ZeroG saw, so its last reply can be relayed by hand. */
+  hasReply: boolean;
+  linkId?: string;
+}
+
+export type LinkStatus = 'active' | 'paused' | 'broken';
+
+export interface PaneLinkState {
+  id: string;
+  a: string;
+  b: string;
+  status: LinkStatus;
+  /** Replies relayed so far. */
+  turns: number;
+  cap: number;
+  /** Why the link is paused or broken. */
+  reason?: string;
+  /** The session a relay was last delivered to and has not yet answered. */
+  waitingOn?: string;
+  /** A reply held back while paused; resuming delivers it. */
+  holding: boolean;
+}
+
+export interface PaneLinkSnapshot {
+  agents: AgentStatus[];
+  links: PaneLinkState[];
+}
+
 export interface TerminalApi {
+  /** Type the agent command plus ZeroG's hook settings into a local pane, so its replies can be linked. */
+  launchLinkedAgent(sessionId: string, agentCommand: string): Promise<void>;
+  listPaneLinks(): Promise<PaneLinkSnapshot>;
+  linkPanes(a: string, b: string, cap?: number): Promise<PaneLinkState>;
+  /** Relay an agent's most recent reply to its linked partner now, instead of waiting for its next turn. */
+  relayLastReply(linkId: string, fromSessionId: string): Promise<PaneLinkState>;
+  unlinkPanes(linkId: string): Promise<void>;
+  resumePaneLink(linkId: string): Promise<PaneLinkState>;
+  onPaneLinks(callback: (snapshot: PaneLinkSnapshot) => void): () => void;
   listSessions(): Promise<SessionInfo[]>;
   listHistory(): Promise<HistoryEntry[]>;
   removeHistory(entryId: string): Promise<boolean>;
@@ -443,6 +523,8 @@ export interface TerminalApi {
   answerForwardPrompt(id: string, answer: string): Promise<void>;
   loadForwards(): Promise<StoredPortForwardFile>;
   saveForwards(file: StoredPortForwardFile): Promise<StoredPortForwardFile>;
+  loadHostLabels(): Promise<StoredHostLabelFile>;
+  saveHostLabels(file: StoredHostLabelFile): Promise<StoredHostLabelFile>;
   onForwardEvent(callback: (event: PortForwardEvent) => void): () => void;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;
@@ -492,6 +574,8 @@ export interface TerminalApi {
   createLocalDirectory(path: string): Promise<void>;
   renameLocalEntry(from: string, to: string): Promise<void>;
   removeLocalEntry(path: string, kind: FileEntry['kind']): Promise<void>;
+  readLocalFile(path: string): Promise<LocalFileContent>;
+  writeLocalFile(path: string, text: string, expectedMtimeMs: number, overwrite?: boolean): Promise<LocalFileStamp>;
   /** Open an SFTP connection to an SSH target, starting at `cwd` when given. */
   sftpOpen(target: string, cwd?: string): Promise<SftpSessionInfo>;
   sftpList(sessionId: string, path?: string): Promise<DirectoryListing>;
@@ -500,6 +584,8 @@ export interface TerminalApi {
   sftpRemove(sessionId: string, path: string, kind: FileEntry['kind']): Promise<void>;
   sftpUpload(sessionId: string, localPath: string, remoteDir: string): Promise<void>;
   sftpDownload(sessionId: string, remotePath: string, localDir: string, kind: FileEntry['kind']): Promise<void>;
+  sftpReadFile(sessionId: string, path: string): Promise<RemoteFileContent>;
+  sftpWriteFile(sessionId: string, path: string, text: string, opened: string, overwrite?: boolean): Promise<RemoteFileStamp>;
   /** Answer a password/passphrase prompt, or accept a host key with `yes`. */
   sftpAnswerPrompt(sessionId: string, answer: string): Promise<void>;
   sftpClose(sessionId: string): Promise<void>;

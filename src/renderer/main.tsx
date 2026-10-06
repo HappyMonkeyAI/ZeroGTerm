@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PaneLinkSnapshot, PaneLinkState, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -87,6 +87,12 @@ import {
   type Theme
 } from './settings';
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
+import { ipcMessage } from './ipc-message';
+import { EditorHost, type EditorCloser, type EditorMode } from './editor-overlay';
+import { localBackend, remoteBackend, type EditorBackend } from './editor-backend';
+import { canCycle, cycleSlot, resolveVisible, SPLIT_SLOTS } from './pane-selection';
+import { buttonName, buttonTitle, configuredButtons, type PaneButton } from './pane-buttons';
+import { EMPTY_HOST_LABELS, labelFor, withLabel } from './host-labels';
 import { SESSION_TABS, dialogCopy, isSessionDialogKind, nextSessionTab, type SessionDialogKind } from './session-dialog';
 import {
   SPLIT_BUTTONS,
@@ -120,20 +126,6 @@ const PROMPT_BUFFER_CHARS = 512;
  */
 const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
 
-/**
- * The message a main-process error actually carries.
- *
- * Electron wraps a rejected ipcMain handler as "Error invoking remote method
- * 'channel': Error: …", which buries a sentence written for the user behind two
- * layers of plumbing they have no use for. The main process takes trouble over
- * those sentences — "Port 3000 is already shared from build.example.com", "Could
- * not reach http://…/v1/chat/completions. Is the server running?" — and they are
- * worth showing as written.
- */
-function ipcMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:Error|TypeError):\s*/, '');
-}
 
 /** A stored pane as the restore planner wants it. */
 function memberDescriptor(member: StoredWorkspaceMember): SessionDescriptor {
@@ -833,6 +825,7 @@ function PaneBody({
   open,
   ratio,
   browser,
+  dock,
   onRatio,
   children
 }: {
@@ -840,6 +833,11 @@ function PaneBody({
   /** The share of the pane's width the terminal keeps, as a percentage. */
   ratio: number;
   browser: React.ReactNode;
+  /**
+   * Set while an editor is docked here: the side shows an empty slot for it to
+   * draw into, handed back through this callback, instead of the browser.
+   */
+  dock?: ((element: HTMLElement | null) => void) | null;
   onRatio: (ratio: number) => void;
   children: React.ReactNode;
 }) {
@@ -860,7 +858,7 @@ function PaneBody({
           <ResizeHandle
             orientation="vertical"
             className="pane-resizer pane-browser-resizer"
-            label="Directory browser split"
+            label={dock ? 'Editor split' : 'Directory browser split'}
             valuePercent={shown}
             style={{ left: `calc((100% - 1px) * ${shown / 100} + 0.5px)` }}
             onDrag={(position) => {
@@ -875,7 +873,7 @@ function PaneBody({
             onNudge={(direction) => onRatio(clamp(shown + direction * 2))}
             onReset={() => onRatio(DEFAULT_BROWSER_RATIO)}
           />
-          {browser}
+          {dock ? <div className="pane-dock" ref={dock} /> : browser}
         </>
       ) : null}
     </div>
@@ -983,6 +981,8 @@ function App() {
   ]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(() => workspaces[0]?.id ?? '');
   const [status, setStatus] = useState('Ready');
+  const [paneLinks, setPaneLinks] = useState<PaneLinkSnapshot>({ agents: [], links: [] });
+  const [linkMenuFor, setLinkMenuFor] = useState<string | null>(null);
   const [mcpStatus, setMcpStatus] = useState<McpControlStatus>({ state: 'disabled', capabilities: [] });
   const [mcpExecutions, setMcpExecutions] = useState<McpExecutionRequest[]>([]);
   const [mcpInfo, setMcpInfo] = useState<{ endpoint: string; token: string } | null>(null);
@@ -1003,6 +1003,14 @@ function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // The editors that are open, by the pane each was opened from, and how each is
+  // showing: over the panes or docked beside its terminal. Each one's own close
+  // request is kept so Escape and closing the pane ask about unsaved text the
+  // same way; and a docked editor draws into a slot its pane provides.
+  const [editors, setEditors] = useState<Record<string, EditorMode>>({});
+  const editorClosers = useRef(new Map<string, EditorCloser>());
+  const [editorDocks, setEditorDocks] = useState<Record<string, HTMLElement | null>>({});
+  const overlayEditorId = Object.keys(editors).find((id) => editors[id] === 'overlay');
   // The chords in force. Everywhere the interface names one it asks this,
   // because a chord written into a tooltip becomes a lie the moment the user
   // moves that shortcut in Settings.
@@ -1023,6 +1031,10 @@ function App() {
   const [visitedWorkspaces, setVisitedWorkspaces] = useState<string[]>([]);
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
+  // Remembered label per host, and whether the user has typed in the label box
+  // since the dialog opened: a label they are typing is never overwritten.
+  const [hostLabels, setHostLabels] = useState(EMPTY_HOST_LABELS);
+  const sshNameTouched = useRef(false);
   const [sshTarget, setSshTarget] = useState('');
   const [suggest, setSuggest] = useState<SuggestPhase | null>(null);
   const [aiKey, setAiKey] = useState<SpeechKeyState>({ status: 'idle', stored: false, encryptionAvailable: true, sessionOnly: false });
@@ -1123,6 +1135,11 @@ function App() {
     void api()?.appVersion?.()
       .then((version) => setAppVersion(formatVersion(version)))
       .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const currentApi = api();
+    void currentApi?.listPaneLinks?.().then(setPaneLinks).catch(() => undefined);
+    return currentApi?.onPaneLinks?.(setPaneLinks);
   }, []);
   useEffect(() => {
     const currentApi = api();
@@ -1496,6 +1513,17 @@ function App() {
     setWorkspaces((current) => reconcileWorkspaces(current, sessions));
   }, [sessions, sessionsLoading, workspacesLoaded]);
 
+  // An editor belongs to a pane. When the session behind it ends on its own —
+  // the host dropped, the shell exited — there is nothing left to dock it to, and
+  // an editor that outlived it would sit over the panes pointing at nothing.
+  useEffect(() => {
+    if (sessionsLoading) return;
+    setEditors((current) => {
+      const live = Object.keys(current).filter((id) => sessions.some((session) => session.id === id));
+      return live.length === Object.keys(current).length ? current : Object.fromEntries(live.map((id) => [id, current[id]]));
+    });
+  }, [sessions, sessionsLoading]);
+
   /**
    * Read the stored workspaces back, once, before anything can overwrite them.
    *
@@ -1613,6 +1641,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    api()?.loadHostLabels?.().then(setHostLabels).catch(() => {
+      // A label that cannot be remembered is only a label typed again.
+    });
+  }, []);
+
+  useEffect(() => {
     if (!forwardsLoaded) return;
     const currentApi = api();
     if (!currentApi?.saveForwards) return;
@@ -1710,6 +1744,7 @@ function App() {
         }
         const target = topDismissTarget({
           help: helpOpen,
+          editor: Boolean(overlayEditorId),
           transfer: transferOpen,
           settings: settingsOpen,
           voiceReview: Boolean(voiceReview),
@@ -1722,6 +1757,7 @@ function App() {
         if (!target) return;
         event.preventDefault();
         if (target === 'help') setHelpOpen(false);
+        if (target === 'editor' && overlayEditorId) editorClosers.current.get(overlayEditorId)?.();
         if (target === 'transfer') setTransferOpen(false);
         if (target === 'settings') setSettingsOpen(false);
         if (target === 'voiceReview') closeVoiceReview();
@@ -1790,12 +1826,13 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, overlayEditorId, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
   const proceedPhrase = resolveProceedPhrase(settings.ai);
   const aiCommand = resolveAiCommand(settings.ai);
+  const customButtons = configuredButtons(settings.ai.customButtons);
   // The host the transfer panel would talk to, and why the button is or is not
   // offered. Both come from the session the user is actually working in.
   const transferTarget = sftpTargetForSession(active);
@@ -1843,8 +1880,64 @@ function App() {
   // breadcrumb and sidebar name one session while keystrokes go to another.
   const stackedSessionId =
     paneSessions.find((session) => session.id === active?.id)?.id ?? paneSessions[0]?.id;
+  // Local files go straight to the main process; an SSH pane's go over the
+  // connection its browser already opened.
+  const editorBackendFor = (session: SessionInfo): EditorBackend => {
+    const bridge = api() as TerminalApi;
+    return session.kind === 'ssh'
+      ? remoteBackend(bridge, (run) => listingSource.withHandle(session, run))
+      : localBackend(bridge);
+  };
+  const openEditor = (session: SessionInfo) => setEditors((current) => ({ ...current, [session.id]: 'overlay' }));
+  const setEditorMode = (sessionId: string, mode: EditorMode) =>
+    setEditors((current) => (current[sessionId] ? { ...current, [sessionId]: mode } : current));
+  const closeEditor = (sessionId: string) => {
+    setEditors((current) => {
+      const { [sessionId]: _closed, ...rest } = current;
+      return rest;
+    });
+    focusTerminal(sessionId);
+  };
+  /** The slot a pane offers a docked editor, kept only when it actually changes. */
+  const setEditorDock = useCallback((sessionId: string, element: HTMLElement | null) => {
+    setEditorDocks((current) => (current[sessionId] === element ? current : { ...current, [sessionId]: element }));
+  }, []);
+  // One callback per pane, kept for as long as the pane lives. A fresh arrow each
+  // render would be called with null and then the element again every time, and
+  // each of those is a state update — a render loop.
+  const dockRefs = useRef(new Map<string, (element: HTMLElement | null) => void>());
+  const dockRefFor = (sessionId: string) => {
+    let callback = dockRefs.current.get(sessionId);
+    if (!callback) {
+      callback = (element) => setEditorDock(sessionId, element);
+      dockRefs.current.set(sessionId, callback);
+    }
+    return callback;
+  };
+  const registerEditorCloser = useCallback((sessionId: string, closer: EditorCloser | null) => {
+    if (closer) editorClosers.current.set(sessionId, closer);
+    else editorClosers.current.delete(sessionId);
+  }, []);
+  // Only a two-pane split has hidden panes to choose between: the grid shows up
+  // to four, and the stack shows one.
+  const choosesPanes = layout === 'split-v' || layout === 'split-h';
+  const paneIds = paneSessions.map((session) => session.id);
+  const visibleIds = choosesPanes ? resolveVisible(paneIds, view.visiblePanes, SPLIT_SLOTS) : null;
   const isPaneVisible = (session: SessionInfo, index: number) =>
-    layout === 'stack' ? session.id === stackedSessionId : index < paneCount;
+    layout === 'stack' ? session.id === stackedSessionId : visibleIds ? visibleIds.includes(session.id) : index < paneCount;
+
+  /** Swap the pane in one slot for the next or previous one the other slot is not showing. */
+  const cyclePaneSlot = (sessionId: string, direction: -1 | 1) => {
+    if (!visibleIds) return;
+    const next = cycleSlot(paneIds, visibleIds, visibleIds.indexOf(sessionId), direction);
+    patchView({ visiblePanes: next });
+    // The pane that came in is the one the user is about to use.
+    const incoming = paneSessions.find((session) => session.id === next[visibleIds.indexOf(sessionId)]);
+    if (incoming) {
+      setActive(incoming);
+      focusTerminal(incoming.id);
+    }
+  };
 
   useEffect(() => {
     // Selecting a local terminal takes the panel's host away from under it.
@@ -1869,7 +1962,7 @@ function App() {
       // A maximized pane is effectively single-pane: follow the selection
       // rather than leaving the chosen terminal off screen.
       setMaximizedSessionId(session.id);
-    } else if (index >= paneCount && layout !== 'stack') {
+    } else if (index >= 0 && layout !== 'stack' && !isPaneVisible(session, index)) {
       // The current split does not render this pane; widen so it is visible.
       setLayout('grid');
     }
@@ -1976,7 +2069,20 @@ function App() {
 
   const createSsh = async (event: React.FormEvent) => {
     event.preventDefault();
-    await connectSsh(sshTarget, sshName);
+    const session = await connectSsh(sshTarget, sshName);
+    if (!session) return;
+    const next = withLabel(hostLabels, sshTarget, sshName);
+    if (next === hostLabels) return;
+    setHostLabels(next);
+    api()?.saveHostLabels?.(next).catch(() => {
+      // Remembering a label must never interrupt the terminals.
+    });
+  };
+
+  /** Offer the label this host last had, unless the user has started typing one. */
+  const changeSshTarget = (value: string) => {
+    setSshTarget(value);
+    if (!sshNameTouched.current) setSshName(labelFor(hostLabels, value) ?? '');
   };
 
   /**
@@ -2822,7 +2928,11 @@ function App() {
     setLocalName(nextTerminalName(activeWorkspace?.name ?? 'term', workspaceSessions));
     setSelectedBackend(resolveDefaultBackend(settings.sessions.defaultBackend, localBackends));
     setWslDistribution(settings.sessions.defaultWslDistribution);
-    if (options?.sshTarget !== undefined) setSshTarget(options.sshTarget);
+    sshNameTouched.current = false;
+    if (options?.sshTarget !== undefined) {
+      setSshTarget(options.sshTarget);
+      setSshName(labelFor(hostLabels, options.sshTarget) ?? '');
+    }
     setModal(kind);
   };
 
@@ -3312,6 +3422,153 @@ function App() {
     focusTerminal(session.id);
   };
 
+  /**
+   * Type one of the user's own buttons into a pane, Enter included.
+   *
+   * Sent exactly as written, and the status line says what went, for the same
+   * reason as the other two: ZeroG cannot tell what the pane is waiting for.
+   */
+  const sendCustomButton = (session: SessionInfo, button: PaneButton) => {
+    const currentApi = api();
+    if (!currentApi) return;
+    currentApi.write(session.id, `${button.command}
+`);
+    setStatus(`Sent "${button.command}" to ${session.name}`);
+    focusTerminal(session.id);
+  };
+
+  const agentFor = (sessionId: string) => paneLinks.agents.find((agent) => agent.sessionId === sessionId);
+  /** The live link for a pane, or else the ended one whose reason is still worth reading. */
+  const linkFor = (sessionId: string) => {
+    const mine = paneLinks.links.filter((link) => link.a === sessionId || link.b === sessionId);
+    return mine.find((link) => link.status !== 'broken') ?? mine[0];
+  };
+
+  /**
+   * Launch the AI command in a pane with ZeroG's hooks attached, so the pane's
+   * finished replies can be relayed to another pane. The main process refuses
+   * SSH and WSL panes and says why.
+   */
+  const launchLinkedAgent = async (session: SessionInfo) => {
+    const currentApi = api();
+    if (!currentApi) return;
+    try {
+      await currentApi.launchLinkedAgent(session.id, resolveAiCommand(settings.ai));
+      setStatus(`Started a linked agent in ${session.name}`);
+      focusTerminal(session.id);
+    } catch (error) {
+      setStatus(ipcMessage(error));
+    }
+  };
+
+  const linkPanes = async (from: SessionInfo, to: SessionInfo) => {
+    setLinkMenuFor(null);
+    try {
+      await api()?.linkPanes(from.id, to.id);
+      setStatus(`Linked ${from.name} with ${to.name}. Prompt either agent; its reply goes to the other.`);
+    } catch (error) {
+      setStatus(ipcMessage(error));
+    }
+  };
+
+  const relayLastReply = (link: PaneLinkState, fromSessionId: string) => {
+    void api()?.relayLastReply(link.id, fromSessionId).then(() => setStatus('Relayed the last reply')).catch((error) => setStatus(ipcMessage(error)));
+  };
+
+  const unlinkPanes = (link: PaneLinkState) => {
+    void api()?.unlinkPanes(link.id).then(() => setStatus('Link removed')).catch((error) => setStatus(ipcMessage(error)));
+  };
+
+  const resumePaneLink = (link: PaneLinkState) => {
+    void api()?.resumePaneLink(link.id).then(() => setStatus('Link resumed')).catch((error) => setStatus(ipcMessage(error)));
+  };
+
+  const renderLinkButton = (paneSession: SessionInfo) => {
+    const agent = agentFor(paneSession.id);
+    const link = linkFor(paneSession.id);
+    const linked = Boolean(link && link.status !== 'broken');
+    const canLaunch = paneSession.kind === 'local' && paneSession.backend !== 'wsl';
+    const partners = paneLinks.agents.filter((candidate) => candidate.sessionId !== paneSession.id && !candidate.linkId);
+    let title = canLaunch
+      ? `Start a linked agent: runs "${aiCommand}" with ZeroG hooks so its replies can be relayed to another pane`
+      : 'Linked agents run in local panes only (not SSH or WSL)';
+    if (agent && !linked) title = 'Link this agent with another linked agent';
+    if (linked) title = 'This pane is linked';
+    return (
+      <span className="pane-link-wrap">
+        <button
+          type="button"
+          className={linked ? 'pane-link active' : agent ? 'pane-link ready' : 'pane-link'}
+          onClick={() => {
+            if (!agent) void launchLinkedAgent(paneSession);
+            else setLinkMenuFor(linkMenuFor === paneSession.id ? null : paneSession.id);
+          }}
+          disabled={linked || (!agent && !canLaunch)}
+          title={title}
+          aria-label={agent ? `Link ${paneSession.name} with another agent` : `Start a linked agent in ${paneSession.name}`}
+          aria-haspopup={agent ? 'menu' : undefined}
+          aria-expanded={agent ? linkMenuFor === paneSession.id : undefined}
+        >
+          <Icon name="link" />
+        </button>
+        {linkMenuFor === paneSession.id && agent && !linked && (
+          <div className="pane-link-menu" role="menu">
+            {partners.length === 0 && <div className="pane-link-empty">Start a linked agent in another pane first.</div>}
+            {partners.map((partner) => {
+              const partnerSession = sessions.find((candidate) => candidate.id === partner.sessionId);
+              return (
+                <button
+                  type="button"
+                  role="menuitem"
+                  key={partner.sessionId}
+                  disabled={!partnerSession}
+                  onClick={() => partnerSession && void linkPanes(paneSession, partnerSession)}
+                >
+                  Link with {partner.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </span>
+    );
+  };
+
+  const renderLinkBar = (paneSession: SessionInfo) => {
+    const link = linkFor(paneSession.id);
+    if (!link) return null;
+    const partnerId = link.a === paneSession.id ? link.b : link.a;
+    const partnerName = sessions.find((candidate) => candidate.id === partnerId)?.name ?? 'another pane';
+    const waiting = agentFor(paneSession.id)?.needsAttention;
+    const waitingName = link.waitingOn ? (sessions.find((candidate) => candidate.id === link.waitingOn)?.name ?? 'the other pane') : null;
+    let text = `Linked with ${partnerName} · ${link.turns}/${link.cap} relays`;
+    if (link.status === 'active') {
+      text += waitingName ? ` · waiting for ${waitingName} to reply` : ' · relays start when either agent finishes a reply';
+    }
+    if (link.status === 'paused') text = `Link paused: ${link.reason ?? 'stopped'}`;
+    if (link.status === 'broken') text = `Link ended: ${link.reason ?? 'stopped'}`;
+    if (waiting && link.status === 'active') text += ' · waiting for you';
+    return (
+      <div className={`pane-link-bar ${link.status}`} role="status">
+        <Icon name="link" />
+        <span className="pane-link-text">{text}</span>
+        {link.status !== 'broken' && !link.waitingOn && agentFor(paneSession.id)?.hasReply && (
+          <button type="button" onClick={() => relayLastReply(link, paneSession.id)} title="Send this agent's most recent reply to the other pane now">
+            Send last reply
+          </button>
+        )}
+        {link.status === 'paused' && (
+          <button type="button" onClick={() => resumePaneLink(link)}>
+            Resume
+          </button>
+        )}
+        <button type="button" onClick={() => unlinkPanes(link)}>
+          {link.status === 'broken' ? 'Dismiss' : 'Break link'}
+        </button>
+      </div>
+    );
+  };
+
   const finishSpeechTest = async () => {
     const recorder = speechTestRecorderRef.current;
     if (!recorder) return;
@@ -3397,6 +3654,10 @@ function App() {
   }, []);
 
   const closePane = async (session: SessionInfo) => {
+    // An editor open on this pane may hold text that is not saved. Ask, and if
+    // the answer is to keep it, the pane stays too.
+    const editorCloser = editorClosers.current.get(session.id);
+    if (editorCloser && !editorCloser()) return;
     if (voice.sessionId === session.id) cancelVoice();
     // The pane is going, so its listing state should not outlive it. The
     // transfer connection is left alone: the panel may be sharing it, and the
@@ -3915,6 +4176,9 @@ function App() {
             )}
             {allPanes.map(({ session: paneSession, index, dormant }) => {
               const paneVoice = voice.sessionId === paneSession.id && voice.status !== 'idle' ? voice.status : null;
+              // Which slot of a two-pane split this pane sits in, or -1 when it
+              // is not one that is being chosen between.
+              const slotOrder = visibleIds?.indexOf(paneSession.id) ?? -1;
               // Null where ZeroG cannot tell how to read a path for this pane, in
               // which case the button is offered disabled rather than hidden: the
               // reason is more use than a missing control.
@@ -3925,6 +4189,10 @@ function App() {
                 <article
                   className={`pane terminal-pane ${dormant ? 'dormant-pane' : ''} ${!dormant && focusedSessionId === paneSession.id ? 'focused' : ''} ${!dormant && maximizedPaneId === paneSession.id ? 'maximized-pane' : ''} ${dormant || isPaneVisible(paneSession, index) ? '' : 'overflow-pane'}`}
                   key={paneSession.id}
+                  // Auto-placement honours `order`, so a slot's pane lands in its
+                  // own cell without the panes being moved in the DOM — moving one
+                  // would risk its terminal.
+                  style={slotOrder >= 0 ? { order: slotOrder } : undefined}
                   onMouseDown={() => setFocusedSessionId(paneSession.id)}
                 >
                   <div className="pane-title">
@@ -3942,18 +4210,42 @@ function App() {
                           </button>
                         </>
                       )}
+                      {visibleIds && !maximizedPaneId && canCycle(paneIds, SPLIT_SLOTS) && !dormant && (
+                        <>
+                          <button
+                            type="button"
+                            className="pane-nav"
+                            onClick={() => cyclePaneSlot(paneSession.id, -1)}
+                            title="Show the previous pane here"
+                            aria-label={`Show the previous pane in place of ${paneSession.name}`}
+                          >
+                            <Icon name="chevron-left" />
+                          </button>
+                          <button
+                            type="button"
+                            className="pane-nav"
+                            onClick={() => cyclePaneSlot(paneSession.id, 1)}
+                            title="Show the next pane here"
+                            aria-label={`Show the next pane in place of ${paneSession.name}`}
+                          >
+                            <Icon name="chevron-right" />
+                          </button>
+                        </>
+                      )}
                       {busy ? 'connecting…' : paneVoice ? `${paneVoice}…` : paneSession.kind === 'ssh' ? 'ssh' : 'bash'}
                       <button
                         type="button"
                         className={browserOpen ? 'pane-browse active' : 'pane-browse'}
                         onClick={() => toggleBrowser(paneSession.id)}
-                        disabled={!browsePathKind}
+                        disabled={!browsePathKind || editors[paneSession.id] === 'docked'}
                         title={
-                          browsePathKind
-                            ? browserOpen
-                              ? 'Hide the directory browser'
-                              : 'Browse directories'
-                            : 'ZeroG cannot tell what kind of paths this pane uses'
+                          editors[paneSession.id] === 'docked'
+                            ? 'The editor is docked here; close it to browse directories'
+                            : browsePathKind
+                              ? browserOpen
+                                ? 'Hide the directory browser'
+                                : 'Browse directories'
+                              : 'ZeroG cannot tell what kind of paths this pane uses'
                         }
                         aria-label={`${browserOpen ? 'Hide' : 'Show'} the directory browser for ${paneSession.name}`}
                         aria-pressed={browserOpen}
@@ -3980,6 +4272,35 @@ function App() {
                       </button>
                       <button
                         type="button"
+                        className="pane-edit"
+                        onClick={() => openEditor(paneSession)}
+                        disabled={!browsePathKind}
+                        title={
+                          browsePathKind
+                            ? paneSession.kind === 'ssh'
+                              ? `Edit a file on ${paneSession.host}`
+                              : 'Edit a file'
+                            : 'ZeroG cannot tell what kind of paths this pane uses'
+                        }
+                        aria-label={`Edit a file from ${paneSession.name}`}
+                      >
+                        <Icon name="file" />
+                      </button>
+                      {renderLinkButton(paneSession)}
+                      {customButtons.map((button) => (
+                        <button
+                          key={button.slot}
+                          type="button"
+                          className="pane-custom"
+                          onClick={() => sendCustomButton(paneSession, button)}
+                          title={buttonTitle(button)}
+                          aria-label={`${buttonName(button)}: send "${button.command}" to ${paneSession.name}`}
+                        >
+                          {button.slot}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
                         className={paneVoice ? `pane-mic ${paneVoice}` : 'pane-mic'}
                         onClick={() => void toggleVoice(paneSession)}
                         disabled={voice.status !== 'idle' && !paneVoice}
@@ -3996,8 +4317,10 @@ function App() {
                       </button>
                     </span>
                   </div>
+                  {renderLinkBar(paneSession)}
                   <PaneBody
-                    open={browserOpen}
+                    open={browserOpen || editors[paneSession.id] === 'docked'}
+                    dock={editors[paneSession.id] === 'docked' ? dockRefFor(paneSession.id) : null}
                     ratio={browserRatioFor(paneSession.id)}
                     onRatio={(ratio) => patchBrowser(paneSession.id, { ratio })}
                     browser={
@@ -4018,6 +4341,7 @@ function App() {
                           question={paneSession.kind === 'ssh' ? sftpQuestion : null}
                           onOpen={(path) => openDirectory(paneSession, path)}
                           onBrowse={(path) => setBrowserPaths((current) => ({ ...current, [paneSession.id]: path }))}
+                          defaultShowHidden={settings.sessions.showHiddenFiles}
                           onClose={() => toggleBrowser(paneSession.id)}
                         />
                       ) : null
@@ -4078,6 +4402,32 @@ function App() {
       })()}
 
       {helpOpen && <HelpPanel version={appVersion} bindings={bindings} onClose={() => setHelpOpen(false)} />}
+
+      {Object.entries(editors).map(([sessionId, mode]) => {
+        const editing = sessions.find((session) => session.id === sessionId);
+        const pathKind = editing ? pathKindFor(editing) : null;
+        if (!editing || !pathKind || !api()) return null;
+        return (
+          <EditorHost
+            // Keyed by pane, so each pane has an editor of its own, and moving
+            // between overlay and docked keeps the file that is open.
+            key={sessionId}
+            session={editing}
+            mode={mode}
+            dock={editorDocks[sessionId] ?? null}
+            onModeChange={(next) => setEditorMode(sessionId, next)}
+            startPath={browserPathFor(editing)}
+            pathKind={pathKind}
+            shellPathFor={(path) => shellPathFor(editing, path) ?? path}
+            list={listerFor(editing)}
+            unanchored={editing.kind === 'ssh'}
+            question={editing.kind === 'ssh' ? sftpQuestion : null}
+            backend={editorBackendFor(editing)}
+            register={(closer) => registerEditorCloser(sessionId, closer)}
+            onClose={() => closeEditor(sessionId)}
+          />
+        );
+      })}
 
       {overview && (
         <div className="overview-layer" role="presentation" {...dismissOverview}>
@@ -4445,14 +4795,21 @@ function App() {
                       <input
                         autoFocus
                         value={sshTarget}
-                        onChange={(event) => setSshTarget(event.target.value)}
+                        onChange={(event) => changeSshTarget(event.target.value)}
                         placeholder="user@server:22"
                         required
                       />
                     </label>
                     <label>
                       Session label <span className="muted-text">optional</span>
-                      <input value={sshName} onChange={(event) => setSshName(event.target.value)} placeholder="server" />
+                      <input
+                        value={sshName}
+                        onChange={(event) => {
+                          sshNameTouched.current = true;
+                          setSshName(event.target.value);
+                        }}
+                        placeholder="server"
+                      />
                     </label>
                   </>
                 )}
@@ -4479,6 +4836,7 @@ function App() {
           api={api() as TerminalApi}
           onClose={() => setTransferOpen(false)}
           backdrop={dismissTransfer}
+          defaultShowHidden={settings.sessions.showHiddenFiles}
         />
       )}
 

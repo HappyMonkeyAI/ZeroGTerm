@@ -704,6 +704,68 @@ describe('directory browser state', () => {
   });
 });
 
+describe('visible panes of a split', () => {
+  it('forgets a pane the workspace no longer holds', () => {
+    const view: WorkspaceView = { ...makeView('split-v'), visiblePanes: ['local:a', 'local:gone'] };
+    expect(reconcileView(view, ['local:a', 'local:b']).visiblePanes).toEqual(['local:a']);
+  });
+
+  it('drops the choice altogether when none of it remains', () => {
+    const view: WorkspaceView = { ...makeView('split-v'), visiblePanes: ['local:x', 'local:y'] };
+    expect(reconcileView(view, ['local:a']).visiblePanes).toBeUndefined();
+  });
+
+  it('returns the same view when every chosen pane still belongs', () => {
+    const view: WorkspaceView = { ...makeView('split-v'), visiblePanes: ['local:a', 'local:b'] };
+    expect(reconcileView(view, ['local:a', 'local:b', 'local:c'])).toBe(view);
+  });
+
+  it('moves onto the id a reconnected session came back with', () => {
+    const workspaces = [
+      workspace('a', 'Workspace', [], { visiblePanes: ['ssh:old', 'local:b'] }, [member('ssh:old', { kind: 'ssh', host: 'build.example.com' })])
+    ];
+    const next = adoptLiveSessions(workspaces, () => 'ssh:new');
+    expect(next[0].view.visiblePanes).toEqual(['ssh:new', 'local:b']);
+  });
+
+  it('survives the store and comes back in slot order', () => {
+    const live = [
+      { ...session('local:a', 'connected'), name: 'a', screenName: 'a' },
+      { ...session('local:b', 'connected'), name: 'b', screenName: 'b' },
+      { ...session('local:c', 'connected'), name: 'c', screenName: 'c' }
+    ];
+    const before = [workspace('a', 'Workspace', ['local:a', 'local:b', 'local:c'], { layout: 'split-v', lastSplit: 'split-v', visiblePanes: ['local:c', 'local:a'] })];
+    const after = fromStoredFile(toStoredFile(before, 'a', live), 'stack');
+    expect(after.workspaces[0].view.visiblePanes).toEqual(['local:c', 'local:a']);
+  });
+
+  it('writes nothing for a workspace that never chose', () => {
+    const before = [workspace('a', 'Workspace', [], { layout: 'split-v', lastSplit: 'split-v' })];
+    expect(toStoredFile(before, 'a', []).workspaces[0].view).not.toHaveProperty('visiblePanes');
+  });
+
+  it('takes only well-formed ids out of the store, at most two', () => {
+    const file: StoredWorkspaceFile = {
+      version: 1,
+      workspaces: [{
+        id: 'ws-1',
+        name: 'Workspace',
+        view: { layout: 'split-v', lastSplit: 'split-v', visiblePanes: ['local:a', 7, '', 'local:a', 'local:b', 'local:c'] as unknown as string[] },
+        members: []
+      }]
+    };
+    expect(fromStoredFile(file, 'stack').workspaces[0].view.visiblePanes).toEqual(['local:a', 'local:b']);
+  });
+
+  it('reports no choice when the store held none', () => {
+    const file: StoredWorkspaceFile = {
+      version: 1,
+      workspaces: [{ id: 'ws-1', name: 'Workspace', view: { layout: 'stack', lastSplit: 'split-v' }, members: [] }]
+    };
+    expect(fromStoredFile(file, 'stack').workspaces[0].view.visiblePanes).toBeUndefined();
+  });
+});
+
 describe('duplicateWorkspace', () => {
   /** Ids that read plainly in an assertion, rather than random ones. */
   function counter() {
