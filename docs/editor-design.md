@@ -1,6 +1,6 @@
 # Built-in text editor: design note (task 5, phase 0)
 
-Status: **proposal, nothing built.** Decisions the user needs to make are at the end.
+Status: **slices 1 (local files, overlay) and 2 (SSH files) are built; slice 3 (dock as a pane) is not.** The decisions at the end were taken as recommended: textarea, 1 MiB cap, local first, in-place writes.
 
 ## Goal
 
