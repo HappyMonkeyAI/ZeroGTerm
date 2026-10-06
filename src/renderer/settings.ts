@@ -84,6 +84,15 @@ export type SessionSettings = {
    */
   splitColumnRatio: number;
   splitRowRatio: number;
+  /**
+   * Show dotfiles in the directory browser and the transfer panel.
+   *
+   * Off by default: a fresh listing of a home directory is mostly dotfiles on
+   * a typical Linux host, which buries what the user actually came to look
+   * at. Both browsers also carry their own per-view checkbox that starts from
+   * this default but does not write back to it.
+   */
+  showHiddenFiles: boolean;
 };
 
 /** One user-defined pane button. A button with no command is not shown. */
@@ -213,7 +222,8 @@ export const DEFAULT_SETTINGS: Settings = {
     startSidebarCollapsed: false,
     sidebarWidth: 238,
     splitColumnRatio: 0.5,
-    splitRowRatio: 0.5
+    splitRowRatio: 0.5,
+    showHiddenFiles: false
   },
   ai: {
     requireApproval: true,
@@ -449,7 +459,8 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       startSidebarCollapsed: pickBoolean(sessions.startSidebarCollapsed, DEFAULT_SETTINGS.sessions.startSidebarCollapsed),
       sidebarWidth: Math.round(pickNumber(sessions.sidebarWidth, SETTING_LIMITS.sidebarWidth, DEFAULT_SETTINGS.sessions.sidebarWidth)),
       splitColumnRatio: pickNumber(sessions.splitColumnRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitColumnRatio),
-      splitRowRatio: pickNumber(sessions.splitRowRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitRowRatio)
+      splitRowRatio: pickNumber(sessions.splitRowRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitRowRatio),
+      showHiddenFiles: pickBoolean(sessions.showHiddenFiles, DEFAULT_SETTINGS.sessions.showHiddenFiles)
     },
     ai: {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),

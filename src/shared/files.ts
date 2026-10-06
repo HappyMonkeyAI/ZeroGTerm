@@ -14,6 +14,18 @@ export function sortEntries(entries: FileEntry[]): FileEntry[] {
   });
 }
 
+/**
+ * Is this entry a dotfile?
+ *
+ * Neither backend reports a platform "hidden" attribute — the SFTP side is a
+ * parsed `ls` line, and Node's `fs.Stats` does not expose the Windows bit
+ * either — so the leading dot, the convention every listed shell already
+ * follows, is what "hidden" means here.
+ */
+export function isHiddenName(name: string): boolean {
+  return name.startsWith('.');
+}
+
 /** Join a remote directory and a child name. Remote paths are always POSIX. */
 export function joinRemote(dir: string, name: string): string {
   if (name.startsWith('/')) return name;

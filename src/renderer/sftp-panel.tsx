@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { DirectoryListing, FileEntry, SessionInfo, SftpPrompt, SftpSessionInfo, TerminalApi } from '../shared/types';
-import { baseName, formatModified, formatSize, joinLocal, joinRemote, parentLocal, parentRemote } from '../shared/files';
+import { baseName, formatModified, formatSize, isHiddenName, joinLocal, joinRemote, parentLocal, parentRemote } from '../shared/files';
 import { Icon } from './icons';
 import { resolveStartPath } from './cwd-tracker';
 import { isNavigable, nextSelection, transferLabel, transferable } from './sftp-view';
@@ -25,7 +25,8 @@ export function SftpPanel({
   target,
   api,
   onClose,
-  backdrop
+  backdrop,
+  defaultShowHidden
 }: {
   session: SessionInfo;
   /** The validated SSH destination, resolved by the caller from the session. */
@@ -33,6 +34,8 @@ export function SftpPanel({
   api: TerminalApi;
   onClose: () => void;
   backdrop: BackdropDismissHandlers;
+  /** The Settings default for the "show hidden files" checkbox below. */
+  defaultShowHidden: boolean;
 }) {
   const [local, setLocal] = useState<DirectoryListing | null>(null);
   const [remote, setRemote] = useState<DirectoryListing | null>(null);
@@ -48,6 +51,11 @@ export function SftpPanel({
   const [creating, setCreating] = useState<Creating | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
+  // One toggle for both sides: a dotfile on the local machine and a dotfile on
+  // the host mean the same thing to whoever is looking, so there is no reason
+  // to make them ask twice. Starts from the Settings default but does not
+  // write back to it — a decision for this transfer, not for every one after.
+  const [showHidden, setShowHidden] = useState(defaultShowHidden);
   const selectionAnchor = useRef<{ local: string | null; remote: string | null }>({ local: null, remote: null });
 
   // The connection id is needed to answer a password prompt, which arrives
@@ -305,6 +313,7 @@ export function SftpPanel({
     const loading = side === 'local' ? busy.local : busy.remote;
     const chosen = singleSelected(side);
     const disabled = side === 'remote' && !connection;
+    const visibleEntries = listing ? (showHidden ? listing.entries : listing.entries.filter((entry) => !isHiddenName(entry.name))) : [];
 
     return (
       <section className={`sftp-pane sftp-pane-${side}`}>
@@ -377,8 +386,8 @@ export function SftpPanel({
             </div>
           ) : loading && !listing ? (
             <div className="sftp-empty"><b>{side === 'remote' && !connection ? 'Connecting…' : 'Loading…'}</b><small>{side === 'remote' ? `Opening SFTP to ${session.host}` : 'Reading the local folder'}</small></div>
-          ) : listing && listing.entries.length ? (
-            listing.entries.map((entry) => (
+          ) : listing && visibleEntries.length ? (
+            visibleEntries.map((entry) => (
               <button
                 type="button"
                 role="option"
@@ -389,7 +398,7 @@ export function SftpPanel({
                   const additive = event.ctrlKey || event.metaKey;
                   const anchor = selectionAnchor.current[side];
                   const range = event.shiftKey && anchor ? anchor : undefined;
-                  const orderedNames = listing?.entries.map((item) => item.name);
+                  const orderedNames = visibleEntries.map((item) => item.name);
                   setSelection((current) => (side === 'local'
                     ? { ...current, local: nextSelection(current.local, entry.name, additive, range, orderedNames) }
                     : { ...current, remote: nextSelection(current.remote, entry.name, additive, range, orderedNames) }));
@@ -409,6 +418,8 @@ export function SftpPanel({
                 <span className="sftp-modified">{formatModified(entry.modified)}</span>
               </button>
             ))
+          ) : listing && listing.entries.length ? (
+            <div className="sftp-empty"><b>Nothing here but hidden files</b><small>Tick "Show hidden" to see them.</small></div>
           ) : (
             <div className="sftp-empty"><b>Empty folder</b><small>Nothing here to transfer.</small></div>
           )}
@@ -436,7 +447,7 @@ export function SftpPanel({
               <Icon name="arrow-down" /> {transferLabel('Download', remoteSelected.length, 'item')}
             </button>
           )}
-          <span className="sftp-count">{listing ? `${listing.entries.length} items` : ''}</span>
+          <span className="sftp-count">{listing ? `${visibleEntries.length} items` : ''}</span>
         </footer>
       </section>
     );
@@ -450,6 +461,10 @@ export function SftpPanel({
             <span className="eyebrow">TRANSFER FILES</span>
             <h2>{session.name} · {session.host}</h2>
           </div>
+          <label className="sftp-hidden-toggle" title="Show files whose name starts with a dot, on both sides">
+            <input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />
+            Show hidden
+          </label>
           <button type="button" className="close-button" onClick={onClose}>Esc</button>
         </div>
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { baseName, formatModified, formatSize, isWindowsPath, joinLocal, joinRemote, parentLocal, parentRemote, sortEntries } from '../src/shared/files';
+import { baseName, formatModified, formatSize, isHiddenName, isWindowsPath, joinLocal, joinRemote, parentLocal, parentRemote, sortEntries } from '../src/shared/files';
 import type { FileEntry } from '../src/shared/types';
 
 const file = (name: string, kind: FileEntry['kind'] = 'file', size = 0): FileEntry => ({ name, kind, size });
@@ -64,5 +64,14 @@ describe('what the panel displays', () => {
     // written for reading, and reformatting it would mean guessing a year.
     expect(formatModified('Aug 18 12:34')).toBe('Aug 18 12:34');
     expect(formatModified(undefined)).toBe('');
+  });
+
+  it('treats a leading dot as hidden, and nothing else', () => {
+    expect(isHiddenName('.bashrc')).toBe(true);
+    expect(isHiddenName('.config')).toBe(true);
+    expect(isHiddenName('notes.txt')).toBe(false);
+    // The self-entries are filtered out before this is ever consulted, but a
+    // literal dot must not be mistaken for a name that merely starts with one.
+    expect(isHiddenName('.')).toBe(true);
   });
 });

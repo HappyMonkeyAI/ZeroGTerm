@@ -151,6 +151,12 @@ describe('parseSettings', () => {
     expect(parseSettings({ sessions: { sidebarWidth: 240.6 } }).sessions.sidebarWidth).toBe(241);
   });
 
+  it('defaults hidden files to off, and never reads a non-boolean as permission to show them', () => {
+    expect(DEFAULT_SETTINGS.sessions.showHiddenFiles).toBe(false);
+    expect(parseSettings({ sessions: { showHiddenFiles: 'yes' } }).sessions.showHiddenFiles).toBe(false);
+    expect(parseSettings({ sessions: { showHiddenFiles: true } }).sessions.showHiddenFiles).toBe(true);
+  });
+
   it('adopts the theme chosen before settings existed', () => {
     expect(parseSettings(undefined, 'light').appearance.theme).toBe('light');
     // An explicit stored theme wins over the legacy key.

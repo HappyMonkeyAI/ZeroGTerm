@@ -221,6 +221,10 @@ export function EditorHost({
       onClose={docked ? () => setFilesOpen(false) : requestClose}
       onOpenFile={openFile}
       openFile={loaded?.path ?? null}
+      // Not the Settings default: the files people come here to edit are the ones
+      // that start with a dot — `.env` above all. The browser's own checkbox
+      // still hides them.
+      defaultShowHidden
     />
   );
 
