@@ -154,5 +154,5 @@ Ideas from day-to-day use, written as bounded task packets (format adapted from 
 | 1 | Ready for review | Not reviewed | `src/renderer/context-menu.tsx` | typecheck passes; tests not run | not run | committed `5ef839e`; confirm in app |
 | 2 | Ready for review | Not reviewed | `src/main/host-label-store.ts`, `src/renderer/host-labels.ts`, `src/renderer/main.tsx`, IPC/types, `tests/host-label-store.test.ts` | typecheck passes; 55 files / 1046 tests pass | not run | committed `4bc6330`; key is the bare lowercased host, saved only from the SSH dialog |
 | 3 | Ready for review | Not reviewed | `src/renderer/settings.ts`, `settings-panel.tsx`, `main.tsx`, `styles.css`, new `pane-buttons.ts`, `tests/settings.test.ts`, `tests/pane-buttons.test.ts` | typecheck passes; 56 files / 1059 tests pass | not run | committed; existing proceed/AI buttons kept separate (AI command is also the linked-agent launcher) |
-| 4 | Not started | | | | | |
+| 4 | Ready for review | Not reviewed | new `src/renderer/pane-selection.ts`, `workspace-view.ts`, `workspace-store.ts`, `main.tsx`, `src/shared/types.ts`, tests | typecheck passes; 57 files / 1082 tests pass | not run | committed; selecting a hidden pane in the sidebar still widens to the grid (unchanged) |
 | 5 | Not started (phase 0 first) | | | | | |
