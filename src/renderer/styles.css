@@ -3754,3 +3754,217 @@ input:focus-visible {
 :root[data-theme='light'] .editor-docked { background: #f7f8fa; border-color: #dde1e8; }
 :root[data-theme='light'] .editor-dock-head,
 :root[data-theme='light'] .editor-files-docked { border-color: #dde1e8; }
+
+/* Colour themes. Each only overrides the tokens; the terminal palettes that
+   go with them are in themes.ts. */
+
+:root[data-theme='dracula'] {
+  --surface-0: #282a36;
+  --surface-1: #2d2f3d;
+  --surface-2: #343746;
+  --surface-3: #3b3e50;
+  --surface-4: #44475a;
+  --line-1: #3b3e50;
+  --line-2: #44475a;
+  --line-3: #565a75;
+  --text-1: #f8f8f2;
+  --text-2: #b6b9d1;
+  --text-3: #8f98c4;
+  --text-4: #6272a4;
+  --icon: #d3d6ea;
+  --blue: #bd93f9;
+  --blue-rgb: 189, 147, 249;
+  --green: #50fa7b;
+  --green-rgb: 80, 250, 123;
+  --yellow: #f1fa8c;
+  --yellow-rgb: 241, 250, 140;
+  --red: #ff5555;
+  --red-rgb: 255, 85, 85;
+  --cyan: #8be9fd;
+  --cyan-rgb: 139, 233, 253;
+  --teal: #69e8c6;
+  --teal-rgb: 105, 232, 198;
+}
+
+:root[data-theme='nord'] {
+  --surface-0: #2e3440;
+  --surface-1: #333a47;
+  --surface-2: #3b4252;
+  --surface-3: #434c5e;
+  --surface-4: #4c566a;
+  --line-1: #3b4252;
+  --line-2: #4c566a;
+  --line-3: #5a657a;
+  --text-1: #e5e9f0;
+  --text-2: #b4bccb;
+  --text-3: #8d96a9;
+  --text-4: #6b7589;
+  --icon: #d8dee9;
+  --blue: #88c0d0;
+  --blue-rgb: 136, 192, 208;
+  --green: #a3be8c;
+  --green-rgb: 163, 190, 140;
+  --yellow: #ebcb8b;
+  --yellow-rgb: 235, 203, 139;
+  --red: #d4767f;
+  --red-rgb: 212, 118, 127;
+  --cyan: #8fbcbb;
+  --cyan-rgb: 143, 188, 187;
+  --teal: #a3d1c8;
+  --teal-rgb: 163, 209, 200;
+}
+
+:root[data-theme='solarized-dark'] {
+  --surface-0: #002b36;
+  --surface-1: #00323e;
+  --surface-2: #073642;
+  --surface-3: #0d4252;
+  --surface-4: #175566;
+  --line-1: #0f4a5a;
+  --line-2: #1c5b6c;
+  --line-3: #2b6f80;
+  --text-1: #93a1a1;
+  --text-2: #839496;
+  --text-3: #6c8187;
+  --text-4: #586e75;
+  --icon: #b4c0c0;
+  --blue: #268bd2;
+  --blue-rgb: 38, 139, 210;
+  --green: #859900;
+  --green-rgb: 133, 153, 0;
+  --yellow: #b58900;
+  --yellow-rgb: 181, 137, 0;
+  --red: #dc322f;
+  --red-rgb: 220, 50, 47;
+  --cyan: #2aa198;
+  --cyan-rgb: 42, 161, 152;
+  --teal: #2aa198;
+  --teal-rgb: 42, 161, 152;
+}
+
+:root[data-theme='monokai'] {
+  --surface-0: #272822;
+  --surface-1: #2d2e27;
+  --surface-2: #34352c;
+  --surface-3: #3e3d32;
+  --surface-4: #49483e;
+  --line-1: #3e3d32;
+  --line-2: #49483e;
+  --line-3: #5c5b4d;
+  --text-1: #f8f8f2;
+  --text-2: #bdbdae;
+  --text-3: #90907f;
+  --text-4: #75715e;
+  --icon: #d8d8cc;
+  --blue: #66d9ef;
+  --blue-rgb: 102, 217, 239;
+  --green: #a6e22e;
+  --green-rgb: 166, 226, 46;
+  --yellow: #e6db74;
+  --yellow-rgb: 230, 219, 116;
+  --red: #f92672;
+  --red-rgb: 249, 38, 114;
+  --cyan: #a1efe4;
+  --cyan-rgb: 161, 239, 228;
+  --teal: #7fe0d4;
+  --teal-rgb: 127, 224, 212;
+}
+
+:root[data-theme='one-dark'] {
+  --surface-0: #282c34;
+  --surface-1: #2c313a;
+  --surface-2: #313640;
+  --surface-3: #383e49;
+  --surface-4: #3e4451;
+  --line-1: #353b45;
+  --line-2: #3e4451;
+  --line-3: #4b5263;
+  --text-1: #c8ccd4;
+  --text-2: #9da5b4;
+  --text-3: #7f848e;
+  --text-4: #5c6370;
+  --icon: #bcc2cd;
+  --blue: #61afef;
+  --blue-rgb: 97, 175, 239;
+  --green: #98c379;
+  --green-rgb: 152, 195, 121;
+  --yellow: #e5c07b;
+  --yellow-rgb: 229, 192, 123;
+  --red: #e06c75;
+  --red-rgb: 224, 108, 117;
+  --cyan: #56b6c2;
+  --cyan-rgb: 86, 182, 194;
+  --teal: #6cc4b8;
+  --teal-rgb: 108, 196, 184;
+}
+
+:root[data-theme='synthwave'] {
+  --surface-0: #262335;
+  --surface-1: #2a2640;
+  --surface-2: #2d2842;
+  --surface-3: #34294f;
+  --surface-4: #3b3060;
+  --line-1: #34294f;
+  --line-2: #433866;
+  --line-3: #5a4b88;
+  --text-1: #f4eefc;
+  --text-2: #bcb2d6;
+  --text-3: #9486b8;
+  --text-4: #6f6194;
+  --icon: #dcd2f2;
+  --blue: #ff7edb;
+  --blue-rgb: 255, 126, 219;
+  --green: #72f1b8;
+  --green-rgb: 114, 241, 184;
+  --yellow: #fede5d;
+  --yellow-rgb: 254, 222, 93;
+  --red: #fe4450;
+  --red-rgb: 254, 68, 80;
+  --cyan: #36f9f6;
+  --cyan-rgb: 54, 249, 246;
+  --teal: #03edf9;
+  --teal-rgb: 3, 237, 249;
+}
+
+:root[data-theme='high-contrast'] {
+  --surface-0: #000000;
+  --surface-1: #0a0a0a;
+  --surface-2: #101010;
+  --surface-3: #1c1c1c;
+  --surface-4: #262626;
+  --line-1: #6b6b6b;
+  --line-2: #9a9a9a;
+  --line-3: #cfcfcf;
+  --text-1: #ffffff;
+  --text-2: #ececec;
+  --text-3: #d0d0d0;
+  --text-4: #a8a8a8;
+  --icon: #ffffff;
+  --blue: #6fc3ff;
+  --blue-rgb: 111, 195, 255;
+  --green: #3fff6a;
+  --green-rgb: 63, 255, 106;
+  --yellow: #ffe14d;
+  --yellow-rgb: 255, 225, 77;
+  --red: #ff6b6b;
+  --red-rgb: 255, 107, 107;
+  --cyan: #4de8ff;
+  --cyan-rgb: 77, 232, 255;
+  --teal: #4dffd2;
+  --teal-rgb: 77, 255, 210;
+}
+
+/* High contrast also draws every pane button with a bright outline, since a
+   dim border is the first thing to disappear on a bad screen. */
+:root[data-theme='high-contrast'] .pane-nav,
+:root[data-theme='high-contrast'] .pane-maximize,
+:root[data-theme='high-contrast'] .pane-close,
+:root[data-theme='high-contrast'] .pane-proceed,
+:root[data-theme='high-contrast'] .pane-ai,
+:root[data-theme='high-contrast'] .pane-custom,
+:root[data-theme='high-contrast'] .pane-edit,
+:root[data-theme='high-contrast'] .pane-link,
+:root[data-theme='high-contrast'] .pane-browse,
+:root[data-theme='high-contrast'] .pane-mic {
+  border-color: currentColor;
+}

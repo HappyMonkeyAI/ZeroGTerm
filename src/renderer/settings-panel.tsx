@@ -46,6 +46,7 @@ import {
 } from './speech-models';
 import type { BackdropDismissHandlers } from './backdrop-dismiss';
 import { isLoopbackEndpoint, isSupportedEndpoint, sendsKeyInClear } from './speech-server';
+import { THEME_DEFINITIONS } from './themes';
 import { INTEGRATION_SHELLS, integrationFile, integrationSnippet, type IntegrationShell } from './shell-integration';
 
 export type SettingsPage = SettingsSection;
@@ -776,7 +777,7 @@ export function SettingsPanel({
                 <SelectField<Theme>
                   label="Theme"
                   value={settings.appearance.theme}
-                  options={[{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]}
+                  options={THEME_DEFINITIONS.map((entry) => ({ value: entry.id, label: entry.label }))}
                   onChange={(theme) => onChange('appearance', { theme })}
                 />
                 <SelectField<FontChoice>
