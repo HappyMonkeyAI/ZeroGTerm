@@ -3968,3 +3968,54 @@ input:focus-visible {
 :root[data-theme='high-contrast'] .pane-mic {
   border-color: currentColor;
 }
+
+/* Synthwave: a neon glow on the buttons, in each button's own colour. It is kept
+   to the buttons and their icons; terminal text stays sharp. */
+:root[data-theme='synthwave'] .pane-nav:not(:disabled),
+:root[data-theme='synthwave'] .pane-maximize:not(:disabled),
+:root[data-theme='synthwave'] .pane-close:not(:disabled),
+:root[data-theme='synthwave'] .pane-proceed:not(:disabled),
+:root[data-theme='synthwave'] .pane-ai:not(:disabled),
+:root[data-theme='synthwave'] .pane-custom:not(:disabled),
+:root[data-theme='synthwave'] .pane-edit:not(:disabled),
+:root[data-theme='synthwave'] .pane-link:not(:disabled),
+:root[data-theme='synthwave'] .pane-browse:not(:disabled),
+:root[data-theme='synthwave'] .pane-mic:not(:disabled),
+:root[data-theme='synthwave'] .bar-button:not(:disabled),
+:root[data-theme='synthwave'] .rail-button:not(:disabled) {
+  box-shadow: 0 0 6px color-mix(in srgb, currentColor 40%, transparent);
+}
+
+:root[data-theme='synthwave'] .pane-nav:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-maximize:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-close:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-proceed:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-ai:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-custom:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-edit:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-link:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-browse:hover:not(:disabled),
+:root[data-theme='synthwave'] .pane-mic:hover:not(:disabled),
+:root[data-theme='synthwave'] .bar-button:hover:not(:disabled),
+:root[data-theme='synthwave'] .rail-button:hover:not(:disabled) {
+  box-shadow:
+    0 0 8px color-mix(in srgb, currentColor 65%, transparent),
+    0 0 16px color-mix(in srgb, currentColor 30%, transparent);
+}
+
+:root[data-theme='synthwave'] .pane-nav,
+:root[data-theme='synthwave'] .pane-maximize,
+:root[data-theme='synthwave'] .pane-close,
+:root[data-theme='synthwave'] .pane-proceed,
+:root[data-theme='synthwave'] .pane-ai,
+:root[data-theme='synthwave'] .pane-custom,
+:root[data-theme='synthwave'] .pane-edit,
+:root[data-theme='synthwave'] .pane-link,
+:root[data-theme='synthwave'] .pane-browse,
+:root[data-theme='synthwave'] .pane-mic .icon-svg {
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+:root[data-theme='synthwave'] .pane-custom:not(:disabled) {
+  text-shadow: 0 0 6px currentColor;
+}

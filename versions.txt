@@ -15,3 +15,4 @@ ZeroG Terminal version history
 0.9.1-alpha.1 - Configurable AI command button for launching a preferred CLI agent from each pane
 0.9.2-alpha.1 - Pane link for relaying one agent's reply to another, a built-in text editor for local and SSH files that can dock beside a terminal, ten configurable pane buttons, remembered SSH session labels, a choice of which panes a two-pane split shows, and a fixed workspace rename
 0.9.3-alpha.1 - Nine colour themes (Tokyo Night, Light, Dracula, Nord, Solarized Dark, Monokai, One Dark, Synthwave and High contrast) chosen in Settings, pane buttons that are easier to see at rest, and a release workflow fix for the annotated tag check
+0.9.4-alpha.1 - A neon glow on the buttons in the Synthwave theme
