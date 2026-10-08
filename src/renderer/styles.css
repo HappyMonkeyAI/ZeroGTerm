@@ -1097,10 +1097,30 @@ input:focus-visible {
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 3px;
-  color: #697386;
-  background: transparent;
+  color: #aab3c5;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* The action buttons carry their hover colour at rest too, so "OK, proceed",
+   the AI command and the numbered buttons can be told apart without hovering. */
+.pane-proceed {
+  color: #9ece6a;
+  background: rgba(158, 206, 106, 0.08);
+  border-color: rgba(158, 206, 106, 0.3);
+}
+
+.pane-ai {
+  color: #7aa2f7;
+  background: rgba(122, 162, 247, 0.08);
+  border-color: rgba(122, 162, 247, 0.3);
+}
+
+.pane-custom {
+  color: #e0af68;
+  background: rgba(224, 175, 104, 0.08);
+  border-color: rgba(224, 175, 104, 0.3);
 }
 
 .pane-nav:hover,
@@ -3189,7 +3209,39 @@ input:focus-visible {
 :root[data-theme='light'] .pane-ai,
 :root[data-theme='light'] .pane-custom,
 :root[data-theme='light'] .pane-edit,
-:root[data-theme='light'] .pane-mic { color: #68768a; }
+:root[data-theme='light'] .pane-mic { color: #4a5568; }
+
+:root[data-theme='light'] .pane-nav,
+:root[data-theme='light'] .pane-maximize,
+:root[data-theme='light'] .pane-close,
+:root[data-theme='light'] .pane-proceed,
+:root[data-theme='light'] .pane-ai,
+:root[data-theme='light'] .pane-custom,
+:root[data-theme='light'] .pane-edit,
+:root[data-theme='light'] .pane-link,
+:root[data-theme='light'] .pane-browse,
+:root[data-theme='light'] .pane-mic {
+  background: rgba(37, 48, 68, 0.05);
+  border-color: rgba(37, 48, 68, 0.16);
+}
+
+:root[data-theme='light'] .pane-proceed {
+  color: #16803c;
+  background: rgba(22, 128, 60, 0.08);
+  border-color: rgba(22, 128, 60, 0.35);
+}
+
+:root[data-theme='light'] .pane-ai {
+  color: #2459a6;
+  background: rgba(36, 89, 166, 0.08);
+  border-color: rgba(36, 89, 166, 0.35);
+}
+
+:root[data-theme='light'] .pane-custom {
+  color: #8a5d00;
+  background: rgba(183, 121, 31, 0.1);
+  border-color: rgba(183, 121, 31, 0.4);
+}
 
 :root[data-theme='light'] .pane-nav:hover,
 :root[data-theme='light'] .pane-maximize:hover,
