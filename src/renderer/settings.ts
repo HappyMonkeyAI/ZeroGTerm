@@ -19,8 +19,9 @@ import {
   type SpeechTask
 } from './speech-models';
 import { SHORTCUTS, isChord, type ShortcutOverrides } from './shortcuts';
+import { THEMES, type Theme } from './themes';
 
-export type Theme = 'dark' | 'light';
+export type { Theme } from './themes';
 export type Layout = 'stack' | 'split-v' | 'split-h' | 'grid';
 /** Mirrors LocalShellBackend in shared/types; kept as a value list below too. */
 export type LocalBackend = 'bash' | 'zsh' | 'fish' | 'sh' | 'powershell' | 'pwsh' | 'cmd' | 'wsl';
@@ -392,7 +393,6 @@ function pickCustomButtons(value: unknown): CustomButton[] {
   });
 }
 
-const THEMES: readonly Theme[] = ['dark', 'light'];
 const LAYOUTS: readonly Layout[] = ['stack', 'split-v', 'split-h', 'grid'];
 const BACKENDS: readonly LocalBackend[] = ['bash', 'zsh', 'fish', 'sh', 'powershell', 'pwsh', 'cmd', 'wsl'];
 const CURSOR_STYLES: readonly CursorStyle[] = ['block', 'underline', 'bar'];

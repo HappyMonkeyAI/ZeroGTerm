@@ -86,6 +86,7 @@ import {
   type TerminalSettings,
   type Theme
 } from './settings';
+import { DEFAULT_THEME, THEMES, isLightTheme, terminalPalette, toggledTheme } from './themes';
 import { type AiTestState, type CommandHistoryState, SettingsPanel, type SpeechKeyState, type SpeechTestState } from './settings-panel';
 import { ipcMessage } from './ipc-message';
 import { EditorHost, type EditorCloser, type EditorMode } from './editor-overlay';
@@ -404,7 +405,7 @@ function TerminalView({
       letterSpacing: appearanceRef.current.letterSpacing,
       scrollback: terminalSettingsRef.current.scrollback,
       allowProposedApi: true,
-      theme: terminalTheme(appearanceRef.current.theme),
+      theme: terminalPalette(appearanceRef.current.theme),
       // Send a clicked link to the desktop browser.
       //
       // Without this, xterm's own handler asks for confirmation and then calls
@@ -736,7 +737,7 @@ function TerminalView({
 
     if (applied.theme !== appearance.theme) {
       applied.theme = appearance.theme;
-      terminal.options.theme = terminalTheme(appearance.theme);
+      terminal.options.theme = terminalPalette(appearance.theme);
     }
     if (applied.font !== appearance.font) {
       applied.font = appearance.font;
@@ -970,11 +971,25 @@ function PanePlaceholder({ index, onCreate }: { index: number; onCreate: () => v
   );
 }
 
+const LAST_DARK_THEME_KEY = 'zerog-last-dark-theme';
+
+function readLastDarkTheme(): Theme {
+  try {
+    const stored = window.localStorage.getItem(LAST_DARK_THEME_KEY);
+    return THEMES.find((entry) => entry === stored && !isLightTheme(entry)) ?? DEFAULT_THEME;
+  } catch {
+    return DEFAULT_THEME;
+  }
+}
+
 function App() {
   // Read once, synchronously, so the first paint already uses the stored theme
   // and font instead of flashing the defaults.
   const [settings, setSettings] = useState<Settings>(() => loadSettings(browserStorage()));
   const theme: Theme = settings.appearance.theme;
+  // The dark theme the sun/moon button returns to. Not part of the settings: it
+  // is only a convenience, and losing it just means going back to the default.
+  const lastDarkTheme = useRef<Theme>(readLastDarkTheme());
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>(() => [
     makeWorkspace('Workspace', settings.sessions.defaultLayout)
@@ -1311,6 +1326,14 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    if (!isLightTheme(theme)) {
+      lastDarkTheme.current = theme;
+      try {
+        window.localStorage.setItem(LAST_DARK_THEME_KEY, theme);
+      } catch {
+        // Storage can be blocked; the toggle then falls back to the default.
+      }
+    }
   }, [theme]);
 
   const activeWorkspace = useMemo(
@@ -3805,12 +3828,12 @@ function App() {
           <button
             type="button"
             className="bar-button theme-button"
-            onClick={() => changeSetting('appearance', { theme: theme === 'dark' ? 'light' : 'dark' })}
-            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
-            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
-            aria-pressed={theme === 'light'}
+            onClick={() => changeSetting('appearance', { theme: toggledTheme(theme, lastDarkTheme.current) })}
+            title={`Switch to ${isLightTheme(theme) ? 'a dark' : 'the light'} theme`}
+            aria-label={`Switch to ${isLightTheme(theme) ? 'a dark' : 'the light'} theme`}
+            aria-pressed={isLightTheme(theme)}
           >
-            <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+            <Icon name={isLightTheme(theme) ? 'moon' : 'sun'} />
           </button>
           <button
             type="button"
@@ -5108,32 +5131,6 @@ function highlight(command: string, matched: number[]): React.ReactNode {
   }
   if (run) parts.push(runMatched ? <b key="tail">{run}</b> : run);
   return parts;
-}
-
-function terminalTheme(theme: Theme) {
-  return theme === 'light'
-    ? {
-        background: '#f7f9fc',
-        foreground: '#253044',
-        cursor: '#16803c',
-        selectionBackground: '#cbdcf5',
-        green: '#16803c',
-        yellow: '#a15c00',
-        red: '#c53030',
-        blue: '#2459a6',
-        cyan: '#087f8c'
-      }
-    : {
-        background: '#0a0c10',
-        foreground: '#d8dee9',
-        cursor: '#9ece6a',
-        selectionBackground: '#334155',
-        green: '#9ece6a',
-        yellow: '#e0af68',
-        red: '#f7768e',
-        blue: '#7aa2f7',
-        cyan: '#7dcfff'
-      };
 }
 
 function nextTerminalName(workspaceName: string, sessions: SessionInfo[]): string {
