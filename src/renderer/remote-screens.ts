@@ -1,3 +1,5 @@
+import type { KnownConnection } from '../shared/types';
+
 // Helpers for matching SSH sessions to known connections and for deciding when
 // a freshly attached remote shell is ready for input. Kept out of main.tsx so
 // they can be unit tested — main.tsx calls createRoot at module scope and
@@ -45,4 +47,20 @@ const CSI_SEQUENCE = new RegExp(ESC + '\\[[0-9;?]*[A-Za-z]', 'g');
  */
 export function looksLikeShellPrompt(buffer: string): boolean {
   return /[#$%>]\s*$/.test(buffer.replace(OSC_SEQUENCE, '').replace(CSI_SEQUENCE, ''));
+}
+
+/** Keep the exact account/port chosen by the user; aliases retain SSH config. */
+export function connectionTarget(connection: KnownConnection): string {
+  const host = connection.source ? connection.alias : (connection.hostName ?? connection.alias);
+  return `${connection.user ? connection.user + '@' : ''}${host}${connection.port ? ':' + connection.port : ''}`;
+}
+
+/** Discover only the active destination, including hosts absent from SSH config. */
+export function screenConnection(target: string, known: KnownConnection[]): KnownConnection | undefined {
+  const match = target.match(/^(?:([A-Za-z0-9][A-Za-z0-9._-]*)@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::(\d+))?$/);
+  if (!match) return undefined;
+  const [, user, host, port] = match;
+  const config = known.find((entry) => entry.alias === host);
+  return { ...(config ?? {}), alias: config?.alias ?? host, hostName: config?.hostName ?? host,
+    ...(user ? { user } : {}), ...(port ? { port: Number(port) } : {}) };
 }

@@ -1,3 +1,4 @@
+import { spawnManagedPty } from './pty-lifecycle.js';
 // The stateful half of SFTP support: one live `sftp` client per remote host,
 // with commands serialised onto it and its answers turned into data by
 // sftp-protocol.ts.
@@ -12,7 +13,6 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import type { DirectoryListing, FileEntry, SftpEvent, SftpSessionInfo } from '../shared/types.js';
 import { baseName, joinRemote, sortEntries } from '../shared/files.js';
-import { createRequire } from 'node:module';
 import type { PtyProcess, SpawnPty } from './session-service.js';
 import {
   buildSftpArgs,
@@ -30,7 +30,6 @@ import {
   responseBody
 } from './sftp-protocol.js';
 
-const require = createRequire(import.meta.url);
 
 /**
  * Wide enough that a long `ls -l` record is never wrapped by the pty, which
@@ -121,7 +120,7 @@ export class SftpService {
   private readonly onEvent: (event: SftpEvent) => void;
 
   constructor(options: { spawnPty?: SpawnPty; onEvent?: (event: SftpEvent) => void } = {}) {
-    this.spawnPty = options.spawnPty ?? ((file, args, ptyOptions) => require('node-pty').spawn(file, args, ptyOptions));
+    this.spawnPty = options.spawnPty ?? spawnManagedPty;
     this.onEvent = options.onEvent ?? (() => undefined);
   }
 

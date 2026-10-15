@@ -37,6 +37,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Check downloader proxy compatibility
+        run: node scripts/check-downloader-proxy.mjs
+
       - name: Audit dependencies
         run: npm audit --audit-level=high
 

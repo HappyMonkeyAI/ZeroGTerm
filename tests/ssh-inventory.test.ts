@@ -39,7 +39,7 @@ describe('SSH config inventory', () => {
     expect(() => validateKnownConnection({ alias: 'dev', hostName: 'example.com', user: '-Fevil.cfg' })).toThrow();
     expect(() => validateKnownConnection({ alias: '-Fevil.cfg' })).toThrow();
     expect(() => validateKnownConnection({ alias: 'dev', hostName: '-Fevil.cfg' })).toThrow();
-    expect(buildRemoteScreenDiscoveryArgs({ alias: 'dev', hostName: 'example.com', user: 'alice' }).args[0]).toBe('alice@example.com');
+    expect(buildRemoteScreenDiscoveryArgs({ alias: 'dev', hostName: 'example.com', user: 'alice' }).args).toContain('alice@example.com');
   });
 });
 
@@ -54,11 +54,19 @@ describe('remote screen contract', () => {
 
   it('constructs constrained argv-only SSH screen commands', () => {
     expect(buildRemoteScreenDiscoveryArgs({ alias: 'dev', hostName: 'example.com', user: 'alice', port: 2222 })).toEqual({
-      file: 'ssh', args: ['-p', '2222', 'alice@example.com', '--', 'screen', '-ls'],
+      file: 'ssh', args: ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-p', '2222', '--', 'alice@example.com', 'screen', '-ls'],
     });
     expect(buildRemoteScreenAttachArgs({ alias: 'dev', hostName: 'example.com', user: 'alice' }, 'work')).toEqual({
-      file: 'ssh', args: ['alice@example.com', '--', 'screen', '-x', 'work'],
+      file: 'ssh', args: ['-tt', '--', 'alice@example.com', 'screen', '-x', 'work'],
     });
     expect(() => buildRemoteScreenAttachArgs({ alias: 'dev', hostName: 'example.com' }, 'bad name')).toThrow();
   });
 });
+
+ it('reads timestamped listings and excludes dead sockets', () => {
+   const items = parseRemoteScreenList('123.work (10/15/26 12:34:56) (Attached)\n456.other (10/15/26 12:34:56) (Detached)\n789.old (Dead ???)', 'dev');
+   expect(items.map(s => [s.screenName, s.status])).toEqual([['work', 'connected'], ['other', 'detached']]);
+ });
+ it('retains the SSH alias for identity files and jump hosts', () => {
+   expect(buildRemoteScreenDiscoveryArgs({ alias: 'dev', hostName: 'internal', source: 'config' }).args).toContain('dev');
+ });

@@ -2,7 +2,7 @@
 
 ZeroG Terminal is an Electron workspace manager for persistent terminal and SSH sessions on Linux and Windows, with smart features to help keep you productive. It is designed with AI tooling in mind: leave Codex, Claude Code, or other terminal-based agents running in persistent sessions, then return to them without repeating setup and resume commands.
 
-ZeroG Terminal is an alpha project, but it is already useful as a multi-session terminal and SSH workspace. It uses `screen` where available for resumable sessions and falls back to a direct shell PTY when `screen` is not installed.
+ZeroG Terminal is a multi-session terminal and SSH workspace. It uses `screen` where available for resumable sessions and falls back to a direct shell PTY when `screen` is not installed.
 
 ## Features
 
@@ -15,7 +15,8 @@ ZeroG Terminal is an alpha project, but it is already useful as a multi-session 
 - SSH sessions for hosts, `user@host`, and `user@host:port` targets.
 - SSH configuration discovery from known connections, including remote `screen` session discovery. In the sidebar's Connections tab, clicking a saved connection opens the connect dialog with the host filled in, and double-clicking it skips the dialog and opens the host in a new pane.
 - Reconnect to existing local or remote `screen` sessions from the Screens view.
-- Remote screen attachment that waits for SSH readiness before sending commands, including host and port-aware matching.
+- Remote screen discovery for the selected SSH destination, including manually entered hosts, with refresh and visible failure states. Background discovery uses key/agent authentication; password-only hosts cannot be queried through the terminal connection.
+- Remote screen attachment launched directly through SSH, preserving the account, custom port and SSH config alias, with authentication and host-key prompts left to the user.
 - Shared ports over SSH, in a Ports view opened from the rail: forward a port on a remote host so it answers on this machine, or a port here so it answers on the remote. Each tunnel is its own SSH connection, so a host needs no terminal open first. Ports bind to loopback unless you widen them, and are remembered between launches.
 - A directory browser inside a pane, opened from the folder button in its title bar: the pane splits, terminal on one side and the directories on the other, with a draggable divider. Double-click a folder to take the shell there. It works on SSH panes and on local ones, WSL included, follows a `cd` you type by hand, and is remembered per pane when you switch workspaces or relaunch.
 - An SFTP transfer panel, opened from the ⇅ button above the panes: local files on the left, the active SSH session's host on the right, with upload, download, new folder, rename, and delete. It connects to the host that session is already using and opens at the directory its shell is standing in, so a file can go straight to the project being worked on.
@@ -38,9 +39,9 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal is currently a public alpha. The current release is `0.9.4-alpha.1`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
+ZeroG Terminal 1.0.0 is the first stable release. The current release is `1.0.0`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
-The GitHub Releases page provides a Windows x64 installer and portable executable plus a Linux x64 AppImage and Debian package for each desktop release. These alpha builds are intended for early adopters and testing rather than production use. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
+The GitHub Releases page provides a Windows x64 installer and portable executable plus a Linux x64 AppImage and Debian package for each desktop release. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
 
 ## Terminal shortcuts
 
@@ -386,13 +387,13 @@ how the threshold gets tuned for a particular microphone.
 The simplest way to try the published package is through `npx`:
 
 ```bash
-npx zerogterm
+npx --package=electron@43 --package=zerogterm zerogterm
 ```
 
-The package downloads the application and launches it. To use the launcher repeatedly without downloading on each invocation, install it globally:
+The npm launcher needs Electron alongside ZeroG Terminal; the command above installs both into the temporary npx environment. To use the launcher repeatedly without downloading on each invocation, install it globally:
 
 ```bash
-npm install --global zerogterm
+npm install --global electron@43 zerogterm
 zerogterm
 ```
 
@@ -405,14 +406,14 @@ project workspaces, open SSH sessions, and request commands for your approval.
 1. Start ZeroG Terminal with MCP enabled:
 
    ```bash
-   ZEROG_MCP_ENABLED=1 npx zerogterm
+   ZEROG_MCP_ENABLED=1 npx --package=electron@43 --package=zerogterm zerogterm
    ```
 
    On Windows PowerShell, use:
 
    ```powershell
    $env:ZEROG_MCP_ENABLED = "1"
-   npx zerogterm
+   npx --package=electron@43 --package=zerogterm zerogterm
    ```
 
 2. Open **Settings → AI & voice → MCP** in ZeroG Terminal. Copy the displayed
@@ -469,7 +470,7 @@ general one — there, `npm install` compiles it.
 
 ### Desktop releases
 
-Download the latest release for your platform from [GitHub Releases](https://github.com/HappyMonkeyAI/ZeroGTerm/releases). These alpha builds are intended for early adopters and testing rather than production use. Review the release notes before installing; SSH, WSL, PowerShell, Git Bash, and any remote `screen` sessions are provided by the host system rather than bundled with the app.
+Download the latest release for your platform from [GitHub Releases](https://github.com/HappyMonkeyAI/ZeroGTerm/releases). Review the release notes before installing; SSH, WSL, PowerShell, Git Bash, and any remote `screen` sessions are provided by the host system rather than bundled with the app.
 
 #### Windows
 
@@ -502,14 +503,37 @@ picker), and Git Bash where Git for Windows is installed.
 do not survive app exit. Remote SSH sessions are unaffected by the local shell
 backend, and a remote host with `screen` still gives persistent sessions there.
 
+The pinned `node-pty` dependency receives a small ConPTY teardown patch during
+install and build (`scripts/patch-node-pty.mjs`). Review that patch before changing
+its version. Run `node scripts/pty-shutdown-smoke.cjs` on Windows to check forced
+and graceful shutdown with a real child process. Release evaluation evidence and
+remaining sign-off items are in [the release check report](docs/release-readiness-screen-check.md).
+
+Windows source packaging rebuilds native dependencies. Install Visual Studio 2022
+Build Tools with the C++ desktop workload by importing [`.vsconfig`](.vsconfig),
+then run `powershell -ExecutionPolicy Bypass -File scripts/ensure-windows-build-tools.ps1`.
+The helper checks the selected MSVC toolset and installs its missing Spectre libraries
+through Visual Studio Installer if needed; Windows may request administrator approval.
+Then run `npm run package:win`. The normal native rebuild and installed application
+have been verified; compiler protections remain enabled.
+
+Linux packaging uses `/opt/ZeroGTerminal` to avoid Electron's sandbox launcher issue
+with spaces in installation paths; the application menu still says **ZeroG Terminal**.
+The Debian package declares its audio and graphics runtime libraries explicitly.
+
+The Electron downloader has a scoped `global-agent` override to remove the vulnerable
+`sprintf-js` dependency chain. `node scripts/check-downloader-proxy.mjs` verifies proxy
+routing and `NO_PROXY` bypass using local fixtures. CI runs this check and the full audit.
+
+
 ## Verification
 
 The current main branch has the following local verification coverage:
 
 - `npm run typecheck`: passes.
-- `npm test`: passes (251 tests covering session service behaviour and PTY sizing, shell discovery, SSH inventory and argument validation, remote-screen parsing and prompt readiness, session history, the session dialog, settings, terminal clipboard and OSC 52 handling, dialog dismissal, the speech and voice helpers, external link handling, and the SFTP transfer path — command quoting, listing and error parsing, authentication prompts, local filesystem operations, and working-directory detection; one further test needs a real `screen` and is opt-in through `ZEROG_LIVE_SCREEN=1`).
+- `npm test`: 64 test files; 1,169 passed and 3 platform skips on Windows, all 1,172 passed on Linux with `ZEROG_LIVE_SCREEN=1`.
 - `npm run build`: passes and writes `dist/main` plus `dist/renderer`.
-- `npm audit --omit=dev`: production dependency auditing is part of the project quality checks.
+- `npm audit --audit-level=moderate`: zero advisories in the verified dependency tree.
 
 ## License
 

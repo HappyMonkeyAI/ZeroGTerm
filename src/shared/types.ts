@@ -51,6 +51,7 @@ export interface CreateLocalRequest {
 }
 
 export interface CreateSshRequest {
+  screenName?: string;
   name?: string;
   target: string;
 }

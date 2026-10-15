@@ -177,3 +177,32 @@ describe('screen session contract', () => {
     await execFileAsync('screen', ['-S', name, '-X', 'quit']);
   }, 30000);
 });
+
+it('attaches remote screens through SSH argv without writing into authentication prompts', async () => {
+ const pty = createFakePty();
+ let terminalType: string | undefined;
+ const service = new ScreenService({ spawnPty: (file, args, options) => { terminalType = options.env.TERM; return pty.spawn(file, args, options); } });
+ const session = await service.createSsh('alice@dev:2222', 'work', 'work');
+ service.attach(session.id, () => undefined, () => undefined);
+ expect(pty.spawned[0].args).toEqual(['-tt', '-p', '2222', '--', 'alice@dev', 'screen', '-x', 'work']);
+ pty.spawned[0].emit('Password: ');
+ expect(pty.spawned[0].writes).toEqual([]);
+ expect(terminalType).toBe('xterm-256color');
+ expect(session).toMatchObject({ screenName: 'work', persistence: 'screen', backend: 'screen' });
+ await expect(service.createSsh('dev', 'work', 'bad;command')).rejects.toThrow();
+});
+
+it('keeps a replacement attachment when the old PTY reports a delayed exit', async () => {
+ const pty = createFakePty();
+ const service = new ScreenService({ spawnPty: (file, args, options) => {
+   const process = pty.spawn(file, args, options);
+   return { ...process, kill() {} }; // native teardown completes later
+ } });
+ const session = await service.createSsh('dev', 'replacement');
+ service.attach(session.id, () => undefined, () => undefined);
+ service.detach(session.id);
+ service.attach(session.id, () => undefined, () => undefined);
+ pty.spawned[0].exit();
+ service.write(session.id, 'still connected');
+ expect(pty.spawned[1].writes).toEqual(['still connected']);
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { looksLikeShellPrompt, normalizeHost } from '../src/renderer/remote-screens';
+import { connectionTarget, screenConnection, looksLikeShellPrompt, normalizeHost } from '../src/renderer/remote-screens';
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
@@ -50,4 +50,14 @@ describe('looksLikeShellPrompt', () => {
     expect(chunks.some((chunk) => looksLikeShellPrompt(chunk))).toBe(false);
     expect(looksLikeShellPrompt(chunks.join(''))).toBe(true);
   });
+});
+
+it('discovers a manually entered account and custom port without SSH config', () => {
+ const connection = screenConnection('alice@example.com:2222', [])!;
+ expect(connection).toEqual({ alias: 'example.com', hostName: 'example.com', user: 'alice', port: 2222 });
+ expect(connectionTarget(connection)).toBe('alice@example.com:2222');
+});
+it('keeps alias configuration while respecting explicit account and port overrides', () => {
+ const connection = screenConnection('bob@dev:2200', [{ alias: 'dev', hostName: 'internal', user: 'alice', port: 22, source: 'config' }])!;
+ expect(connectionTarget(connection)).toBe('bob@dev:2200');
 });

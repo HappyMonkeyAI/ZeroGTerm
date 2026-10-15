@@ -24,6 +24,10 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Ensure Windows native build prerequisites
+        shell: pwsh
+        run: ./scripts/ensure-windows-build-tools.ps1
+
       - name: Install dependencies
         run: npm ci
 
@@ -31,6 +35,8 @@ jobs:
         run: |
           npm run typecheck
           npm test
+          node scripts/check-downloader-proxy.mjs
+          npm audit --audit-level=moderate
 
       - name: Build Windows installer and portable executable
         run: npm run package:win
@@ -70,6 +76,8 @@ jobs:
         run: |
           npm run typecheck
           npm test
+          node scripts/check-downloader-proxy.mjs
+          npm audit --audit-level=moderate
 
       - name: Build Linux AppImage and Debian package
         run: npm run package:linux

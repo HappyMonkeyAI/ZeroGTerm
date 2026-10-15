@@ -35,8 +35,8 @@ export type RestoreAction =
   | { kind: 'attach'; sessionId: string }
   /** Reachable through a saved connection, which knows the port and identity. */
   | { kind: 'attach-remote-screen'; connection: KnownConnection; screenName: string; name: string }
-  /** Open SSH ourselves; `screenCommand` re-enters the screen once a prompt appears. */
-  | { kind: 'create-ssh'; target: string; name: string; screenCommand?: string }
+  /** Open SSH ourselves; `screenName` is attached directly by the SSH process. */
+  | { kind: 'create-ssh'; target: string; name: string; screenName?: string }
   /** Nothing can be done without asking the user for more. */
   | { kind: 'unavailable'; reason: string };
 
@@ -79,14 +79,12 @@ export function screenNameFor(descriptor: SessionDescriptor): string | undefined
 /**
  * Find a live session already running a given `screen`.
  *
- * Kind is the tiebreaker rather than a filter: a local and a remote screen can
- * share a name, and then the one of the remembered kind is the one meant.
+ * Names are scoped to their destination: another host or account can have
+ * a screen with the same name.
  */
-function findByScreenName(screenName: string, kind: SessionDescriptor['kind'], sessions: SessionInfo[]): SessionInfo | undefined {
-  return (
-    sessions.find((session) => session.screenName === screenName && session.kind === kind) ??
-    sessions.find((session) => session.screenName === screenName)
-  );
+function findByScreenName(screenName: string, descriptor: SessionDescriptor, sessions: SessionInfo[]): SessionInfo | undefined {
+  return sessions.find((session) => session.screenName === screenName && session.kind === descriptor.kind &&
+    (descriptor.kind === 'local' || (session.sshTarget ?? session.host) === (descriptor.sshTarget ?? descriptor.host)));
 }
 
 /** Decide how to bring a remembered session back. */
@@ -104,7 +102,7 @@ export function planSessionRestore(
 
   const screenName = screenNameFor(descriptor);
   if (screenName) {
-    const running = findByScreenName(screenName, descriptor.kind, sessions);
+    const running = findByScreenName(screenName, descriptor, sessions);
     if (running) return { kind: 'attach', sessionId: running.id };
 
     if (descriptor.kind === 'local') {
@@ -114,12 +112,13 @@ export function planSessionRestore(
       return { kind: 'unavailable', reason: `No local screen session named ${screenName} is running` };
     }
 
+    if (descriptor.sshTarget) return { kind: 'create-ssh', target: descriptor.sshTarget, name: descriptor.name, screenName };
     const connection = findConnection(descriptor.host, connections);
     if (connection) return { kind: 'attach-remote-screen', connection, screenName, name: descriptor.name };
 
     const target = descriptor.sshTarget || descriptor.host;
     if (!target) return { kind: 'unavailable', reason: `No host recorded for ${descriptor.name}` };
-    return { kind: 'create-ssh', target, name: descriptor.name, screenCommand: `screen -x ${screenName}` };
+    return { kind: 'create-ssh', target, name: descriptor.name, screenName };
   }
 
   if (descriptor.kind === 'local') {

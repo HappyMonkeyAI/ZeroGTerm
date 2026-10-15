@@ -7,7 +7,7 @@ import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PaneLinkSnapshot, PaneLinkState, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
-import { looksLikeShellPrompt, normalizeHost } from './remote-screens';
+import { connectionTarget, screenConnection, looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
 import { useBackdropDismiss } from './backdrop-dismiss';
 import { useRowActivation } from './row-activation';
@@ -113,12 +113,6 @@ import { redactionReason } from './command-redaction';
 import { rankCommands, type RankedCommand } from './command-ranking';
 import { askSuggestion, boundedTail, canAutoRun, isConfigured, type SuggestPhase } from './ai-suggest';
 
-/** Settle once output has been quiet this long — the primary readiness signal. */
-const PROMPT_QUIET_MS = 150;
-/** Give up waiting and send anyway; matches the previous unconditional delay's role. */
-const PROMPT_WAIT_CAP_MS = 3000;
-/** Enough tail to hold a prompt spanning several chunks, without growing forever. */
-const PROMPT_BUFFER_CHARS = 512;
 /**
  * How long the workspace layout must hold still before it is written to disk.
  *
@@ -1082,6 +1076,8 @@ function App() {
   const [knownConnections, setKnownConnections] = useState<KnownConnection[]>([]);
   const [remoteScreenEntries, setRemoteScreenEntries] = useState<Array<{ session: SessionInfo; connection: KnownConnection }>>([]);
   const [remoteScreensLoading, setRemoteScreensLoading] = useState(false);
+  const [remoteScreensError, setRemoteScreensError] = useState<string | null>(null);
+  const [screenRefresh, setScreenRefresh] = useState(0);
 
   // Each mounted pane leaves a way to put the keyboard back into its terminal.
   // Clicking a pane control — the mic above all — moves focus onto a button,
@@ -1462,33 +1458,22 @@ function App() {
     currentApi.listHistory?.().then(setHistoryEntries).catch(() => setHistoryEntries([]));
   }, [historyOpen]);
 
+  const remoteTarget = active?.kind === 'ssh' ? (active.sshTarget ?? active.host) : '';
   useEffect(() => {
     const currentApi = api();
-    const sshHost = normalizeHost((active?.kind === 'ssh' ? active.host : '') || (focusedSessionId ? sessions.find((s) => s.id === focusedSessionId)?.host : '') || '');
-    const matching = sshHost ? knownConnections.filter((connection) => normalizeHost(connection.hostName ?? '') === sshHost || connection.alias === sshHost) : [];
-    if (matching.length === 0) {
-      setRemoteScreenEntries([]);
-      return;
-    }
-    if (!currentApi?.discoverRemoteScreens) return;
-    setRemoteScreensLoading(true);
-    Promise.allSettled(
-      matching.map((connection) => currentApi.discoverRemoteScreens(connection))
-    )
-      .then((results) => {
-        const entries: Array<{ session: SessionInfo; connection: KnownConnection }> = [];
-        results.forEach((result, index) => {
-          if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-            result.value.forEach((session) => {
-              entries.push({ session, connection: matching[index] });
-            });
-          }
-        });
-        setRemoteScreenEntries(entries);
-      })
-      .catch(() => setRemoteScreenEntries([]))
-      .finally(() => setRemoteScreensLoading(false));
-  }, [knownConnections, active?.host, sessions, focusedSessionId]);
+    const connection = screenConnection(remoteTarget, knownConnections);
+    let cancelled = false;
+    setRemoteScreenEntries([]);
+    setRemoteScreensError(null);
+    setRemoteScreensLoading(Boolean(connection));
+    if (!connection || !currentApi?.discoverRemoteScreens) return;
+    currentApi.discoverRemoteScreens(connection).then((items) => {
+      if (!cancelled) setRemoteScreenEntries(items.map((session) => ({ session, connection })));
+    }).catch((error) => {
+      if (!cancelled) setRemoteScreensError(error instanceof Error ? error.message : String(error));
+    }).finally(() => { if (!cancelled) setRemoteScreensLoading(false); });
+    return () => { cancelled = true; };
+  }, [knownConnections, remoteTarget, screenRefresh]);
 
   useEffect(() => {
     const currentApi = api();
@@ -2056,6 +2041,7 @@ function App() {
        * restore the fourth pane of a workspace that legitimately has four.
        */
       replacingPane?: boolean;
+      screenName?: string;
     }
   ): Promise<SessionInfo | null> => {
     const currentApi = api();
@@ -2073,7 +2059,7 @@ function App() {
     }
     setBusy(true);
     try {
-      const session = await currentApi.createSshSession({ name: name || undefined, target });
+      const session = await currentApi.createSshSession({ name: name || undefined, target, screenName: options?.screenName });
       setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
       claimSession(session);
       setFocusedSessionId(session.id);
@@ -2135,14 +2121,7 @@ function App() {
       return attachRemoteScreen(action.name, action.screenName, action.connection);
     }
 
-    const session = await connectSsh(action.target, action.name, options);
-    if (!session || !action.screenCommand) return session;
-    // The shell has to be ready before `screen -x` goes down the pipe, or the
-    // command lands in a login banner and is lost.
-    await currentApi.attachSession(session.id);
-    await waitForShellPrompt(currentApi, session.id);
-    currentApi.write(session.id, `${action.screenCommand}\r`);
-    return session;
+    return connectSsh(action.target, action.name, { ...options, screenName: action.screenName });
   };
 
   /**
@@ -2177,7 +2156,7 @@ function App() {
    */
   const connectKnownConnection = (connection: KnownConnection) => {
     setStatus(`Connecting to ${connection.alias}…`);
-    void connectSsh(connection.hostName ?? connection.alias, connection.alias.slice(0, 48));
+    void connectSsh(connectionTarget(connection), connection.alias.slice(0, 48));
   };
 
   /**
@@ -2192,24 +2171,15 @@ function App() {
       const currentApi = api();
       if (!currentApi) return null;
       setStatus(`Attaching to ${name} on ${connection.alias}…`);
-      const result = await currentApi.buildRemoteScreenAttach?.(connection, screenName);
-      const args = result?.args;
-      const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
-      const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
-      const ssh = await currentApi.createSshSession({ target: destination, name });
-      const attached = { ...ssh, screenName, persistence: 'screen' as const, backend: 'screen' as const };
+      const attached = await currentApi.createSshSession({ target: connectionTarget(connection), name, screenName });
       setSessions((current) => {
         const exists = current.some((item) => item.id === attached.id);
         return exists ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached];
       });
       claimSession(attached);
       await attach(attached);
-      await currentApi.attachSession(attached.id);
-      const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${screenName}`;
-      await waitForShellPrompt(currentApi, attached.id);
-      currentApi.write(attached.id, `${screenCommand}\r`);
       await refresh();
-      setStatus(`Connected to ${name} on ${connection.alias}`);
+      setStatus(`Opening ${name} on ${connection.alias}…`);
       return attached;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -2217,38 +2187,6 @@ function App() {
     }
   };
 
-  // Wait until a freshly attached remote shell looks ready for input.
-  //
-  // PTY output arrives in arbitrary chunks, so matching has to run against a
-  // rolling buffer: a prompt split across two reads ("user@host:~" then "$ ")
-  // would never match a per-chunk test. Prompt shape is only the fast path —
-  // it varies too much across shells and colour schemes to depend on — so the
-  // primary signal is output going quiet, with an overall cap as a backstop.
-  const waitForShellPrompt = (currentApi: TerminalApi, sessionId: string) => new Promise<void>((resolve) => {
-    let finished = false;
-    let buffer = '';
-    let quietTimer: ReturnType<typeof setTimeout> | undefined;
-    let removeData: (() => void) | undefined;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(quietTimer);
-      clearTimeout(capTimer);
-      removeData?.();
-      resolve();
-    };
-    const capTimer = setTimeout(finish, PROMPT_WAIT_CAP_MS);
-    removeData = currentApi.onData((eventSessionId, data) => {
-      if (eventSessionId !== sessionId) return;
-      buffer = (buffer + data).slice(-PROMPT_BUFFER_CHARS);
-      if (looksLikeShellPrompt(buffer)) {
-        finish();
-        return;
-      }
-      clearTimeout(quietTimer);
-      quietTimer = setTimeout(finish, PROMPT_QUIET_MS);
-    });
-  });
 
   /**
    * A command a pane reported, on its way to the store — or not.
@@ -3042,7 +2980,7 @@ function App() {
     const localScreens = sessions.filter((session) => session.persistence === 'screen' && !workspaceSessions.some((item) => item.id === session.id));
     const hasRemote = Object.keys(hostGroups).length > 0;
     const hasLocal = localScreens.length > 0;
-    if (!hasRemote && !hasLocal) return <div className="session-empty"><b>No screens</b><small>{sshHost ? 'No remote screens found for this host.' : 'Open a remote session to discover screens, or start a local screen.'}</small></div>;
+    if (!hasRemote && !hasLocal) return <><button type="button" className="drawer-action" disabled={remoteScreensLoading} onClick={() => setScreenRefresh((value) => value + 1)}>Refresh screens</button><div className="session-empty"><b>{remoteScreensLoading ? 'Discovering screens…' : remoteScreensError ? 'Discovery unavailable' : 'No screens'}</b><small>{remoteScreensError ?? (sshHost ? 'No remote screens found for this host.' : 'Open a remote session to discover screens, or start a local screen.')}</small></div></>;
     const nodes: React.ReactNode[] = [];
     if (hasRemote) {
       for (const [host, group] of Object.entries(hostGroups)) {
@@ -3057,28 +2995,7 @@ function App() {
               ghosted
               onClick={async () => {
                 if (!connection) return;
-                setStatus(`Attaching ${session.name}…`);
-                const currentApi = api();
-                if (!currentApi) return;
-                try {
-                  const result = await currentApi.buildRemoteScreenAttach?.(connection, session.screenName ?? session.name);
-                  const args = result?.args;
-                  const dashDashIndex = Array.isArray(args) ? args.indexOf('--') : -1;
-                  const destination = dashDashIndex > 0 ? args[dashDashIndex - 1] : (connection.hostName ?? connection.alias);
-                  const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
-                  const attached = { ...ssh, screenName: session.screenName ?? session.name, persistence: 'screen' as const, backend: 'screen' as const };
-                  setSessions((current) => current.some((item) => item.id === attached.id) ? current.map((item) => item.id === attached.id ? attached : item) : [...current, attached]);
-                  claimSession(attached);
-                  await attach(attached);
-                  await currentApi.attachSession(attached.id);
-                  const screenCommand = args && dashDashIndex > 0 ? args.slice(dashDashIndex + 1).join(' ') : `screen -x ${session.screenName ?? session.name}`;
-                  await waitForShellPrompt(currentApi, attached.id);
-                  currentApi.write(attached.id, `${screenCommand}\r`);
-                  await refresh();
-                  setStatus(`Connected to ${session.name}`);
-                } catch (error) {
-                  setStatus(error instanceof Error ? error.message : String(error));
-                }
+                await attachRemoteScreen(session.name, session.screenName ?? session.name, connection);
               }}
             />
           );
@@ -3101,7 +3018,7 @@ function App() {
       });
     }
 
-    return <>{nodes}</>;
+    return <><button type="button" className="drawer-action" disabled={remoteScreensLoading} onClick={() => setScreenRefresh((value) => value + 1)}>Refresh screens</button>{nodes}</>;
   };
 
   const paneClass =
@@ -4036,7 +3953,7 @@ function App() {
                     <ConnectionRow
                       key={connection.alias}
                       connection={connection}
-                      onConfigure={() => openSessionDialog('ssh', { sshTarget: connection.hostName ?? connection.alias })}
+                      onConfigure={() => openSessionDialog('ssh', { sshTarget: connectionTarget(connection) })}
                       onConnect={() => connectKnownConnection(connection)}
                     />
                   )) : <div className="session-empty"><b>No saved connections</b><small>Add Host entries to ~/.ssh/config to populate connections.</small></div>
@@ -4051,13 +3968,8 @@ function App() {
                         const currentApi = api();
                         if (!currentApi) return;
                         try {
-                          const result = await currentApi.buildRemoteScreenAttach?.({ alias: session.host, hostName: session.host }, session.screenName ?? session.name);
-                          const destination = result?.args?.find((arg) => arg.includes('@') || !arg.startsWith('-')) ?? session.host;
-                          const ssh = await currentApi.createSshSession({ target: destination, name: session.name });
+                          const ssh = await currentApi.createSshSession({ target: session.sshTarget ?? session.host, name: session.name, screenName: session.screenName ?? session.name });
                           setSessions((current) => current.map((item) => item.id === session.id ? ssh : item));
-                          // Claim the session that now exists, not the discovered
-                          // row it replaced: the two have different ids, and the
-                          // workspace would otherwise hold one that is gone.
                           claimSession(ssh);
                           await attach(ssh);
                         } catch (error) {

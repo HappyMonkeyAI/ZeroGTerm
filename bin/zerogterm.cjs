@@ -2,7 +2,13 @@
 
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const electron = require('electron');
+let electron;
+try {
+  electron = require('electron');
+} catch {
+  console.error('Electron runtime was not found. Install both packages: npm install --global electron@43 zerogterm');
+  process.exit(1);
+}
 
 const packageRoot = path.resolve(__dirname, '..');
 const child = spawn(electron, [packageRoot, ...process.argv.slice(2)], {

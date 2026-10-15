@@ -1,13 +1,12 @@
+import { spawnManagedPty } from './pty-lifecycle.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import type { CreateLocalRequest, SessionInfo } from '../shared/types.js';
 import { WSL_HOME, defaultShellBackend, findOpenSshTool, isLocalShellBackend, ptyStartDirectory, resolveShellBackend, withWslStartDirectory, type ShellCatalogOptions } from './shell-catalog.js';
 
 const execFileAsync = promisify(execFile);
-const require = createRequire(import.meta.url);
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,48}$/;
 /**
  * host, user@host, host:port, user@host:port — no shell metacharacters.
@@ -163,13 +162,6 @@ export function parseScreenList(output: string): SessionInfo[] {
     });
 }
 
-function loadPty(): any {
-  try {
-    return require('node-pty');
-  } catch {
-    throw new Error('PTY support is not installed. Run: npm install node-pty (needs make/gcc-c++).');
-  }
-}
 
 export class ScreenService {
   private ptys = new Map<string, SessionPty>();
@@ -189,7 +181,7 @@ export class ScreenService {
 
   constructor(options: { onEvent?: ScreenService['onEvent']; spawnPty?: SpawnPty } = {}) {
     this.onEvent = options.onEvent;
-    this.spawnPty = options.spawnPty ?? ((file, args, ptyOptions) => loadPty().spawn(file, args, ptyOptions));
+    this.spawnPty = options.spawnPty ?? spawnManagedPty;
   }
 
   async available(): Promise<boolean> {
@@ -263,8 +255,9 @@ export class ScreenService {
     return session;
   }
 
-  async createSsh(targetInput: string, name?: string): Promise<SessionInfo> {
+  async createSsh(targetInput: string, name?: string, screenName?: string): Promise<SessionInfo> {
     const { target } = validateSshTarget(targetInput);
+    if (screenName !== undefined) validateSessionName(screenName);
     const safeName = validateSessionName(name?.trim() || target.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 40));
     const session: SessionInfo = {
       id: `ssh:${randomUUID()}`,
@@ -275,7 +268,8 @@ export class ScreenService {
       status: 'detached',
       lastSeen: new Date().toISOString(),
       sshTarget: target,
-      backend: 'ssh',
+      backend: screenName ? 'screen' : 'ssh',
+      ...(screenName ? { screenName, persistence: 'screen' as const } : {}),
       scope: 'remote',
       source: 'active'
     };
@@ -329,6 +323,7 @@ export class ScreenService {
       throw new Error(`Unknown session: ${id}`);
     }
     const { args } = validateSshTarget(session.sshTarget);
+    if (session.screenName) args.push('screen', '-x', validateSessionName(session.screenName));
     session.status = 'connected';
     session.lastSeen = new Date().toISOString();
     try {
@@ -378,7 +373,9 @@ export class ScreenService {
       cols,
       rows,
       cwd,
-      env: process.env
+      // ConPTY does not set TERM from node-pty's name option. OpenSSH needs
+      // it to request a remote terminal that screen can recognise.
+      env: { ...process.env, TERM: 'xterm-256color' }
     });
     const handle: PtyHandle = {
       write: (data: string) => proc.write(data),
@@ -391,9 +388,12 @@ export class ScreenService {
         }
       }
     };
-    this.ptys.set(sessionId, { handle, kind: sessionId.startsWith('ssh:') ? 'ssh' : 'local', cols, rows });
+    const record: SessionPty = { handle, kind: sessionId.startsWith('ssh:') ? 'ssh' : 'local', cols, rows };
+    this.ptys.set(sessionId, record);
     proc.onData(onData);
     proc.onExit(() => {
+      // A detached PTY can exit after a new attachment already owns this id.
+      if (this.ptys.get(sessionId) !== record) return;
       this.ptys.delete(sessionId);
       const fallback = this.fallbackLocalSessions.get(sessionId);
       if (fallback) { fallback.status = 'detached'; this.onEvent?.('detached', fallback, false); }

@@ -87,26 +87,28 @@ export function validateKnownConnection(input: unknown): KnownConnection {
 
 function sshArgs(connection: KnownConnection): string[] {
   const c = validateKnownConnection(connection);
-  const destination = c.user ? `${c.user}@${c.hostName ?? c.alias}` : (c.hostName ?? c.alias);
+  // Keep config aliases intact so IdentityFile, ProxyJump and Match still apply.
+  const host = c.source ? c.alias : (c.hostName ?? c.alias);
+  const destination = c.user ? `${c.user}@${host}` : host;
   const args: string[] = [];
   if (c.port) args.push('-p', String(c.port));
-  args.push(destination, '--');
+  args.push('--', destination);
   return args;
 }
 
 export function buildRemoteScreenDiscoveryArgs(connection: KnownConnection): { file: string; args: string[] } {
-  return { file: 'ssh', args: [...sshArgs(connection), 'screen', '-ls'] };
+  return { file: 'ssh', args: ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', ...sshArgs(connection), 'screen', '-ls'] };
 }
 
 export function buildRemoteScreenAttachArgs(connection: KnownConnection, screenName: string): { file: string; args: string[] } {
   if (!SCREEN.test(screenName)) throw new Error('Invalid screen session name.');
-  return { file: 'ssh', args: [...sshArgs(connection), 'screen', '-x', screenName] };
+  return { file: 'ssh', args: ['-tt', ...sshArgs(connection), 'screen', '-x', screenName] };
 }
 
 export function parseRemoteScreenList(output: string, host: string): SessionInfo[] {
   if (!TOKEN.test(host)) throw new Error('Invalid remote host identity.');
   return output.split(/\r?\n/).flatMap((line) => {
-    const match = line.trim().match(/^\d+\.(\S+)\s+\(([^)]+)\)/);
+    const match = line.trim().match(/^\d+\.(\S+)\s+(?:\([^)]*\)\s+)*\((Attached|Detached)\)\s*$/i);
     if (!match || !SCREEN.test(match[1])) return [];
     const name = match[1];
     return [{ id: `remote:${host}:${name}`, name, kind: 'ssh', host, cwd: '~', status: /attached/i.test(match[2]) ? 'connected' : 'detached', lastSeen: new Date().toISOString(), persistence: 'screen', sshTarget: host, backend: 'screen', scope: 'remote', source: 'discovered', screenName: name }];

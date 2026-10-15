@@ -95,7 +95,7 @@ describe('planSessionRestore', () => {
       kind: 'create-ssh',
       target: 'dev@unknown.example.com',
       name: 'agent',
-      screenCommand: 'screen -x agent'
+      screenName: 'agent'
     });
   });
 
@@ -166,4 +166,10 @@ describe('describeSession', () => {
     const info = session({ id: 'local:api', name: 'api', screenName: 'api' });
     expect(planSessionRestore(describeSession(info), [info], connections)).toEqual({ kind: 'attach', sessionId: 'local:api' });
   });
+});
+
+it('never reuses a same-named screen from a different account, host or local shell', () => {
+ const descriptor: SessionDescriptor = { name: 'work', kind: 'ssh', host: 'alice@dev:2222', sshTarget: 'alice@dev:2222', screenName: 'work' };
+ const wrong = [session({ id: 'ssh:wrong', kind: 'ssh', host: 'bob@dev:2222', screenName: 'work' }), session({ id: 'local:work', screenName: 'work' })];
+ expect(planSessionRestore(descriptor, wrong, connections)).toEqual({ kind: 'create-ssh', target: 'alice@dev:2222', name: 'work', screenName: 'work' });
 });

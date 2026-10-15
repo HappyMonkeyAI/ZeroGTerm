@@ -1,9 +1,10 @@
+import { shutdownPtys } from './pty-lifecycle.js';
 import { app, BrowserWindow, clipboard, ipcMain, Menu, safeStorage, session, shell } from 'electron';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
-import { ScreenService, parseWslDistributions, type PtySize } from './session-service.js';
+import { ScreenService, sshExecutable, parseWslDistributions, type PtySize } from './session-service.js';
 import { discoverShellBackends } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { CommandHistoryStore, defaultCommandHistoryPath } from './command-history-store.js';
@@ -524,7 +525,8 @@ ipcMain.handle('sessions:createSsh', async (_event, request: unknown) => {
     throw new Error('createSshSession requires { target: string }');
   }
   const name = typeof request.name === 'string' ? request.name : undefined;
-  return service.createSsh(request.target, name);
+  if (request.screenName !== undefined && typeof request.screenName !== 'string') throw new Error('Invalid screen name');
+  return service.createSsh(request.target, name, request.screenName as string | undefined);
 });
 
 ipcMain.handle('connections:listKnown', () => listKnownConnections());
@@ -534,10 +536,13 @@ ipcMain.handle('screens:discoverRemote', async (_event, input: unknown) => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   try {
-    const { stdout } = await promisify(execFile)(command.file, command.args);
+    const { stdout } = await promisify(execFile)(sshExecutable(), command.args, { timeout: 15000, maxBuffer: 256 * 1024 });
     return parseRemoteScreenList(stdout, connection.alias);
   } catch (error: any) {
-    return { status: 'unavailable', host: connection.alias, reason: error?.code === 'ENOENT' ? 'ssh-unavailable' : 'host-unreachable', sessions: [] };
+    // screen exits with 1 when there are no sockets. Other failures must reach
+    // the UI rather than pretending that the host has no running sessions.
+    if (error?.code === 1 && /No Sockets found/i.test(error.stdout ?? '')) return [];
+    throw new Error('Screen discovery failed. Check SSH key/agent access and that screen is installed on the host.');
   }
 });
 ipcMain.handle('screens:attachRemote', (_event, input: unknown, screenName: unknown) => {
@@ -801,8 +806,24 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('before-quit', () => {
-  void agentHooks.stop();
+let shutdownStarted = false;
+let shutdownComplete = false;
+app.on('before-quit', (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  service.detachAll();
+  sftp.closeAll();
+  forwards.closeAll();
+  void Promise.allSettled([shutdownPtys(), agentHooks.stop()]).then((results) => {
+    for (const result of results) {
+      if (result.status === 'rejected') console.error('[zerog] shutdown failed', result.reason);
+    }
+  }).finally(() => {
+    shutdownComplete = true;
+    app.quit();
+  });
 });
 
 app.on('window-all-closed', () => {

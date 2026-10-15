@@ -1,6 +1,6 @@
 {
   "name": "zerogterm",
-  "version": "0.9.4-alpha.1",
+  "version": "1.0.0",
   "description": "A Linux-first persistent Electron terminal workspace",
   "license": "MIT",
   "author": "Stephen Phillips",
@@ -23,9 +23,11 @@
     "screen"
   ],
   "files": [
-    "dist",
+    "dist/main",
+    "dist/renderer",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "scripts/patch-node-pty.mjs"
   ],
   "publishConfig": {
     "access": "public"
@@ -34,20 +36,22 @@
   "main": "dist/main/main/main.js",
   "scripts": {
     "dev": "concurrently -k \"tsc -p tsconfig.main.json --watch\" \"vite --host 127.0.0.1\"",
-    "build": "node scripts/build-main.mjs clean && tsc -p tsconfig.main.json && node scripts/build-main.mjs preload && vite build",
+    "build": "node scripts/patch-node-pty.mjs && node scripts/build-main.mjs clean && tsc -p tsconfig.main.json && node scripts/build-main.mjs preload && vite build",
     "test": "vitest run --pool=threads",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
     "start": "electron .",
     "package:win": "npm run build && electron-builder --win nsis portable --x64 --publish never",
-    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never",
-    "prepublishOnly": "npm run build"
+    "package:linux": "npm run build && electron-builder --linux AppImage deb --x64 --publish never --config.productName=ZeroGTerminal",
+    "prepublishOnly": "npm run build",
+    "postinstall": "node scripts/patch-node-pty.mjs"
   },
   "build": {
     "appId": "com.happymonkeyai.zerogterm",
     "productName": "ZeroG Terminal",
     "asar": true,
     "files": [
-      "dist/**/*",
+      "dist/main/**/*",
+      "dist/renderer/**/*",
       "package.json"
     ],
     "win": {
@@ -83,7 +87,12 @@
       ],
       "category": "Development",
       "maintainer": "ZeroG Terminal <SPhillips1337@users.noreply.github.com>",
-      "artifactName": "ZeroGTerminal-${version}-${arch}.${ext}"
+      "artifactName": "ZeroGTerminal-${version}-${arch}.${ext}",
+      "desktop": {
+        "entry": {
+          "Name": "ZeroG Terminal"
+        }
+      }
     },
     "nsis": {
       "artifactName": "ZeroGTerminal-${version}-Setup.${ext}",
@@ -93,6 +102,21 @@
     },
     "portable": {
       "artifactName": "ZeroGTerminal-${version}-Portable.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "libasound2",
+        "libgbm1"
+      ]
     }
   },
   "dependencies": {
@@ -101,7 +125,7 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-webgl": "0.18.0",
     "@xterm/xterm": "^5.3.0",
-    "node-pty": "^1.1.0",
+    "node-pty": "1.1.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "zod": "^4.6.2"
@@ -121,6 +145,9 @@
   },
   "overrides": {
     "adm-zip": "^0.6.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "@electron/get@3.1.0": {
+      "global-agent": "4.1.3"
+    }
   }
 }

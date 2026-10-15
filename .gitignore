@@ -7,3 +7,6 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Isolated release-validation profiles and fixtures
+.release-check/
