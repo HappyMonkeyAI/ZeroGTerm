@@ -93,7 +93,7 @@ jobs:
           retention-days: 1
 
   publish:
-    name: Publish GitHub prerelease
+    name: Publish GitHub release
     needs:
       - windows
       - linux
@@ -161,10 +161,11 @@ jobs:
         run: |
           shopt -s nullglob
           assets=(release-assets/*)
+          release_flags=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then release_flags+=(--prerelease); fi
           gh release create "${GITHUB_REF_NAME}" \
             "${assets[@]}" \
             --verify-tag \
             --title "ZeroG Terminal ${GITHUB_REF_NAME}" \
-            --prerelease \
-            --generate-notes \
-            --notes "Windows x64 installer and portable executable plus Linux x64 AppImage and Debian package. These alpha builds are unsigned; Windows SmartScreen may warn on first launch. See the README for installation and host prerequisites."
+            "${release_flags[@]}" \
+            --notes-file CHANGELOG.md
