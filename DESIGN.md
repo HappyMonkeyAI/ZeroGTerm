@@ -12,6 +12,29 @@ colors:
   success: "#9ECE6A"
   warning: "#E0AF68"
   danger: "#F7768E"
+  # The renderer's real tokens (src/renderer/styles.css :root), named as in CSS.
+  # The roles above map onto them: primary = surface-0, neutral = text-1,
+  # muted = text-3, border = line-1, tertiary = blue, success = green,
+  # warning = yellow, danger = red. secondary has no CSS counterpart (see "Measured drift").
+  surface-0: "#0A0C10"
+  surface-1: "#0D1015"
+  surface-2: "#11161E"
+  surface-3: "#151A22"
+  surface-4: "#1A202A"
+  line-1: "#202630"
+  line-2: "#2A3340"
+  line-3: "#303B4B"
+  text-1: "#D8DEE9"
+  text-2: "#8B93A3"
+  text-3: "#697386"
+  text-4: "#4E5969"
+  icon: "#AAB3C5"
+  blue: "#7AA2F7"
+  green: "#9ECE6A"
+  yellow: "#E0AF68"
+  red: "#F7768E"
+  cyan: "#7DCFFF"
+  teal: "#73DACA"
 typography:
   display:
     fontFamily: "Inter, system-ui, sans-serif"
@@ -113,17 +136,32 @@ The terminal remains the primary surface. AI actions, session state, voice feedb
 
 ## Colors
 
-- **Primary (#0B0F14):** Near-black blue background for terminal panes and the application canvas.
-- **Secondary (#111923):** Slightly elevated surfaces for the session sidebar, command palette, and controls.
-- **Tertiary (#6EE7F9):** Cyan interaction accent used sparingly for focus, links, and primary actions.
-- **Neutral (#E6EDF3):** High-contrast foreground text and important terminal metadata.
-- **Muted (#9FB0C0):** Secondary labels and inactive session information.
-- **Border (#263445):** Pane dividers and subtle structural boundaries.
-- **Success (#8BE28B):** Connected, completed, or healthy state.
-- **Warning (#FFD166):** Pending approval, degraded connection, or attention required.
-- **Danger (#FF7B72):** Failure and destructive-action state.
+Values match the token frontmatter above and the renderer's CSS variables. An earlier version of
+this list gave a different palette (#0B0F14, a cyan #6EE7F9 accent, …) that matched neither.
+
+- **Primary (#0A0C10, `--surface-0`):** Near-black blue background for terminal panes and the application canvas.
+- **Surfaces (`--surface-1`…`--surface-4`, #0D1015 → #1A202A):** Elevation steps for chrome: drawer and bars, tabs, raised controls.
+- **Tertiary (#7AA2F7, `--blue`):** Blue interaction accent used sparingly for focus, links, and primary actions. `--cyan` (#7DCFFF) and `--teal` (#73DACA) are secondary accents.
+- **Neutral (#D8DEE9, `--text-1`):** High-contrast foreground text and important terminal metadata.
+- **Text tiers (`--text-2` #8B93A3, `--text-3` #697386, `--text-4` #4E5969):** Secondary labels down to the faintest hints. See "Measured drift" before using `--text-3` or `--text-4` for text people must read.
+- **Muted (#697386, `--text-3`):** Secondary labels and inactive session information.
+- **Lines (`--line-1`…`--line-3`, #202630 → #303B4B):** Pane dividers and structural boundaries. Border = `--line-1`.
+- **Success (#9ECE6A, `--green`):** Connected, completed, or healthy state.
+- **Warning (#E0AF68, `--yellow`):** Pending approval, degraded connection, or attention required.
+- **Danger (#F7768E, `--red`):** Failure and destructive-action state.
 
 Do not use color as the only state indicator. Pair status colors with text, icons, or shape changes.
+
+### Light theme (as shipped)
+
+`:root[data-theme='light']` overrides element backgrounds rather than the `--surface-*` variables, so its palette
+lives in `src/renderer/styles.css` and was not described here before:
+
+- **Canvas (#F7F9FC):** page, app shell, workspace, panes, terminal.
+- **Panels (#FFFFFF):** window bar, session drawer, status bar.
+- **Recessed (#EEF2F7):** rail, workspace head, empty pane.
+- **Lines (#DBE2EC):** borders and the pane grid.
+- **Text:** #253044 primary, #5C687B and #68768A secondary.
 
 ## Typography
 
@@ -205,3 +243,24 @@ Voice/listening state must be visible and paired with text. A microphone icon al
 - Don't silently execute generated commands.
 - Don't make voice or eye tracking necessary for any core action.
 - Don't use a dense dashboard layout that separates the user from the shell.
+
+## Measured drift (2026-10-24)
+
+Measured from the running renderer with Spine Design:
+- Vite dev server, 1280×800, dark and light themes, plus the command palette (Ctrl+Shift+R).
+- Electron preload APIs were absent, so live sessions and terminals weren't measured; only the shell chrome was.
+
+Each item is a decision: either this spec or the app should change. A suggested direction is given; nothing here has been applied to the app.
+
+| # | Spec says | App measures | Suggested direction |
+|---|-----------|--------------|---------------------|
+| 1 | **Muted** text (#697386) on Primary | 4.1:1 on `--surface-0`, 3.99:1 on `--surface-1`, 3.66:1 on `--surface-3`. **Below WCAG AA (4.5:1) on every dark surface.** 46 text elements use it. | Use `--text-2` (#8B93A3: 6.17:1 on `--surface-1`, 5.65:1 on `--surface-3`) for secondary text people must read. Keep `--text-3` for non-essential hints. |
+| 2 | — | `--text-4` (#4E5969) is used for 9px control labels and pane hints: 2.68:1. `--line-3` (#303B4B) is used for `/` separators: 1.68:1 (1.54:1 in light). | Don't use `--text-4` or `--line-*` for text. Raise to `--text-2`, or mark them decorative (`aria-hidden`). |
+| 3 | `body-md` 14px (0.875rem) | Chrome text is **13px** on 117 elements | Probably update the spec to 13px (0.8125rem). The chrome is consistent at 13px, so this looks deliberate. |
+| 4 | `label` 11px | Also 10px (17 elements) and 9px (5), and the 9px ones fail contrast | Raise 9–10px text to `label` 11px. |
+| 5 | Radii 4 / 6 / 10px | Rail buttons use **5px** (11 elements) | Change the rail buttons to `rounded.sm` 4px. |
+| 6 | `session-sidebar`: radius 6px, padding 12px | The drawer is a full-height edge panel: radius 0, padding 0 (its rows carry the padding) | Update the spec to describe the edge panel (radius 0; padding on rows). |
+| 7 | `command-palette`: radius 10px (`lg`), padding 16px (`lg`) | Radius **7px**, padding **10px** | Decide which is intended. 7px is off the radius scale either way. |
+| 8 | `secondary` #0F1218 | Not a CSS token: drawer and bars use `--surface-1` / `--surface-2` | Point `secondary` at `--surface-2` (#11161E), or retire it. |
+| 9 | Accent = `--blue` #7AA2F7 | One border uses **#3B82F6**, which isn't a token (it looks like Tailwind blue-500) | Replace with `--blue`. |
+| 10 | Single dark palette | A light theme ships (above) with its own text tiers: #68768A on #EEF2F7 is 4.11:1, and on #DBE2EC 3.54:1 | Add light-theme tokens to the frontmatter once the format supports themes. Until then, keep the list above current. |
