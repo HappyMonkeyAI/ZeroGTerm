@@ -174,7 +174,7 @@ Use a proportional sans-serif for application chrome and a monospaced face for t
 - The workspace is a pane tree with stack, vertical split, horizontal split, and grid layouts.
 - Pane dividers are one-pixel structural lines; focus is shown by a restrained accent edge, never a glowing card.
 - Session overview is a transient thumbnail grid opened from the top bar, rail, or `Ctrl+Shift+O`.
-- Keyboard navigation must have a mouse-equivalent path: `Ctrl+Shift+N` creates a local terminal, `Ctrl+Shift+L` toggles a split, and `Ctrl+Shift+O` opens overview.
+- Keyboard navigation must have a mouse-equivalent path: `Ctrl+Shift+T` opens a new local terminal, `Ctrl+Shift+N` a new workspace, `Ctrl+Shift+L` toggles a split, and `Ctrl+Shift+O` opens overview (defaults from `src/renderer/shortcuts.ts`; all rebindable).
 - Session creation and SSH connection use compact forms; routine switching uses the drawer or overview, not a large modal dashboard.
 
 ## Elevation & Depth
@@ -248,7 +248,7 @@ Voice/listening state must be visible and paired with text. A microphone icon al
 
 Measured from the running renderer with Spine Design:
 - Vite dev server, 1280×800, dark and light themes, plus the command palette (Ctrl+Shift+R).
-- Electron preload APIs were absent, so live sessions and terminals weren't measured; only the shell chrome was.
+- The packaged Electron app, with one live local session (Ctrl+Shift+T, then submit the dialog), in a throwaway profile. Terminal contents were masked, so `terminal-pane` itself isn't measured.
 
 Each item is a decision: either this spec or the app should change. A suggested direction is given; nothing here has been applied to the app.
 
@@ -264,3 +264,4 @@ Each item is a decision: either this spec or the app should change. A suggested 
 | 8 | `secondary` #0F1218 | Not a CSS token: drawer and bars use `--surface-1` / `--surface-2` | Point `secondary` at `--surface-2` (#11161E), or retire it. |
 | 9 | Accent = `--blue` #7AA2F7 | One border uses **#3B82F6**, which isn't a token (it looks like Tailwind blue-500) | Replace with `--blue`. |
 | 10 | Single dark palette | A light theme ships (above) with its own text tiers: #68768A on #EEF2F7 is 4.11:1, and on #DBE2EC 3.54:1 | Add light-theme tokens to the frontmatter once the format supports themes. Until then, keep the list above current. |
+| 11 | `session-item-active`: `rounded.sm` 4px, `spacing.sm` 8px padding, `{colors.border}` background | The active `.session-row` has radius **5px**, padding **9px 8px**, background `--surface-4` #1A202A (close to `border`) | Same 5px as the rail buttons: move both to 4px, and the padding to 8px, together. |
