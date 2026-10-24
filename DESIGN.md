@@ -161,7 +161,7 @@ lives in `src/renderer/styles.css` and was not described here before:
 - **Panels (#FFFFFF):** window bar, session drawer, status bar.
 - **Recessed (#EEF2F7):** rail, workspace head, empty pane.
 - **Lines (#DBE2EC):** borders and the pane grid.
-- **Text:** #253044 primary, #5C687B and #68768A secondary.
+- **Text:** #253044 primary, #5C687B and #68768A secondary. #5C687B passes WCAG AA on every light surface (5.0:1 or better). #68768A passes only on the white panels (4.62:1); it fails on the canvas (4.38:1) and on recessed areas (4.11:1), so see "Measured drift" (row 10) before using it for text people must read.
 
 ## Typography
 
@@ -263,5 +263,5 @@ Each item is a decision: either this spec or the app should change. A suggested 
 | 7 | `command-palette`: radius 10px (`lg`), padding 16px (`lg`) | Radius **7px**, padding **10px** | Decide which is intended. 7px is off the radius scale either way. |
 | 8 | `secondary` #0F1218 | Not a CSS token: drawer and bars use `--surface-1` / `--surface-2` | Point `secondary` at `--surface-2` (#11161E), or retire it. |
 | 9 | Accent = `--blue` #7AA2F7 | One border uses **#3B82F6**, which isn't a token (it looks like Tailwind blue-500) | Replace with `--blue`. |
-| 10 | Single dark palette | A light theme ships (above) with its own text tiers: #68768A on #EEF2F7 is 4.11:1, and on #DBE2EC 3.54:1 | Add light-theme tokens to the frontmatter once the format supports themes. Until then, keep the list above current. |
+| 10 | Single dark palette | A light theme ships (above) with its own text tiers: #68768A is 4.62:1 on #FFFFFF but 4.38:1 on #F7F9FC, 4.11:1 on #EEF2F7 and 3.54:1 on #DBE2EC | Add light-theme tokens to the frontmatter once the format supports themes. Until then, keep the list above current. |
 | 11 | `session-item-active`: `rounded.sm` 4px, `spacing.sm` 8px padding, `{colors.border}` background | The active `.session-row` has radius **5px**, padding **9px 8px**, background `--surface-4` #1A202A (close to `border`) | Same 5px as the rail buttons: move both to 4px, and the padding to 8px, together. |
