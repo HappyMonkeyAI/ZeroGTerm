@@ -1,5 +1,6 @@
 import { shutdownPtys } from './pty-lifecycle.js';
 import { app, BrowserWindow, clipboard, ipcMain, Menu, safeStorage, session, shell } from 'electron';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +15,7 @@ import { PortForwardStore, defaultPortForwardPath } from './port-forward-store.j
 import { readRemoteFile, writeRemoteFile } from './remote-file.js';
 import { HostLabelStore, defaultHostLabelPath } from './host-label-store.js';
 import { buildRemoteScreenAttachArgs, buildRemoteScreenDiscoveryArgs, listKnownConnections, parseRemoteScreenList, validateKnownConnection } from './ssh-inventory.js';
-import { createLocalDirectory, listLocalDirectory, localHome, readLocalFile, removeLocalEntry, renameLocalEntry, writeLocalFile } from './local-fs.js';
+import { createLocalDirectory, listLocalDirectory, localHome, readLocalFile, removeLocalEntry, renameLocalEntry, resolveLocalPath, writeLocalFile } from './local-fs.js';
 import { wslHomeDirectory } from './wsl-home.js';
 import { decideExternalLink, isApplicationUrl } from './external-links.js';
 import { SftpService } from './sftp-service.js';
@@ -29,9 +30,48 @@ import { isSafeRemoteCommand } from './mcp-execution-policy.js';
 import { requireWorkspaceName } from './mcp-protocol.js';
 import { PaneLinkController, pasteAndSubmit } from './pane-link.js';
 import { AgentHookServer, buildLaunchCommand } from './agent-hook-server.js';
+import { parseOpenCwd } from '../shared/open-cwd.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+
+/**
+ * Validate a FileMan/CLI open-cwd hint: absolute, exists, is a directory.
+ * Invalid hints are ignored so a bad launch path never blocks the app.
+ */
+function resolveOpenCwdHint(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    const resolved = resolveLocalPath(raw.trim());
+    if (!existsSync(resolved) || !statSync(resolved).isDirectory()) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+/** Consumed once by the renderer via app:takeOpenCwd (cold start). */
+let pendingOpenCwd: string | null = resolveOpenCwdHint(parseOpenCwd(process.argv, process.env));
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, commandLine) => {
+    // Second-instance env is not forwarded — cwd must be on argv (--cwd or bare path).
+    const hint = resolveOpenCwdHint(parseOpenCwd(commandLine, process.env));
+    if (hint) {
+      pendingOpenCwd = hint;
+      win?.webContents.send('app:open-cwd', hint);
+    }
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    } else if (app.isReady()) {
+      createWindow();
+    }
+  });
+}
 const history = new SessionHistoryStore({ filePath: defaultHistoryPath(app.getPath('userData')) });
 // The only store holding what the user typed. Nothing reaches it that has not
 // been through command-redaction in the renderer, and it holds nothing at all
@@ -520,6 +560,13 @@ ipcMain.handle('sessions:createLocal', async (_event, request: unknown) => {
   return service.createLocal({ name: request.name, cwd, ...(backend ? { backend } : {}), wslDistribution });
 });
 
+/** One-shot launch cwd (FileMan / CLI). Cleared after read so a refresh does not reopen it. */
+ipcMain.handle('app:takeOpenCwd', () => {
+  const value = pendingOpenCwd;
+  pendingOpenCwd = null;
+  return value;
+});
+
 ipcMain.handle('sessions:createSsh', async (_event, request: unknown) => {
   if (!isRecord(request) || typeof request.target !== 'string') {
     throw new Error('createSshSession requires { target: string }');
@@ -781,30 +828,32 @@ ipcMain.handle('speechKey:clear', async () => {
 });
 ipcMain.handle('speechKey:read', () => secrets.get(SPEECH_API_KEY));
 
-app.whenReady().then(() => {
-  // Voice input captures the local microphone only. Electron denies all
-  // permission requests unless a handler answers, so grant media explicitly.
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(permission === 'media');
-  });
-
-  // Keep the normal window chrome, but let the ZeroG UI occupy the full
-  // client area instead of showing Electron's default File/Edit/etc. menu.
-  Menu.setApplicationMenu(null);
-  watchEventLoop();
-  createWindow();
-  if (process.env.ZEROG_MCP_ENABLED === '1') {
-    mcpHost ??= new McpServerHost({
-      control: mcpControl,
-      providers: createMcpProviders(),
-      version: app.getVersion()
+if (gotSingleInstanceLock) {
+  app.whenReady().then(() => {
+    // Voice input captures the local microphone only. Electron denies all
+    // permission requests unless a handler answers, so grant media explicitly.
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      callback(permission === 'media');
     });
-    void mcpHost.start();
-  }
-  app.on('activate', () => {
-    if (!BrowserWindow.getAllWindows().length) createWindow();
+
+    // Keep the normal window chrome, but let the ZeroG UI occupy the full
+    // client area instead of showing Electron's default File/Edit/etc. menu.
+    Menu.setApplicationMenu(null);
+    watchEventLoop();
+    createWindow();
+    if (process.env.ZEROG_MCP_ENABLED === '1') {
+      mcpHost ??= new McpServerHost({
+        control: mcpControl,
+        providers: createMcpProviders(),
+        version: app.getVersion()
+      });
+      void mcpHost.start();
+    }
+    app.on('activate', () => {
+      if (!BrowserWindow.getAllWindows().length) createWindow();
+    });
   });
-});
+}
 
 let shutdownStarted = false;
 let shutdownComplete = false;

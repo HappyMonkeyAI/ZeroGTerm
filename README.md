@@ -397,6 +397,15 @@ npm install --global electron@43 zerogterm
 zerogterm
 ```
 
+Open a local shell in a specific directory (ZeroG FileMan uses this):
+
+```bash
+zerogterm --cwd "C:\Users\you\project"
+# or: ZEROG_OPEN_CWD="C:\Users\you\project" zerogterm
+```
+
+A second launch while ZeroG is already running focuses the existing window and opens another pane there (single-instance).
+
 ## Connecting an AI agent through MCP
 
 ZeroG Terminal can expose the running desktop instance as a local MCP server. This

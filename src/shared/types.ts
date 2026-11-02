@@ -564,6 +564,13 @@ export interface TerminalApi {
   listLocalDirectory(path?: string): Promise<DirectoryListing>;
   /** The running app's version, as Electron reports it from package.json. */
   appVersion(): Promise<string>;
+  /**
+   * Absolute directory from `--cwd` / `ZEROG_OPEN_CWD` / bare argv on cold start.
+   * Cleared after the first successful take so a reload does not reopen it.
+   */
+  takeOpenCwd(): Promise<string | null>;
+  /** Cwd requests from a second FileMan/CLI launch while this instance is running. */
+  onOpenCwd(callback: (cwd: string) => void): () => void;
   localHome(): Promise<string>;
   /**
    * Where "~" points inside a WSL distribution, or null if it cannot be asked.

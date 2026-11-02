@@ -42,6 +42,7 @@ import { PaneBrowser } from './pane-browser';
 import { HelpPanel } from './help-panel';
 import { createPaneListingSource } from './pane-listing';
 import { formatVersion, versionLabel } from '../shared/version';
+import { sessionNameForCwd } from '../shared/open-cwd';
 import {
   changeDirectoryCommand,
   startingListingPath,
@@ -2022,6 +2023,57 @@ function App() {
       setBusy(false);
     }
   };
+
+  /**
+   * Open a local shell in a directory requested by FileMan / CLI (`--cwd`).
+   *
+   * Used for cold-start takeOpenCwd and for second-instance app:open-cwd events.
+   * Kept as a ref so the one-shot take cannot be cancelled by a re-render.
+   */
+  const openLocalAtCwdRef = useRef<(cwd: string) => Promise<void>>(async () => undefined);
+  openLocalAtCwdRef.current = async (cwd: string) => {
+    const currentApi = api();
+    if (!currentApi) return;
+    const panes = activeWorkspace ? workspacePaneCount(activeWorkspace) : workspaceSessions.length;
+    if (panes >= 4) {
+      setStatus(`Cannot open ${cwd}: this workspace already has 4 panes.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      let name = sessionNameForCwd(cwd);
+      let session: SessionInfo;
+      try {
+        session = await currentApi.createLocalSession({ name, cwd });
+      } catch {
+        name = `${name}-${Date.now().toString(36).slice(-4)}`;
+        session = await currentApi.createLocalSession({ name, cwd });
+      }
+      setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
+      claimSession(session);
+      setFocusedSessionId(session.id);
+      setMaximizedSessionId(null);
+      setLayout(layoutForSessionCount(panes + 1));
+      await attach(session);
+      setStatus(`Opened shell in ${cwd}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!workspacesLoaded || sessionsLoading) return;
+    const currentApi = api();
+    if (!currentApi?.takeOpenCwd || !currentApi.onOpenCwd) return;
+    void currentApi.takeOpenCwd().then((cwd) => {
+      if (cwd) void openLocalAtCwdRef.current(cwd);
+    });
+    return currentApi.onOpenCwd((cwd) => {
+      void openLocalAtCwdRef.current(cwd);
+    });
+  }, [sessionsLoading, workspacesLoaded]);
 
   /**
    * Open an SSH session on `target` in a new pane of the active workspace.

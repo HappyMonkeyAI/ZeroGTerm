@@ -94,6 +94,14 @@ const api = {
   clearAiApiKey: () => ipcRenderer.invoke('aiKey:clear'),
   listLocalDirectory: (path) => ipcRenderer.invoke('fs:listLocal', path),
   appVersion: () => ipcRenderer.invoke('app:version'),
+  /** One-shot FileMan/CLI cwd hint from cold start; null after first take. */
+  takeOpenCwd: () => ipcRenderer.invoke('app:takeOpenCwd'),
+  /** Subsequent launches while this instance holds the single-instance lock. */
+  onOpenCwd: (callback) => {
+    const listener = (_event, cwd) => callback(cwd);
+    ipcRenderer.on('app:open-cwd', listener);
+    return () => ipcRenderer.removeListener('app:open-cwd', listener);
+  },
   localHome: () => ipcRenderer.invoke('fs:localHome'),
   wslHome: (distribution) => ipcRenderer.invoke('fs:wslHome', distribution),
   createLocalDirectory: (path) => ipcRenderer.invoke('fs:mkdirLocal', path),
