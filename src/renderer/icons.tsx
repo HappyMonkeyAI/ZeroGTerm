@@ -212,6 +212,19 @@ export function Icon({ name, className = '' }: { name: string; className?: strin
           <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7.5A1.5 1.5 0 0 1 17.5 19h-13A1.5 1.5 0 0 1 3 17.5z" />
         </svg>
       );
+    case 'star':
+    case 'star-filled':
+      return (
+        <svg {...common} fill={name === 'star-filled' ? 'currentColor' : 'none'}>
+          <path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" />
+        </svg>
+      );
+    case 'chevron-down':
+      return (
+        <svg {...common}>
+          <path d="M7 10l5 5 5-5" />
+        </svg>
+      );
     case 'file':
       return (
         <svg {...common}>
