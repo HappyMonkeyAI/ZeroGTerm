@@ -1164,7 +1164,7 @@ export function SettingsPanel({
 
                 <RangeField
                   label="Maximum utterance"
-                  hint="Recording stops itself at this length so a stuck microphone cannot queue forever."
+                  hint="Recording stops and transcribes itself at this length, so a stuck microphone cannot record forever. Longer recordings take longer to transcribe with the built-in model."
                   value={settings.speech.maxUtteranceSeconds}
                   min={SETTING_LIMITS.maxUtteranceSeconds.min}
                   max={SETTING_LIMITS.maxUtteranceSeconds.max}

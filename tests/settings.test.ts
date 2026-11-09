@@ -65,7 +65,7 @@ describe('parseSettings', () => {
     expect(parsed.appearance.lineHeight).toBe(1);
     expect(parsed.appearance.letterSpacing).toBe(-2);
     expect(parsed.terminal.scrollback).toBe(200000);
-    expect(parsed.speech.maxUtteranceSeconds).toBe(120);
+    expect(parsed.speech.maxUtteranceSeconds).toBe(300);
     expect(parsed.speech.silenceThreshold).toBe(0.05);
   });
 

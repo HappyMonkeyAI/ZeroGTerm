@@ -257,7 +257,7 @@ export const DEFAULT_SETTINGS: Settings = {
     device: 'wasm',
     language: 'auto',
     task: 'transcribe',
-    maxUtteranceSeconds: 30,
+    maxUtteranceSeconds: 120,
     silenceThreshold: 0.004,
     serverUrl: 'http://127.0.0.1:8080/v1/audio/transcriptions',
     serverModel: 'Qwen3-ASR-0.6B'
@@ -274,7 +274,7 @@ export const SETTING_LIMITS = {
   lineHeight: { min: 1, max: 2 },
   letterSpacing: { min: -2, max: 4 },
   scrollback: { min: 200, max: 200000 },
-  maxUtteranceSeconds: { min: 5, max: 120 },
+  maxUtteranceSeconds: { min: 5, max: 300 },
   // Enough for a stack trace, capped well below a context window. ai-protocol
   // enforces its own hard ceiling regardless of what is stored here.
   outputChars: { min: 200, max: 8000 },
