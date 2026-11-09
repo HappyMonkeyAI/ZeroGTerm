@@ -18,6 +18,8 @@ const api = {
   saveHostLabels: (file) => ipcRenderer.invoke('hostLabels:save', file),
   loadRecentSessions: () => ipcRenderer.invoke('recentSessions:load'),
   saveRecentSessions: (file) => ipcRenderer.invoke('recentSessions:save', file),
+  loadFavourites: () => ipcRenderer.invoke('favourites:load'),
+  saveFavourites: (file) => ipcRenderer.invoke('favourites:save', file),
   onForwardEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('forwards:event', listener);

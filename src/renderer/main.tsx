@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, CreateLocalRequest, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PaneLinkSnapshot, PaneLinkState, PortForwardInfo, RecentSession, SessionInfo, ShellBackend, StoredRecentSessionFile, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, CreateLocalRequest, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PaneLinkSnapshot, PaneLinkState, FavouriteDirectory, PortForwardInfo, RecentSession, SessionInfo, ShellBackend, StoredFavouriteFile, StoredRecentSessionFile, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { connectionTarget, screenConnection, looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -45,6 +45,7 @@ import { formatVersion, versionLabel } from '../shared/version';
 import { sessionNameForCwd } from '../shared/open-cwd';
 import {
   changeDirectoryCommand,
+  listingPathFor,
   startingListingPath,
   pathKindFor,
   shellFamily,
@@ -110,6 +111,8 @@ import { SpeechClient, type SpeechWorker } from './speech';
 import { chordFor, matchShortcut, resolveBindings, topDismissTarget } from './shortcuts';
 import { dropIndexFor, indexOfId, passedThreshold, reorder } from './tab-reorder';
 import { ContextMenu, type MenuItem } from './context-menu';
+import { FavouritesMenu } from './favourites-menu';
+import { EMPTY_FAVOURITES, findFavourite, groupFavourites, isStarrable, planJump, removeFavourite, toggleFavourite } from './favourites';
 import { createCommandCapture, readBufferRange, type CapturedCommand, type CommandCapture } from './command-capture';
 import { redactionReason } from './command-redaction';
 import { rankCommands, type RankedCommand } from './command-ranking';
@@ -1051,6 +1054,9 @@ function App() {
   // then, from the list as it was last run, before this run starts adding to it.
   const [launchPicker, setLaunchPicker] = useState<'waiting' | 'open' | 'closed'>('waiting');
   const [launchCards, setLaunchCards] = useState<RecentSession[]>([]);
+  // Starred directories, and where the list of them is open, if it is.
+  const [favourites, setFavourites] = useState<StoredFavouriteFile>(EMPTY_FAVOURITES);
+  const [favouritesMenu, setFavouritesMenu] = useState<{ x: number; y: number } | null>(null);
   const [visitedWorkspaces, setVisitedWorkspaces] = useState<string[]>([]);
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
@@ -2782,6 +2788,65 @@ function App() {
     focusTerminal(session.id);
   };
 
+  // Read the starred directories back once. A failure leaves the list empty.
+  useEffect(() => {
+    api()?.loadFavourites?.().then(setFavourites).catch(() => undefined);
+  }, []);
+
+  /** Change the favourites and write them straight away: each change is one click. */
+  const updateFavourites = (next: StoredFavouriteFile) => {
+    setFavourites(next);
+    api()?.saveFavourites?.(next).catch(() => setStatus('Could not save favourites.'));
+  };
+
+  /**
+   * The directory a pane's shell is in, as an absolute path its shell would use.
+   *
+   * Null while it is only known as `~` and the home directory has not been
+   * resolved: a quoted `cd '~/x'` does not expand, so that cannot be starred.
+   */
+  const shellDirectoryOf = (session: SessionInfo | null | undefined): string | null => {
+    if (!session) return null;
+    const listing = listingPathFor(session, paneHome(session));
+    const path = listing ? shellPathFor(session, listing) : null;
+    return isStarrable(path) ? path : null;
+  };
+
+  /** Star or unstar a directory, given the path the shell uses for it. */
+  const toggleFavouriteAt = (session: SessionInfo, path: string) => {
+    const wasStarred = Boolean(findFavourite(favourites, session, path));
+    const next = toggleFavourite(favourites, session, path, { now: new Date(), id: crypto.randomUUID() });
+    if (next === favourites) {
+      setStatus(`${path} cannot be starred: it is not an absolute path.`);
+      return;
+    }
+    updateFavourites(next);
+    setStatus(wasStarred ? `Removed ${path} from favourites` : `Added ${path} to favourites`);
+  };
+
+  /**
+   * Go to a favourite from the pane that has focus.
+   *
+   * On the same machine this is the browser's own "take the shell there", with
+   * all of its refusals — a busy pane is never typed into. Anywhere else it is a
+   * new pane opened in that directory.
+   */
+  const jumpToFavourite = async (favourite: FavouriteDirectory) => {
+    const plan = planJump(favourite, active);
+    if (plan.kind === 'unavailable') {
+      setStatus(plan.reason);
+      return;
+    }
+    if (plan.kind === 'cd' && active) {
+      openDirectory(active, plan.listingPath);
+      return;
+    }
+    if (plan.kind === 'open-local') {
+      const session = await openLocalPane(plan.request, favourite.path);
+      if (session) setStatus(`Opened ${session.name} in ${favourite.path}`);
+    }
+  };
+
   /**
    * Is this pane sitting at a prompt?
    *
@@ -4240,7 +4305,49 @@ function App() {
               <span className="connection-dot" />
               <span>{active?.host ?? 'local'}</span>
               <span className="slash">/</span>
-              <span>{active?.cwd ?? '~'}</span>
+              <span className="location-path" title={active?.cwd ?? ''}>{active?.cwd ?? '~'}</span>
+              {(() => {
+                // The star stars where the shell is; the chevron lists them all.
+                const here = shellDirectoryOf(active);
+                const starred = Boolean(active && here && findFavourite(favourites, active, here));
+                const label = !active
+                  ? 'Open a session to star its directory'
+                  : !here
+                    ? 'This pane has not said which absolute directory it is in yet'
+                    : starred
+                      ? `Remove ${here} from favourites`
+                      : `Add ${here} to favourites`;
+                return (
+                  <span className="location-favourites">
+                    <button
+                      type="button"
+                      className={`location-star ${starred ? 'starred' : ''}`.trim()}
+                      disabled={!active || !here}
+                      onClick={() => active && here && toggleFavouriteAt(active, here)}
+                      title={label}
+                      aria-label={label}
+                      aria-pressed={starred}
+                    >
+                      <Icon name={starred ? 'star-filled' : 'star'} />
+                    </button>
+                    <button
+                      type="button"
+                      className="location-star location-star-menu"
+                      data-favourites-toggle
+                      onClick={(event) => {
+                        const box = event.currentTarget.getBoundingClientRect();
+                        setFavouritesMenu((current) => (current ? null : { x: box.left, y: box.bottom + 4 }));
+                      }}
+                      title={`Favourite directories (${favourites.favourites.length})`}
+                      aria-label="Favourite directories"
+                      aria-haspopup="menu"
+                      aria-expanded={Boolean(favouritesMenu)}
+                    >
+                      <Icon name="chevron-down" />
+                    </button>
+                  </span>
+                );
+              })()}
               <span className="slash">/</span>
               <span className="muted-text">{active?.name ?? activeWorkspace?.name ?? 'no session'}</span>
             </div>
@@ -4488,6 +4595,14 @@ function App() {
                           onBrowse={(path) => setBrowserPaths((current) => ({ ...current, [paneSession.id]: path }))}
                           defaultShowHidden={settings.sessions.showHiddenFiles}
                           onClose={() => toggleBrowser(paneSession.id)}
+                          isFavourite={(listingPath) =>
+                            Boolean(findFavourite(favourites, paneSession, shellPathFor(paneSession, listingPath)))
+                          }
+                          onToggleFavourite={(listingPath) => {
+                            const path = shellPathFor(paneSession, listingPath);
+                            if (path) toggleFavouriteAt(paneSession, path);
+                            else setStatus('That folder is outside what this pane can reach.');
+                          }}
                         />
                       ) : null
                     }
@@ -5020,6 +5135,27 @@ function App() {
           onMcpCopyToken={() => { if (mcpInfo) void api()?.copyText?.(mcpInfo.token).then(() => setStatus('MCP bearer token copied.')); }}
         />
       )}
+
+      {favouritesMenu && (() => {
+        const { here, elsewhere } = groupFavourites(favourites, active);
+        return (
+          <FavouritesMenu
+            at={favouritesMenu}
+            here={here}
+            elsewhere={elsewhere}
+            canJump={(favourite) => {
+              const plan = planJump(favourite, active);
+              return plan.kind === 'unavailable' ? plan.reason : null;
+            }}
+            onJump={(favourite) => void jumpToFavourite(favourite)}
+            onRemove={(favourite) => {
+              updateFavourites(removeFavourite(favourites, favourite.id));
+              setStatus(`Removed ${favourite.path} from favourites`);
+            }}
+            onClose={() => setFavouritesMenu(null)}
+          />
+        );
+      })()}
 
       {/* Recent sessions, offered once at startup. Cards already open in a pane
           (a screen the workspace restore adopted after the picker opened) are

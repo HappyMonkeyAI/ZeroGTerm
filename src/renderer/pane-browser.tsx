@@ -63,6 +63,13 @@ export type PaneBrowserProps = {
   openFile?: string | null;
   /** The Settings default for the "show hidden files" checkbox below. */
   defaultShowHidden: boolean;
+  /**
+   * Favourites, by listing path. Absent where starring makes no sense (the
+   * editor's file chooser). The caller turns a listing path into the shell's
+   * own path, so a WSL folder is starred as `/home/me`, not as its share path.
+   */
+  isFavourite?: (listingPath: string) => boolean;
+  onToggleFavourite?: (listingPath: string) => void;
 };
 
 type State =
@@ -84,7 +91,9 @@ export function PaneBrowser({
   onClose,
   onOpenFile,
   openFile,
-  defaultShowHidden
+  defaultShowHidden,
+  isFavourite,
+  onToggleFavourite
 }: PaneBrowserProps) {
   const [state, setState] = useState<State>({ phase: 'idle' });
   // Starts from the Settings default but is this browser's own from then on —
@@ -130,6 +139,7 @@ export function PaneBrowser({
   // real thing, and a pathless listing has no other way to say where it went.
   const here = state.phase === 'ready' ? state.listing.path : path;
   const parent = here ? parentOf(here, pathKind) : null;
+  const hereStarred = Boolean(here && isFavourite?.(here));
   const entries = state.phase === 'ready' ? state.listing.entries : [];
   const visible = showHidden ? entries : entries.filter((entry) => !isHiddenName(entry.name));
   // Directories first, then files, each alphabetically — the order that makes a
@@ -147,6 +157,19 @@ export function PaneBrowser({
           {shellPath ?? here ?? 'connecting…'}
         </span>
         <span className="pane-browser-actions">
+          {onToggleFavourite ? (
+            <button
+              type="button"
+              className={`pane-browser-icon pane-browser-star ${hereStarred ? 'starred' : ''}`.trim()}
+              disabled={!here || state.phase !== 'ready'}
+              onClick={() => here && onToggleFavourite(here)}
+              title={hereStarred ? 'Remove this folder from favourites' : 'Add this folder to favourites'}
+              aria-label={hereStarred ? 'Remove this folder from favourites' : 'Add this folder to favourites'}
+              aria-pressed={hereStarred}
+            >
+              <Icon name={hereStarred ? 'star-filled' : 'star'} />
+            </button>
+          ) : null}
           <label className="pane-browser-hidden-toggle" title="Show files whose name starts with a dot">
             <input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />
             Hidden
@@ -216,6 +239,7 @@ export function PaneBrowser({
                   onBrowse={onBrowse}
                   onFile={onOpenFile}
                   current={openFile === target}
+                  starred={isNavigable(entry) && Boolean(isFavourite?.(target))}
                 />
               );
             })}
@@ -267,7 +291,8 @@ function BrowserRow({
   onOpen,
   onBrowse,
   onFile,
-  current = false
+  current = false,
+  starred = false
 }: {
   label: string;
   icon: string;
@@ -280,6 +305,8 @@ function BrowserRow({
   /** Set when files can be chosen; a file row is then a button like a folder's. */
   onFile?: (path: string) => void;
   current?: boolean;
+  /** A favourite: marked, not actionable here — the header star toggles it. */
+  starred?: boolean;
 }) {
   // The single click is held back until a double-click could no longer arrive.
   // Acting on it at once broke the gesture rather than pre-empting it: browsing
@@ -327,6 +354,7 @@ function BrowserRow({
       <Icon name={icon} />
       <span className="pane-browser-name">{label}</span>
       {link ? <span className="pane-browser-kind">link</span> : null}
+      {starred ? <Icon name="star-filled" className="pane-browser-starred" /> : null}
     </button>
   );
 }

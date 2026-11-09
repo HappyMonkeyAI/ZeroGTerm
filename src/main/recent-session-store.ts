@@ -1,7 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { RecentSession, StoredRecentSessionFile } from '../shared/types.js';
+import { JsonFileStore, optionalText } from './json-file-store.js';
 
 const SCHEMA_VERSION = 1;
 /** Enough to fill the launch picker with room to spare; older ones fall off. */
@@ -18,75 +17,15 @@ export const MAX_RECENT_SESSIONS = 12;
  * The renderer decides what is recorded and strips `cwd` when the setting is
  * off; this file only guarantees that what comes back is well formed.
  */
-export class RecentSessionStore {
-  private readonly filePath: string;
-  private file: StoredRecentSessionFile = { version: SCHEMA_VERSION, sessions: [] };
-  private loaded = false;
-  private writeQueue: Promise<void> = Promise.resolve();
-
+export class RecentSessionStore extends JsonFileStore<StoredRecentSessionFile> {
   constructor(options: { filePath: string }) {
-    this.filePath = options.filePath;
-  }
-
-  async load(): Promise<StoredRecentSessionFile> {
-    await this.ensureLoaded();
-    return normalizeFile(this.file) ?? { version: SCHEMA_VERSION, sessions: [] };
-  }
-
-  async save(input: unknown): Promise<StoredRecentSessionFile> {
-    await this.ensureLoaded();
-    // Validated on the way in as well as out: this is an IPC boundary, and a
-    // stored bad value would come back on every launch from then on.
-    const normalized = normalizeFile(input);
-    if (!normalized) throw new Error('Invalid recent session list.');
-    this.file = normalized;
-    await this.persist();
-    return normalized;
-  }
-
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
-    try {
-      const parsed: unknown = JSON.parse(await readFile(this.filePath, 'utf8'));
-      const normalized = normalizeFile(parsed);
-      if (normalized) this.file = normalized;
-    } catch {
-      this.file = { version: SCHEMA_VERSION, sessions: [] };
-    }
-  }
-
-  private async persist(): Promise<void> {
-    const snapshot = this.file;
-    this.writeQueue = this.writeQueue.then(async () => {
-      try {
-        await mkdir(dirname(this.filePath), { recursive: true });
-        const temp = join(dirname(this.filePath), `.recent-sessions.tmp-${process.pid}-${randomUUID()}`);
-        await writeFile(temp, JSON.stringify(snapshot, null, 2), { encoding: 'utf8', mode: 0o600 });
-        await rename(temp, this.filePath);
-      } catch {
-        // Remembering recent sessions must never affect terminal operation.
-      }
+    super({
+      filePath: options.filePath,
+      normalize: normalizeFile,
+      empty: () => ({ version: SCHEMA_VERSION, sessions: [] }),
+      invalidMessage: 'Invalid recent session list.'
     });
-    await this.writeQueue;
   }
-}
-
-/** Drop control characters and cap length; the file is user-editable. */
-function safeText(value: string, limit: number): string {
-  let out = '';
-  for (const char of value) {
-    const code = char.charCodeAt(0);
-    if (code < 0x20 || code === 0x7f) continue;
-    out += char;
-  }
-  return out.trim().slice(0, limit);
-}
-
-function optionalText(value: unknown, limit: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const text = safeText(value, limit);
-  return text || undefined;
 }
 
 function normalizeEntry(value: unknown): RecentSession | undefined {

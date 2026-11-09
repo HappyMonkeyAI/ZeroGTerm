@@ -453,6 +453,36 @@ export interface StoredRecentSessionFile {
   sessions: RecentSession[];
 }
 
+/**
+ * A directory the user starred, and the machine it is on.
+ *
+ * `path` is how that machine's shell names it — `C:\work` for PowerShell,
+ * `/home/me/api` inside WSL or on a remote host — not the share path a WSL
+ * listing goes through. A path means nothing without its machine, so `place`
+ * says which: this computer, one WSL distribution, or one SSH host.
+ */
+export interface FavouriteDirectory {
+  id: string;
+  place: 'local' | 'wsl' | 'ssh';
+  path: string;
+  /** Optional short name shown instead of the path. */
+  label?: string;
+  /** Local only: the shell it was starred from, so it reopens in the same one. */
+  backend?: string;
+  /** WSL only. */
+  wslDistribution?: string;
+  /** SSH only: the normalised host it was starred on, and how to reach it. */
+  host?: string;
+  sshTarget?: string;
+  added: string;
+}
+
+/** Starred directories, in the order they were added. */
+export interface StoredFavouriteFile {
+  version: number;
+  favourites: FavouriteDirectory[];
+}
+
 /* Pane link: relaying one launched agent's finished reply into another's prompt. */
 export type AgentPhase = 'idle' | 'busy';
 
@@ -556,6 +586,8 @@ export interface TerminalApi {
   saveHostLabels(file: StoredHostLabelFile): Promise<StoredHostLabelFile>;
   loadRecentSessions(): Promise<StoredRecentSessionFile>;
   saveRecentSessions(file: StoredRecentSessionFile): Promise<StoredRecentSessionFile>;
+  loadFavourites(): Promise<StoredFavouriteFile>;
+  saveFavourites(file: StoredFavouriteFile): Promise<StoredFavouriteFile>;
   onForwardEvent(callback: (event: PortForwardEvent) => void): () => void;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;
