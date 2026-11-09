@@ -104,7 +104,7 @@ $global:__zerogPrompt = $function:prompt
 function prompt {
     $status = if ($?) { 0 } else { 1 }
     [Console]::Write("\`e]133;D;$status\`a")
-    [Console]::Write("\`e]7;file://$env:COMPUTERNAME$($PWD.Path)\`a")
+    if ($PWD.Provider.Name -eq 'FileSystem') { [Console]::Write("\`e]7;file://$env:COMPUTERNAME/$($PWD.ProviderPath -replace '\\\\', '/')\`a") }
     [Console]::Write("\`e]133;A\`a")
     $text = & $global:__zerogPrompt
     [Console]::Write("\`e]133;B\`a")

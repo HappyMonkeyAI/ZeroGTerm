@@ -10,6 +10,10 @@ import { env, pipeline, type AutomaticSpeechRecognitionPipeline } from '@hugging
 
 env.allowLocalModels = false;
 
+/** Whisper's input window, and the rate the recorder resamples to (see voice.ts). */
+const WHISPER_WINDOW_SECONDS = 30;
+const WHISPER_SAMPLE_RATE = 16000;
+
 export type WorkerConfig = {
   model: string;
   /** Transformers.js dtype: 'q8' | 'q4' | 'fp16' | 'fp32'. */
@@ -109,6 +113,21 @@ async function loadPipeline(config: WorkerConfig, id: number): Promise<LoadedPip
   return loading;
 }
 
+/**
+ * Chunking for a recording longer than one Whisper window.
+ *
+ * Whisper reads a fixed 30-second window, and without chunking the pipeline
+ * pads or truncates to it: anything said after the first 30 seconds was simply
+ * never transcribed. Longer audio is cut into overlapping windows and stitched
+ * back together. Shorter audio is left as one window, exactly as before, since
+ * the stitching only adds work and a chance of a seam.
+ */
+function longAudioOptions(samples: number): { chunk_length_s?: number; stride_length_s?: number } {
+  return samples > WHISPER_WINDOW_SECONDS * WHISPER_SAMPLE_RATE
+    ? { chunk_length_s: WHISPER_WINDOW_SECONDS, stride_length_s: 5 }
+    : {};
+}
+
 async function handleTranscribe(data: WorkerRequest): Promise<void> {
   const started = Date.now();
   try {
@@ -117,12 +136,15 @@ async function handleTranscribe(data: WorkerRequest): Promise<void> {
     // `task` or `language`..."), so they are only sent when the checkpoint is
     // multilingual — and `auto` means "let the model detect it", i.e. send
     // nothing.
-    const options = data.config.multilingual
-      ? {
-          task: data.config.task,
-          ...(data.config.language && data.config.language !== 'auto' ? { language: data.config.language } : {})
-        }
-      : {};
+    const options = {
+      ...(data.config.multilingual
+        ? {
+            task: data.config.task,
+            ...(data.config.language && data.config.language !== 'auto' ? { language: data.config.language } : {})
+          }
+        : {}),
+      ...longAudioOptions(data.audio.length)
+    };
     const output = await active.pipeline(data.audio, options);
     scope.postMessage({ type: 'result', id: data.id, text: output.text.trim(), elapsedMs: Date.now() - started });
   } catch (error) {

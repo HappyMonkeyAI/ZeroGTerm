@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
-import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PaneLinkSnapshot, PaneLinkState, PortForwardInfo, SessionInfo, ShellBackend, StoredWorkspaceMember, TerminalApi } from '../shared/types';
+import type { CommandHistoryEntry, DirectoryListing, ForwardBind, ForwardDirection, CreateLocalRequest, HistoryEntry, KnownConnection, McpControlStatus, McpExecutionRequest, McpWorkspaceRestored, PaneLinkSnapshot, PaneLinkState, PortForwardInfo, RecentSession, SessionInfo, ShellBackend, StoredRecentSessionFile, StoredWorkspaceMember, TerminalApi } from '../shared/types';
 import { VoiceRecorder, isMostlySilence, rootMeanSquare } from './voice';
 import { connectionTarget, screenConnection, looksLikeShellPrompt, normalizeHost } from './remote-screens';
 import { attachTerminalClipboard } from './terminal-clipboard';
@@ -51,6 +51,7 @@ import {
   shellPathFor
 } from './pane-directory';
 import { planSessionRestore, type RestoreAction, type SessionDescriptor } from './session-restore';
+import { EMPTY_RECENTS, cardState, cardWhere, pickerEntries, planRecentLaunch, recentKey, recordRecents, timeAgo } from './recent-sessions';
 import {
   applyForwardStatus,
   forwardConflict,
@@ -63,7 +64,7 @@ import {
   toStoredForwards
 } from './port-forwards';
 import { Icon } from './icons';
-import { CWD_BUFFER_CHARS, readCwd } from './cwd-tracker';
+import { CWD_BUFFER_CHARS, readCwd, reportsWindowsPaths } from './cwd-tracker';
 import { SftpPanel } from './sftp-panel';
 import { sftpTargetForSession, transferAvailability } from './sftp-view';
 import {
@@ -1038,6 +1039,18 @@ function App() {
   // Nothing may be saved until the stored file has been read, or the empty
   // starting state would be written over it on the first render.
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  // Recent sessions for the launch picker. Like workspaces, nothing is saved
+  // until the file has been read, or an empty list would overwrite it.
+  const [recents, setRecents] = useState<StoredRecentSessionFile>(EMPTY_RECENTS);
+  const [recentsLoaded, setRecentsLoaded] = useState(false);
+  const recentsStamped = useRef<ReadonlySet<string>>(new Set());
+  // Whether a FileMan/CLI launch asked for a directory: null until known. Such
+  // a launch already says where to go, so the picker stays out of the way.
+  const [launchedWithCwd, setLaunchedWithCwd] = useState<boolean | null>(null);
+  // 'waiting' until the startup decision is made, once; the cards are frozen
+  // then, from the list as it was last run, before this run starts adding to it.
+  const [launchPicker, setLaunchPicker] = useState<'waiting' | 'open' | 'closed'>('waiting');
+  const [launchCards, setLaunchCards] = useState<RecentSession[]>([]);
   const [visitedWorkspaces, setVisitedWorkspaces] = useState<string[]>([]);
   const [localName, setLocalName] = useState('term');
   const [sshName, setSshName] = useState('');
@@ -1290,6 +1303,7 @@ function App() {
   const dismissSettings = useBackdropDismiss(() => setSettingsOpen(false));
   const dismissVoiceReview = useBackdropDismiss(() => closeVoiceReview());
   const dismissTransfer = useBackdropDismiss(() => setTransferOpen(false));
+  const dismissLaunchPicker = useBackdropDismiss(() => setLaunchPicker('closed'));
 
   // Every settings edit goes through updateSection, so a control cannot store a
   // value the schema would reject, and every edit is persisted as it is made —
@@ -1685,6 +1699,91 @@ function App() {
     return () => clearTimeout(timer);
   }, [workspaces, activeWorkspaceId, sessions, workspacesLoaded, sessionsLoading]);
 
+  /** Sessions in a pane of some workspace right now, which is what "open" means here. */
+  const sessionsOnScreen = useMemo(() => {
+    const claimed = new Set(workspaces.flatMap((workspace) => workspace.sessionIds));
+    return sessions.filter((session) => claimed.has(session.id) && session.status !== 'unavailable');
+  }, [workspaces, sessions]);
+
+  // Read the recent sessions back, once. A failure leaves the list empty and
+  // the picker simply has nothing to offer.
+  useEffect(() => {
+    const currentApi = api();
+    if (!currentApi?.loadRecentSessions) {
+      setRecentsLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    currentApi
+      .loadRecentSessions()
+      .then((file) => {
+        if (!cancelled) setRecents(file);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setRecentsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Decide, once per launch, whether to offer the recent-session cards.
+   *
+   * Waits for everything the decision depends on: the stored list, the session
+   * list (so a screen the workspace restore is about to adopt is not offered
+   * as a card as well), and whether a deep link already chose a directory.
+   */
+  useEffect(() => {
+    if (launchPicker !== 'waiting') return;
+    if (!recentsLoaded || !workspacesLoaded || sessionsLoading || launchedWithCwd === null) return;
+    const cards = pickerEntries(recents, sessionsOnScreen);
+    if (!settings.sessions.showLaunchPicker || launchedWithCwd || !cards.length) {
+      setLaunchPicker('closed');
+      return;
+    }
+    setLaunchCards(cards);
+    setLaunchPicker('open');
+  }, [launchPicker, recentsLoaded, workspacesLoaded, sessionsLoading, launchedWithCwd, recents, sessionsOnScreen, settings.sessions.showLaunchPicker]);
+
+  /**
+   * Remember what is open, for the next launch's picker.
+   *
+   * Held until the picker decision has been made, so this run's sessions are
+   * not folded into the list the picker is about to show. Debounced like the
+   * workspace save, since a directory change arrives with every prompt.
+   */
+  const rememberDirectories = settings.sessions.rememberDirectories;
+  useEffect(() => {
+    if (!recentsLoaded || launchPicker === 'waiting') return;
+    const result = recordRecents(recents, sessionsOnScreen, {
+      now: new Date(),
+      rememberDirectories,
+      stamped: recentsStamped.current
+    });
+    recentsStamped.current = result.stamped;
+    if (result.file === recents) return;
+    recentsDirty.current = true;
+    setRecents(result.file);
+  }, [recents, sessionsOnScreen, recentsLoaded, launchPicker, rememberDirectories]);
+
+  // Saving is its own effect: the one above re-runs as soon as it updates the
+  // list, and a timer it owned would be cleared by that re-run before firing.
+  const recentsDirty = useRef(false);
+  useEffect(() => {
+    if (!recentsDirty.current) return;
+    const currentApi = api();
+    if (!currentApi?.saveRecentSessions) return;
+    const timer = setTimeout(() => {
+      recentsDirty.current = false;
+      currentApi.saveRecentSessions(recents).catch(() => {
+        // Remembering recent sessions must never interrupt the terminals.
+      });
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [recents]);
+
   useEffect(() => {
     if (!activeWorkspaceId) return;
     setVisitedWorkspaces((current) => (current.includes(activeWorkspaceId) ? current : [...current, activeWorkspaceId]));
@@ -1719,14 +1818,15 @@ function App() {
     return currentApi.onData((sessionId, data) => {
       const buffer = ((cwdBuffers.current.get(sessionId) ?? '') + data).slice(-CWD_BUFFER_CHARS);
       cwdBuffers.current.set(sessionId, buffer);
-      const reading = readCwd(buffer);
-      if (!reading) return;
       // Returning the same array when nothing moved matters: this runs on every
       // chunk of terminal output, and a new array each time would re-render the
-      // whole workspace while a build scrolls past.
+      // whole workspace while a build scrolls past. The reading is taken in
+      // here because whether a Windows path counts depends on the session.
       setSessions((current) => {
         const existing = current.find((item) => item.id === sessionId);
-        if (!existing || existing.cwd === reading.path) return current;
+        if (!existing) return current;
+        const reading = readCwd(buffer, { windows: reportsWindowsPaths(existing) });
+        if (!reading || existing.cwd === reading.path) return current;
         return current.map((item) => (item.id === sessionId ? { ...item, cwd: reading.path } : item));
       });
       // The selected session is looked up from `sessions`, so updating the list
@@ -1760,6 +1860,7 @@ function App() {
           overview,
           suggest: Boolean(suggest),
           modal: Boolean(modal),
+          launchPicker: launchPicker === 'open',
           palette: paletteOpen,
           history: historyOpen
         });
@@ -1778,6 +1879,7 @@ function App() {
           setSuggest(null);
         }
         if (target === 'modal') setModal(null);
+        if (target === 'launchPicker') setLaunchPicker('closed');
         if (target === 'palette') setPaletteOpen(false);
         if (target === 'history') setHistoryOpen(false);
         return;
@@ -1835,7 +1937,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, suggest, modal, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, overlayEditorId, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [overview, suggest, modal, launchPicker, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, overlayEditorId, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -2032,32 +2134,57 @@ function App() {
    */
   const openLocalAtCwdRef = useRef<(cwd: string) => Promise<void>>(async () => undefined);
   openLocalAtCwdRef.current = async (cwd: string) => {
+    const session = await openLocalPane({ name: sessionNameForCwd(cwd), cwd }, cwd);
+    if (session) setStatus(`Opened shell in ${cwd}`);
+  };
+
+  /**
+   * Open a local shell in a new pane of the active workspace.
+   *
+   * Shared by the `--cwd` deep link and the launch picker. A name already in
+   * use gets a short suffix rather than failing. `homeFallback` lets the picker
+   * still open a shell when the remembered directory has gone; the deep link
+   * does not use it, because a shell somewhere else is not what was asked for.
+   */
+  const openLocalPane = async (
+    request: CreateLocalRequest,
+    label: string,
+    options?: { homeFallback?: boolean }
+  ): Promise<SessionInfo | null> => {
     const currentApi = api();
-    if (!currentApi) return;
+    if (!currentApi) return null;
     const panes = activeWorkspace ? workspacePaneCount(activeWorkspace) : workspaceSessions.length;
     if (panes >= 4) {
-      setStatus(`Cannot open ${cwd}: this workspace already has 4 panes.`);
-      return;
+      setStatus(`Cannot open ${label}: this workspace already has 4 panes.`);
+      return null;
     }
+    const renamed = { ...request, name: `${request.name.slice(0, 43)}-${Date.now().toString(36).slice(-4)}` };
+    const attempts: CreateLocalRequest[] = [request, renamed];
+    if (options?.homeFallback && request.cwd) attempts.push({ ...renamed, cwd: undefined });
     setBusy(true);
     try {
-      let name = sessionNameForCwd(cwd);
-      let session: SessionInfo;
-      try {
-        session = await currentApi.createLocalSession({ name, cwd });
-      } catch {
-        name = `${name}-${Date.now().toString(36).slice(-4)}`;
-        session = await currentApi.createLocalSession({ name, cwd });
+      let session: SessionInfo | null = null;
+      let lastError: unknown;
+      for (const attempt of attempts) {
+        try {
+          session = await currentApi.createLocalSession(attempt);
+          break;
+        } catch (error) {
+          lastError = error;
+        }
       }
-      setSessions((current) => [...current.filter((item) => item.id !== session.id), session]);
-      claimSession(session);
-      setFocusedSessionId(session.id);
+      if (!session) throw lastError;
+      const opened = session;
+      setSessions((current) => [...current.filter((item) => item.id !== opened.id), opened]);
+      claimSession(opened);
+      setFocusedSessionId(opened.id);
       setMaximizedSessionId(null);
       setLayout(layoutForSessionCount(panes + 1));
-      await attach(session);
-      setStatus(`Opened shell in ${cwd}`);
+      await attach(opened);
+      return opened;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+      return null;
     } finally {
       setBusy(false);
     }
@@ -2066,10 +2193,17 @@ function App() {
   useEffect(() => {
     if (!workspacesLoaded || sessionsLoading) return;
     const currentApi = api();
-    if (!currentApi?.takeOpenCwd || !currentApi.onOpenCwd) return;
-    void currentApi.takeOpenCwd().then((cwd) => {
-      if (cwd) void openLocalAtCwdRef.current(cwd);
-    });
+    if (!currentApi?.takeOpenCwd || !currentApi.onOpenCwd) {
+      setLaunchedWithCwd(false);
+      return;
+    }
+    void currentApi.takeOpenCwd().then(
+      (cwd) => {
+        setLaunchedWithCwd(Boolean(cwd));
+        if (cwd) void openLocalAtCwdRef.current(cwd);
+      },
+      () => setLaunchedWithCwd(false)
+    );
     return currentApi.onOpenCwd((cwd) => {
       void openLocalAtCwdRef.current(cwd);
     });
@@ -2195,6 +2329,30 @@ function App() {
     const session = await runRestoreAction(action, { replacingPane: true });
     if (!session) return;
     setWorkspaces((current) => dropPending(current, activeWorkspaceId, member.sessionId));
+  };
+
+  /**
+   * Open one of the launch picker's cards.
+   *
+   * The picker closes first: a reconnect can stop for a password or host-key
+   * prompt in the pane, and that needs to be visible rather than behind a modal.
+   */
+  const launchRecent = async (entry: RecentSession) => {
+    setLaunchPicker('closed');
+    const plan = planRecentLaunch(entry, sessions, knownConnections);
+    if (plan.kind === 'create-local') {
+      const where = plan.request.cwd ?? entry.name;
+      setStatus(`Opening ${where}…`);
+      const session = await openLocalPane(plan.request, where, { homeFallback: true });
+      if (session && plan.request.cwd && session.cwd !== plan.request.cwd) {
+        setStatus(`${plan.request.cwd} could not be opened; started in the default directory.`);
+      } else if (session) {
+        setStatus(`Opened ${session.name}${plan.request.cwd ? ` in ${plan.request.cwd}` : ''}`);
+      }
+      return;
+    }
+    if (plan.kind !== 'unavailable') setStatus(`Reconnecting ${entry.name}…`);
+    await runRestoreAction(plan);
   };
 
   /**
@@ -4862,6 +5020,66 @@ function App() {
           onMcpCopyToken={() => { if (mcpInfo) void api()?.copyText?.(mcpInfo.token).then(() => setStatus('MCP bearer token copied.')); }}
         />
       )}
+
+      {/* Recent sessions, offered once at startup. Cards already open in a pane
+          (a screen the workspace restore adopted after the picker opened) are
+          dropped as they appear, and the picker closes if none are left. */}
+      {launchPicker === 'open' && (() => {
+        const openKeys = new Set(sessionsOnScreen.map(recentKey));
+        const cards = launchCards.filter((entry) => !openKeys.has(entry.key));
+        if (!cards.length) return null;
+        const now = new Date();
+        return (
+          <div className="modal-layer" role="presentation" {...dismissLaunchPicker}>
+            <div className="modal-card launch-card" role="dialog" aria-modal="true" aria-labelledby="launch-picker-title">
+              <div className="modal-head">
+                <div>
+                  <span className="eyebrow">WELCOME BACK</span>
+                  <h2 id="launch-picker-title">Pick up where you left off</h2>
+                </div>
+                <button type="button" className="close-button" onClick={() => setLaunchPicker('closed')}>Esc</button>
+              </div>
+              <div className="launch-grid">
+                {cards.map((entry, index) => {
+                  const { state, label } = cardState(planRecentLaunch(entry, sessions, knownConnections));
+                  return (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      className={`launch-session ${state}`}
+                      disabled={state === 'unavailable' || busy}
+                      autoFocus={index === 0}
+                      onClick={() => void launchRecent(entry)}
+                    >
+                      <span className="launch-session-head">
+                        <b>{entry.name}</b>
+                        <span className="launch-state">{label}</span>
+                      </span>
+                      <small>{cardWhere(entry)}</small>
+                      {entry.cwd && <code title={entry.cwd}>{entry.cwd}</code>}
+                      <small className="launch-when">{timeAgo(entry.lastSeen, now)}</small>
+                    </button>
+                  );
+                })}
+              </div>
+              {!settings.sessions.rememberDirectories && (
+                <p className="launch-hint">Turn on “Remember directories” in Settings → Sessions to reopen local shells in the folder you left them in.</p>
+              )}
+              <div className="launch-foot">
+                <label className="launch-optout">
+                  <input
+                    type="checkbox"
+                    checked={!settings.sessions.showLaunchPicker}
+                    onChange={(event) => changeSetting('sessions', { showLaunchPicker: !event.target.checked })}
+                  />
+                  Don’t show this at startup
+                </label>
+                <button type="button" onClick={() => setLaunchPicker('closed')}>Start fresh</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {voiceReview && (
         <div className="modal-layer" role="presentation" {...dismissVoiceReview}>

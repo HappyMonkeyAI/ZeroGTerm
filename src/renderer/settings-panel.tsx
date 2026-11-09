@@ -912,6 +912,18 @@ export function SettingsPanel({
                   checked={settings.sessions.showHiddenFiles}
                   onChange={(showHiddenFiles) => onChange('sessions', { showHiddenFiles })}
                 />
+                <Toggle
+                  label="Show recent sessions at startup"
+                  hint="Opens a picker of the sessions you had open last time. Skipped when ZeroG is launched with a directory to open."
+                  checked={settings.sessions.showLaunchPicker}
+                  onChange={(showLaunchPicker) => onChange('sessions', { showLaunchPicker })}
+                />
+                <Toggle
+                  label="Remember directories"
+                  hint="Saves each recent session's last directory in recent-sessions.json in your profile, so a local shell reopens there. Remote SSH shells still open in the home directory. Turning this off forgets the saved directories."
+                  checked={settings.sessions.rememberDirectories}
+                  onChange={(rememberDirectories) => onChange('sessions', { rememberDirectories })}
+                />
               </>
             )}
 
@@ -1152,7 +1164,7 @@ export function SettingsPanel({
 
                 <RangeField
                   label="Maximum utterance"
-                  hint="Recording stops itself at this length so a stuck microphone cannot queue forever."
+                  hint="Recording stops and transcribes itself at this length, so a stuck microphone cannot record forever. Longer recordings take longer to transcribe with the built-in model."
                   value={settings.speech.maxUtteranceSeconds}
                   min={SETTING_LIMITS.maxUtteranceSeconds.min}
                   max={SETTING_LIMITS.maxUtteranceSeconds.max}

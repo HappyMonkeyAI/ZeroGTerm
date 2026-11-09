@@ -4019,3 +4019,135 @@ input:focus-visible {
 :root[data-theme='synthwave'] .pane-custom:not(:disabled) {
   text-shadow: 0 0 6px currentColor;
 }
+
+/* Launch picker: recent sessions as cards, offered once at startup. */
+.launch-card {
+  width: min(640px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+
+.launch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.launch-session {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+}
+
+.launch-session:hover:not(:disabled),
+.launch-session:focus-visible {
+  border-color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 8%, var(--surface-1));
+  outline: 0;
+}
+
+.launch-session:disabled { opacity: .55; cursor: default; }
+
+.launch-session-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.launch-session b {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launch-session small { font: 10px JetBrains Mono, monospace; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.launch-session .launch-when { color: var(--text-4); }
+
+.launch-session code {
+  overflow: hidden;
+  color: var(--cyan);
+  font: 11px JetBrains Mono, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.launch-state {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.launch-session.running .launch-state { color: var(--green); }
+.launch-session.reconnect .launch-state { color: var(--blue); }
+.launch-session.unavailable .launch-state { color: var(--red); }
+
+.modal-card p.launch-hint { margin: 14px 0 0; font-size: 11px; color: var(--text-3); }
+
+.launch-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.modal-card .launch-optout {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  cursor: pointer;
+}
+
+.modal-card .launch-optout input { display: inline; width: auto; margin: 0; }
+
+.launch-foot button {
+  padding: 8px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.launch-foot button:hover { color: var(--text-1); border-color: var(--blue); }
+
+:root[data-theme='light'] .launch-session {
+  background: #f2f5fa;
+  border-color: #dbe2ec;
+  color: #5c687b;
+}
+
+:root[data-theme='light'] .launch-session:hover:not(:disabled),
+:root[data-theme='light'] .launch-session:focus-visible {
+  background: #dbe7f5;
+  border-color: #6d9bd6;
+}
+
+:root[data-theme='light'] .launch-session b { color: #253044; }
+:root[data-theme='light'] .launch-session small { color: #68768a; }
+:root[data-theme='light'] .launch-session code { color: #1f6f8b; }
+:root[data-theme='light'] .launch-session.running .launch-state { color: #3f7d20; }
+:root[data-theme='light'] .launch-session.reconnect .launch-state { color: #2459a6; }
+:root[data-theme='light'] .launch-session.unavailable .launch-state { color: #b3213b; }
+
+:root[data-theme='light'] .launch-foot button {
+  background: #ffffff;
+  border-color: #c7d2e1;
+  color: #536176;
+}
