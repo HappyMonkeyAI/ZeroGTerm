@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { parseOsc7Payload, parsePromptPath, readCwd, resolveStartPath } from '../src/renderer/cwd-tracker';
+import {
+  parseOsc7Payload,
+  parsePromptPath,
+  parseWindowsOsc7Payload,
+  parseWindowsPromptPath,
+  readCwd,
+  reportsWindowsPaths,
+  resolveStartPath
+} from '../src/renderer/cwd-tracker';
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
@@ -45,6 +53,40 @@ describe('the path inside a prompt', () => {
   it('falls back to the prompt only when no report was made', () => {
     expect(readCwd('dev@example:/srv/app$ ')).toEqual({ path: '/srv/app', source: 'prompt' });
     expect(readCwd('make: nothing to be done\r\n')).toBeNull();
+  });
+});
+
+describe('Windows shells on this machine', () => {
+  it('reads the PowerShell and cmd prompts, spaces and all', () => {
+    expect(parseWindowsPromptPath('PS C:\\Users\\dev\\ZeroGTerm> ')).toBe('C:\\Users\\dev\\ZeroGTerm');
+    expect(parseWindowsPromptPath('PS C:\\Program Files\\Git> ')).toBe('C:\\Program Files\\Git');
+    expect(parseWindowsPromptPath('C:\\Windows\\System32>')).toBe('C:\\Windows\\System32');
+    expect(parseWindowsPromptPath('PS C:\\> ')).toBe('C:\\');
+    expect(parseWindowsPromptPath(`${ESC}[32mPS D:\\work${ESC}[0m> `)).toBe('D:\\work');
+  });
+
+  it('is not fooled by a command typed after the prompt or by output', () => {
+    expect(parseWindowsPromptPath('PS C:\\Users\\dev> cd ..')).toBeNull();
+    expect(parseWindowsPromptPath('Copying C:\\a\\b to C:\\c')).toBeNull();
+    expect(parseWindowsPromptPath('PS HKLM:\\Software> ')).toBeNull();
+  });
+
+  it('reads OSC 7 in URL form and in the run-together form the old snippet wrote', () => {
+    expect(parseWindowsOsc7Payload('file://PC/C:/Users/dev/my%20project')).toBe('C:\\Users\\dev\\my project');
+    expect(parseWindowsOsc7Payload('file://DESKTOP-1C:\\Users\\dev')).toBe('C:\\Users\\dev');
+    expect(parseWindowsOsc7Payload('file://PC/C:/')).toBe('C:\\');
+    expect(parseWindowsOsc7Payload('file://host/srv/app')).toBeNull();
+  });
+
+  it('applies only when asked, and only to local PowerShell and cmd', () => {
+    expect(readCwd('PS C:\\Users\\dev> ')).toBeNull();
+    expect(readCwd('PS C:\\Users\\dev> ', { windows: true })).toEqual({ path: 'C:\\Users\\dev', source: 'prompt' });
+    // A Git Bash prompt still reads in a Windows-path session's buffer.
+    expect(readCwd('dev@pc MINGW64 /c/work$ ', { windows: true })).toEqual({ path: '/c/work', source: 'prompt' });
+    expect(reportsWindowsPaths({ kind: 'local', backend: 'powershell' })).toBe(true);
+    expect(reportsWindowsPaths({ kind: 'local', backend: 'pwsh' })).toBe(true);
+    expect(reportsWindowsPaths({ kind: 'local', backend: 'wsl' })).toBe(false);
+    expect(reportsWindowsPaths({ kind: 'ssh', backend: 'powershell' })).toBe(false);
   });
 });
 

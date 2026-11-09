@@ -64,7 +64,7 @@ import {
   toStoredForwards
 } from './port-forwards';
 import { Icon } from './icons';
-import { CWD_BUFFER_CHARS, readCwd } from './cwd-tracker';
+import { CWD_BUFFER_CHARS, readCwd, reportsWindowsPaths } from './cwd-tracker';
 import { SftpPanel } from './sftp-panel';
 import { sftpTargetForSession, transferAvailability } from './sftp-view';
 import {
@@ -1818,14 +1818,15 @@ function App() {
     return currentApi.onData((sessionId, data) => {
       const buffer = ((cwdBuffers.current.get(sessionId) ?? '') + data).slice(-CWD_BUFFER_CHARS);
       cwdBuffers.current.set(sessionId, buffer);
-      const reading = readCwd(buffer);
-      if (!reading) return;
       // Returning the same array when nothing moved matters: this runs on every
       // chunk of terminal output, and a new array each time would re-render the
-      // whole workspace while a build scrolls past.
+      // whole workspace while a build scrolls past. The reading is taken in
+      // here because whether a Windows path counts depends on the session.
       setSessions((current) => {
         const existing = current.find((item) => item.id === sessionId);
-        if (!existing || existing.cwd === reading.path) return current;
+        if (!existing) return current;
+        const reading = readCwd(buffer, { windows: reportsWindowsPaths(existing) });
+        if (!reading || existing.cwd === reading.path) return current;
         return current.map((item) => (item.id === sessionId ? { ...item, cwd: reading.path } : item));
       });
       // The selected session is looked up from `sessions`, so updating the list

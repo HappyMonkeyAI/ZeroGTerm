@@ -79,15 +79,73 @@ export function parsePromptPath(buffer: string): string | null {
  * says nothing. The newest OSC 7 wins over the prompt: it is the shell stating
  * a fact, where the prompt is this module inferring one.
  */
-export function readCwd(buffer: string): CwdReading | null {
+export function readCwd(buffer: string, options?: { windows?: boolean }): CwdReading | null {
   let payload: string | null = null;
   for (const match of buffer.matchAll(OSC7)) payload = match[1];
   if (payload) {
-    const path = parseOsc7Payload(payload);
+    const path = options?.windows ? parseWindowsOsc7Payload(payload) : parseOsc7Payload(payload);
     if (path) return { path, source: 'osc7' };
   }
-  const prompt = parsePromptPath(buffer);
+  const prompt = (options?.windows ? parseWindowsPromptPath(buffer) : null) ?? parsePromptPath(buffer);
   return prompt ? { path: prompt, source: 'prompt' } : null;
+}
+
+/**
+ * Whether a session's shell reports Windows paths: PowerShell or cmd running
+ * on this machine. Only these get the Windows readings below — a remote shell's
+ * directory feeds the transfer panel, which needs a POSIX path, and a local WSL
+ * or Git Bash pane prints POSIX prompts of its own.
+ */
+export function reportsWindowsPaths(session: { kind: string; backend?: string }): boolean {
+  return session.kind === 'local' && (session.backend === 'powershell' || session.backend === 'pwsh' || session.backend === 'cmd');
+}
+
+/**
+ * The directory in a PowerShell or cmd prompt: `PS C:\Users\dev>` or `C:\Users\dev>`.
+ *
+ * Unlike a POSIX prompt this may contain spaces (`C:\Program Files`), because
+ * the default prompts print the whole path and nothing else, so the line has to
+ * be exactly prompt-shaped: an optional `PS `, a drive path, and `>` at the end.
+ * A line with a command typed after the `>` is not a prompt any more.
+ */
+export function parseWindowsPromptPath(buffer: string): string | null {
+  const plain = buffer.replace(OSC_ANY, '').replace(CSI_ANY, '').replace(/\r/g, '\n');
+  const lines = plain.split('\n').filter((line) => line.trim());
+  const last = lines[lines.length - 1];
+  if (!last) return null;
+  const match = last.match(/^\s*(?:PS )?([A-Za-z]:\\[^<>|"*?]*?)>\s*$/);
+  if (!match) return null;
+  return trimWindowsPath(match[1]);
+}
+
+/**
+ * The directory in an OSC 7 payload from a Windows shell.
+ *
+ * Takes the proper URL form, `file://host/C:/Users/dev`, and also the form the
+ * PowerShell snippet once wrote, with host and path run together and no slash
+ * between them (`file://PCC:\Users\dev`), which is still in people's profiles.
+ * A drive letter cannot be mistaken for the end of the host: `:` is not legal
+ * in a host name, so the shortest host that leaves `X:\` behind is the right one.
+ */
+export function parseWindowsOsc7Payload(payload: string): string | null {
+  const url = payload.match(/^file:\/\/[^/]*\/([A-Za-z]:[\\/].*)$/);
+  const joined = url ? null : payload.match(/^file:\/\/[^/\\:]*?([A-Za-z]:\\.*)$/);
+  const raw = url?.[1] ?? joined?.[1];
+  if (!raw) return null;
+  let path: string;
+  try {
+    path = url ? decodeURIComponent(raw) : raw;
+  } catch {
+    return null;
+  }
+  if (path.includes('\0')) return null;
+  return trimWindowsPath(path.replace(/\//g, '\\'));
+}
+
+/** Drop a trailing backslash, except the one that makes `C:\` the root. */
+function trimWindowsPath(path: string): string {
+  const trimmed = path.replace(/\\+$/, '');
+  return /^[A-Za-z]:$/.test(trimmed) ? `${trimmed}\\` : trimmed;
 }
 
 /**
