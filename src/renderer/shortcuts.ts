@@ -299,6 +299,7 @@ export const DISMISS_ORDER = [
   'overview',
   'suggest',
   'modal',
+  'launchPicker',
   'palette',
   'history'
 ] as const;

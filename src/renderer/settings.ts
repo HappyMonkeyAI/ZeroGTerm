@@ -94,6 +94,14 @@ export type SessionSettings = {
    * this default but does not write back to it.
    */
   showHiddenFiles: boolean;
+  /** Offer recent sessions as cards when the app starts. */
+  showLaunchPicker: boolean;
+  /**
+   * Write each recent session's directory to disk so the picker can reopen it
+   * there. Off by default: the other stores deliberately keep no paths, and
+   * this one only does when asked.
+   */
+  rememberDirectories: boolean;
 };
 
 /** One user-defined pane button. A button with no command is not shown. */
@@ -224,7 +232,9 @@ export const DEFAULT_SETTINGS: Settings = {
     sidebarWidth: 238,
     splitColumnRatio: 0.5,
     splitRowRatio: 0.5,
-    showHiddenFiles: false
+    showHiddenFiles: false,
+    showLaunchPicker: true,
+    rememberDirectories: false
   },
   ai: {
     requireApproval: true,
@@ -460,7 +470,9 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       sidebarWidth: Math.round(pickNumber(sessions.sidebarWidth, SETTING_LIMITS.sidebarWidth, DEFAULT_SETTINGS.sessions.sidebarWidth)),
       splitColumnRatio: pickNumber(sessions.splitColumnRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitColumnRatio),
       splitRowRatio: pickNumber(sessions.splitRowRatio, SETTING_LIMITS.splitRatio, DEFAULT_SETTINGS.sessions.splitRowRatio),
-      showHiddenFiles: pickBoolean(sessions.showHiddenFiles, DEFAULT_SETTINGS.sessions.showHiddenFiles)
+      showHiddenFiles: pickBoolean(sessions.showHiddenFiles, DEFAULT_SETTINGS.sessions.showHiddenFiles),
+      showLaunchPicker: pickBoolean(sessions.showLaunchPicker, DEFAULT_SETTINGS.sessions.showLaunchPicker),
+      rememberDirectories: pickBoolean(sessions.rememberDirectories, DEFAULT_SETTINGS.sessions.rememberDirectories)
     },
     ai: {
       requireApproval: pickBoolean(ai.requireApproval, DEFAULT_SETTINGS.ai.requireApproval),

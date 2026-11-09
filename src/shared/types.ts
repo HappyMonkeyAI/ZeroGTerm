@@ -425,6 +425,34 @@ export interface StoredHostLabelFile {
   hosts: Array<{ host: string; label: string }>;
 }
 
+/**
+ * A session the user had open recently, for the launch picker.
+ *
+ * Unlike a workspace member this is kept for plain local and SSH shells too:
+ * those cannot be reattached, but they can be opened again. `cwd` is present
+ * only while the user has turned on "Remember directories".
+ */
+export interface RecentSession {
+  /** Identity of the shell — see recentKey in renderer/recent-sessions.ts. */
+  key: string;
+  kind: SessionKind;
+  name: string;
+  host?: string;
+  sshTarget?: string;
+  screenName?: string;
+  backend?: string;
+  wslDistribution?: string;
+  cwd?: string;
+  /** ISO time it was last open. */
+  lastSeen: string;
+}
+
+/** Recently open sessions, newest first. */
+export interface StoredRecentSessionFile {
+  version: number;
+  sessions: RecentSession[];
+}
+
 /* Pane link: relaying one launched agent's finished reply into another's prompt. */
 export type AgentPhase = 'idle' | 'busy';
 
@@ -526,6 +554,8 @@ export interface TerminalApi {
   saveForwards(file: StoredPortForwardFile): Promise<StoredPortForwardFile>;
   loadHostLabels(): Promise<StoredHostLabelFile>;
   saveHostLabels(file: StoredHostLabelFile): Promise<StoredHostLabelFile>;
+  loadRecentSessions(): Promise<StoredRecentSessionFile>;
+  saveRecentSessions(file: StoredRecentSessionFile): Promise<StoredRecentSessionFile>;
   onForwardEvent(callback: (event: PortForwardEvent) => void): () => void;
   listBackends(): Promise<ShellBackend[]>;
   listWslDistributions(): Promise<string[]>;
