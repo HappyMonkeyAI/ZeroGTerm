@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { writeClipboardText } from './clipboard.js';
 import { ScreenService, sshExecutable, parseWslDistributions, type PtySize } from './session-service.js';
-import { discoverShellBackends } from './shell-catalog.js';
+import { discoverShellBackends, isLocalShellBackend } from './shell-catalog.js';
 import { SessionHistoryStore, defaultHistoryPath } from './session-history.js';
 import { CommandHistoryStore, defaultCommandHistoryPath } from './command-history-store.js';
 import { WorkspaceStore, defaultWorkspacePath } from './workspace-store.js';
@@ -555,7 +555,9 @@ ipcMain.handle('sessions:createLocal', async (_event, request: unknown) => {
     throw new Error('createLocalSession requires { name: string }');
   }
   const cwd = typeof request.cwd === 'string' ? request.cwd : undefined;
-  const backend = request.backend === 'bash' || request.backend === 'zsh' || request.backend === 'powershell' || request.backend === 'wsl' ? request.backend : undefined;
+  // Every shell the catalog knows, not a hand-kept subset: one went missing
+  // here before, and a pwsh or cmd pane quietly reopened as the default shell.
+  const backend = isLocalShellBackend(request.backend) ? request.backend : undefined;
   const wslDistribution = typeof request.wslDistribution === 'string' ? request.wslDistribution : undefined;
   return service.createLocal({ name: request.name, cwd, ...(backend ? { backend } : {}), wslDistribution });
 });
