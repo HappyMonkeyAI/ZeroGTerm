@@ -45,8 +45,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-windows
+          # latest.yml and the blockmap are what an installed copy reads to find,
+          # verify and delta-download the next release (electron-updater).
           path: |
             dist/*.exe
+            dist/*.exe.blockmap
+            dist/latest.yml
             !dist/**/*__uninstaller*
           if-no-files-found: error
           retention-days: 1
@@ -89,6 +93,7 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.deb
+            dist/latest-linux.yml
           if-no-files-found: error
           retention-days: 1
 
@@ -145,6 +150,14 @@ jobs:
           ((${#appimages[@]} == 1))
           ((${#debs[@]} == 1))
           chmod +x "${appimages[0]}"
+          # The update metadata must name this version and the files beside it,
+          # or installed copies would be pointed at something that is not there.
+          for manifest in release-assets/latest.yml release-assets/latest-linux.yml; do
+            [[ -f "$manifest" ]]
+            grep -qx "version: ${package_version}" "$manifest"
+            target="$(sed -n 's/^path: //p' "$manifest")"
+            [[ -n "$target" && -f "release-assets/${target}" ]]
+          done
 
       - name: Generate asset checksums
         shell: bash

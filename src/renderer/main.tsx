@@ -117,6 +117,8 @@ import { createCommandCapture, readBufferRange, type CapturedCommand, type Comma
 import { redactionReason } from './command-redaction';
 import { rankCommands, type RankedCommand } from './command-ranking';
 import { askSuggestion, boundedTail, canAutoRun, isConfigured, type SuggestPhase } from './ai-suggest';
+import { shouldPrompt, type UpdateState } from '../shared/update';
+import { UpdatePrompt } from './update-prompt';
 
 /**
  * How long the workspace layout must hold still before it is written to disk.
@@ -1167,6 +1169,42 @@ function App() {
       .then((version) => setAppVersion(formatVersion(version)))
       .catch(() => undefined);
   }, []);
+
+  // Updates. The main process does the checking and installing; what happens
+  // here is the policy: whether to check at startup, and whether the popup
+  // should be showing given what the user has already said about this version.
+  const [update, setUpdate] = useState<UpdateState | null>(null);
+  /** A version put off with "Later": not raised again until the next launch. */
+  const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
+  /** The last check was asked for from Settings, so its answer is always shown. */
+  const [updateAsked, setUpdateAsked] = useState(false);
+  useEffect(() => {
+    const currentApi = api();
+    void currentApi?.updateState?.().then(setUpdate).catch(() => undefined);
+    return currentApi?.onUpdateState?.(setUpdate);
+  }, []);
+  const startupCheckDone = useRef(false);
+  useEffect(() => {
+    if (startupCheckDone.current || !settings.updates.checkOnStartup) return;
+    // Not on the first frame: startup is busy restoring panes, and nothing
+    // about an update is urgent enough to compete with that. Marked done only
+    // when it fires, so a remount (or the setting flipping back on) still checks.
+    const timer = window.setTimeout(() => {
+      startupCheckDone.current = true;
+      void api()?.checkForUpdates?.().catch(() => undefined);
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [settings.updates.checkOnStartup]);
+  const checkForUpdatesNow = () => {
+    setUpdateAsked(true);
+    void api()?.checkForUpdates?.().catch((error) => setStatus(ipcMessage(error)));
+  };
+  const closeUpdatePrompt = () => {
+    if (update && 'version' in update) setDismissedUpdate(update.version);
+    setUpdateAsked(false);
+  };
+  const updatePromptOpen = launchPicker !== 'open'
+    && shouldPrompt(update, settings.updates.skippedVersion, dismissedUpdate, updateAsked);
   useEffect(() => {
     const currentApi = api();
     void currentApi?.listPaneLinks?.().then(setPaneLinks).catch(() => undefined);
@@ -1310,6 +1348,7 @@ function App() {
   const dismissVoiceReview = useBackdropDismiss(() => closeVoiceReview());
   const dismissTransfer = useBackdropDismiss(() => setTransferOpen(false));
   const dismissLaunchPicker = useBackdropDismiss(() => setLaunchPicker('closed'));
+  const dismissUpdatePrompt = useBackdropDismiss(() => closeUpdatePrompt());
 
   // Every settings edit goes through updateSection, so a control cannot store a
   // value the schema would reject, and every edit is persisted as it is made —
@@ -1858,6 +1897,7 @@ function App() {
           return;
         }
         const target = topDismissTarget({
+          update: updatePromptOpen,
           help: helpOpen,
           editor: Boolean(overlayEditorId),
           transfer: transferOpen,
@@ -1872,6 +1912,7 @@ function App() {
         });
         if (!target) return;
         event.preventDefault();
+        if (target === 'update') closeUpdatePrompt();
         if (target === 'help') setHelpOpen(false);
         if (target === 'editor' && overlayEditorId) editorClosers.current.get(overlayEditorId)?.();
         if (target === 'transfer') setTransferOpen(false);
@@ -1943,7 +1984,7 @@ function App() {
     // `sessions` is listed because the workspace-switch shortcut reads it to
     // pick the terminal to focus. It costs nothing: workspaceSessions already
     // changes with it, and setSessions returns the same array when nothing moved.
-  }, [overview, suggest, modal, launchPicker, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, overlayEditorId, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
+  }, [updatePromptOpen, update, overview, suggest, modal, launchPicker, paletteOpen, historyOpen, settingsOpen, transferOpen, helpOpen, overlayEditorId, voiceReview, voice.status, workspaces, activeWorkspaceId, activeWorkspace, workspaceSessions, sessions]);
 
   // Named here so the button's tooltip and its action cannot disagree about what
   // an emptied setting falls back to.
@@ -5133,6 +5174,23 @@ function App() {
           }}
           onMcpStop={() => { void api()?.stopMcp?.().then(() => { setMcpInfo(null); setStatus('MCP disabled'); }).catch((error) => setStatus(ipcMessage(error))); }}
           onMcpCopyToken={() => { if (mcpInfo) void api()?.copyText?.(mcpInfo.token).then(() => setStatus('MCP bearer token copied.')); }}
+          update={update}
+          onCheckForUpdates={checkForUpdatesNow}
+        />
+      )}
+
+      {updatePromptOpen && update && (update.status === 'available' || update.status === 'downloading' || update.status === 'ready') && (
+        <UpdatePrompt
+          state={update}
+          backdrop={dismissUpdatePrompt}
+          onDownload={() => void api()?.downloadUpdate?.().catch((error) => setStatus(ipcMessage(error)))}
+          onInstall={() => void api()?.installUpdate?.().catch((error) => setStatus(ipcMessage(error)))}
+          onOpenRelease={() => void api()?.openReleasePage?.().catch((error) => setStatus(ipcMessage(error)))}
+          onLater={closeUpdatePrompt}
+          onSkip={() => {
+            changeSetting('updates', { skippedVersion: update.version });
+            setUpdateAsked(false);
+          }}
         />
       )}
 

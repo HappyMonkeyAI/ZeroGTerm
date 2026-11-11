@@ -190,6 +190,14 @@ export type SpeechSettings = {
   serverModel: string;
 };
 
+/** Whether to look for new releases, and the one the user chose to skip. */
+export type UpdateSettings = {
+  /** Look for a newer release a few seconds after the app starts. */
+  checkOnStartup: boolean;
+  /** A version the user said not to be told about again. Empty for none. */
+  skippedVersion: string;
+};
+
 export type Settings = {
   appearance: AppearanceSettings;
   /**
@@ -201,6 +209,7 @@ export type Settings = {
   sessions: SessionSettings;
   ai: AiSettings;
   speech: SpeechSettings;
+  updates: UpdateSettings;
 };
 
 export type SettingsSection = keyof Settings;
@@ -235,6 +244,10 @@ export const DEFAULT_SETTINGS: Settings = {
     showHiddenFiles: false,
     showLaunchPicker: true,
     rememberDirectories: false
+  },
+  updates: {
+    checkOnStartup: true,
+    skippedVersion: ''
   },
   ai: {
     requireApproval: true,
@@ -428,6 +441,7 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
   const ai = isRecord(source.ai) ? source.ai : {};
   const speech = isRecord(source.speech) ? source.speech : {};
   const shortcuts = isRecord(source.shortcuts) ? source.shortcuts : {};
+  const updates = isRecord(source.updates) ? source.updates : {};
 
   const defaultTheme = pickEnum(legacyTheme, THEMES, DEFAULT_SETTINGS.appearance.theme);
   const engine = pickEnum(speech.engine, ENGINES, DEFAULT_SETTINGS.speech.engine);
@@ -499,6 +513,10 @@ export function parseSettings(raw: unknown, legacyTheme?: unknown): Settings {
       silenceThreshold: pickNumber(speech.silenceThreshold, SETTING_LIMITS.silenceThreshold, DEFAULT_SETTINGS.speech.silenceThreshold),
       serverUrl: pickString(speech.serverUrl, DEFAULT_SETTINGS.speech.serverUrl, 512),
       serverModel: pickString(speech.serverModel, DEFAULT_SETTINGS.speech.serverModel, 128)
+    },
+    updates: {
+      checkOnStartup: pickBoolean(updates.checkOnStartup, DEFAULT_SETTINGS.updates.checkOnStartup),
+      skippedVersion: pickString(updates.skippedVersion, DEFAULT_SETTINGS.updates.skippedVersion, 64)
     }
   };
 }

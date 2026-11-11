@@ -98,6 +98,16 @@ const api = {
   clearAiApiKey: () => ipcRenderer.invoke('aiKey:clear'),
   listLocalDirectory: (path) => ipcRenderer.invoke('fs:listLocal', path),
   appVersion: () => ipcRenderer.invoke('app:version'),
+  updateState: () => ipcRenderer.invoke('updates:state'),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  downloadUpdate: () => ipcRenderer.invoke('updates:download'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  openReleasePage: () => ipcRenderer.invoke('updates:openRelease'),
+  onUpdateState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('updates:state', listener);
+    return () => ipcRenderer.removeListener('updates:state', listener);
+  },
   /** One-shot FileMan/CLI cwd hint from cold start; null after first take. */
   takeOpenCwd: () => ipcRenderer.invoke('app:takeOpenCwd'),
   /** Subsequent launches while this instance holds the single-instance lock. */

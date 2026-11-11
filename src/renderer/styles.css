@@ -4291,3 +4291,28 @@ input:focus-visible {
 :root[data-theme='light'] .favourite-text small,
 :root[data-theme='light'] .favourites-heading,
 :root[data-theme='light'] .favourites-empty { color: #68768a; }
+
+/* The update popup: the standard modal card, with a thin progress bar while a
+   download runs. */
+.update-card {
+  width: 420px;
+}
+
+.update-card .dialog-disclosure {
+  margin-top: -6px;
+}
+
+.update-progress {
+  height: 4px;
+  margin: -6px 0 14px;
+  border-radius: 2px;
+  background: var(--surface-0);
+  overflow: hidden;
+}
+
+.update-progress span {
+  display: block;
+  height: 100%;
+  background: var(--green);
+  transition: width .2s ease;
+}
