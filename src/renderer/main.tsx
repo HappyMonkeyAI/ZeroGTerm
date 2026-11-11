@@ -163,7 +163,7 @@ function browserStorage(): SettingsStorage | null {
   }
 }
 
-function SessionRow({ session, active = false, ghosted = false, onClick }: { session: SessionInfo; active?: boolean; ghosted?: boolean; onClick: () => void }) {
+function SessionRow({ session, active = false, ghosted = false, onClick, onClose }: { session: SessionInfo; active?: boolean; ghosted?: boolean; onClick: () => void; onClose?: () => void }) {
   const backend = session.kind === 'ssh'
     ? `SSH · ${session.host}`
     : session.backend === 'wsl'
@@ -173,12 +173,30 @@ function SessionRow({ session, active = false, ghosted = false, onClick }: { ses
         : session.persistence === 'screen'
           ? `screen · ${session.cwd}`
           : `local · process only · ${session.cwd}`;
+  const state = <span className="session-state">{ghosted ? '↗' : session.status === 'connected' ? '●' : '○'}</span>;
+  if (!onClose) {
+    return (
+      <button type="button" className={`session-row ${active ? 'active' : ''} ${ghosted ? 'session-ghosted' : ''}`} onClick={onClick}>
+        <span className={`status-dot ${session.status}`} />
+        <span className="session-copy"><b>{session.name}</b><small>{backend}</small></span>
+        {state}
+      </button>
+    );
+  }
+  // A closable row is two controls in a row shape, like a shared-port row: the
+  // label focuses the pane and the cross closes it, the same as the pane's own
+  // close button. Nesting them in one button would be invalid markup.
   return (
-    <button type="button" className={`session-row ${active ? 'active' : ''} ${ghosted ? 'session-ghosted' : ''}`} onClick={onClick}>
-      <span className={`status-dot ${session.status}`} />
-      <span className="session-copy"><b>{session.name}</b><small>{backend}</small></span>
-      <span className="session-state">{ghosted ? '↗' : session.status === 'connected' ? '●' : '○'}</span>
-    </button>
+    <div className={`session-row closable-row ${active ? 'active' : ''} ${ghosted ? 'session-ghosted' : ''}`}>
+      <button type="button" className="row-open" onClick={onClick}>
+        <span className={`status-dot ${session.status}`} />
+        <span className="session-copy"><b>{session.name}</b><small>{backend}</small></span>
+      </button>
+      {state}
+      <button type="button" className="row-close" onClick={onClose} title={`Close ${session.name}`} aria-label={`Close ${session.name}`}>
+        ×
+      </button>
+    </div>
   );
 }
 
@@ -4210,7 +4228,7 @@ function App() {
                   workspaceSessions.length || pendingPanes.length ? (
                     <>
                       {workspaceSessions.map((session) => (
-                        <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} />
+                        <SessionRow key={session.id} session={session} active={active?.id === session.id} onClick={() => void attach(session)} onClose={() => void closePane(session)} />
                       ))}
                       {/* Panes this workspace remembers but has not reconnected.
                           Ghosted like a discovered screen, because that is what
