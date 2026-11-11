@@ -39,7 +39,7 @@ See the project walkthrough on [YouTube](https://youtu.be/4aJZCxLHD14).
 
 ## Release status
 
-ZeroG Terminal 1.0.0 is the first stable release. The current release is `1.0.0`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
+ZeroG Terminal 1.0.0 was the first stable release. The current release is `1.1.0`; the version history is tracked in [versions.txt](versions.txt). The running version is shown beside the wordmark in the title bar, read from the app itself rather than written into the interface, so it is accurate in a packaged build too.
 
 The GitHub Releases page provides a Windows x64 installer and portable executable plus a Linux x64 AppImage and Debian package for each desktop release. The npm package remains available for developers who prefer to launch ZeroG from Node.js.
 
