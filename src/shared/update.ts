@@ -120,6 +120,10 @@ export function safeReleaseUrl(value: unknown): string {
   if (parsed.protocol !== 'https:' || parsed.host !== allowed.host) return RELEASES_URL;
   if (parsed.pathname !== allowed.pathname && !parsed.pathname.startsWith(`${allowed.pathname}/`)) return RELEASES_URL;
   if (parsed.username || parsed.password) return RELEASES_URL;
+  // Only the page itself: a query or fragment from the network is not needed
+  // to show a release, so none is passed on to the browser.
+  parsed.search = '';
+  parsed.hash = '';
   return parsed.toString();
 }
 

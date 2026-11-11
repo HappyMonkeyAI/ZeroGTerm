@@ -155,7 +155,7 @@ jobs:
           for manifest in release-assets/latest.yml release-assets/latest-linux.yml; do
             [[ -f "$manifest" ]]
             grep -qx "version: ${package_version}" "$manifest"
-            target="$(sed -n 's/^path: //p' "$manifest")"
+            target="$(grep -m1 '^path: ' "$manifest" | sed 's/^path: //')"
             [[ -n "$target" && -f "release-assets/${target}" ]]
           done
 

@@ -57,6 +57,10 @@ describe('release links', () => {
     expect(safeReleaseUrl(`${RELEASES_URL}/tag/v1.1.0`)).toBe(`${RELEASES_URL}/tag/v1.1.0`);
   });
 
+  it('drops any query or fragment the network added', () => {
+    expect(safeReleaseUrl(`${RELEASES_URL}/tag/v1.1.0?redirect=https://evil.example#x`)).toBe(`${RELEASES_URL}/tag/v1.1.0`);
+  });
+
   it('falls back to the releases index for anything else', () => {
     for (const value of [
       'https://evil.example/HappyMonkeyAI/ZeroGTerm/releases/tag/v1',
