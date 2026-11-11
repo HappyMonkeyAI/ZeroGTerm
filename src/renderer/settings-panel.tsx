@@ -6,6 +6,8 @@
 
 import React, { useMemo, useState } from 'react';
 import type { McpControlStatus, ShellBackend } from '../shared/types';
+import type { UpdateState } from '../shared/update';
+import { updateSummary } from './update-view';
 import {
   RESERVED,
   SHORTCUTS,
@@ -112,6 +114,9 @@ export type SettingsPanelProps = {
   onMcpStart: () => void;
   onMcpStop: () => void;
   onMcpCopyToken: () => void;
+  /** Where the update check stands; null before the main process answers. */
+  update: UpdateState | null;
+  onCheckForUpdates: () => void;
 };
 
 /**
@@ -139,7 +144,8 @@ const PAGES: Array<{ id: SettingsPage; label: string; hint: string; blurb: strin
   { id: 'terminal', label: 'Terminal', hint: 'Scrollback, cursor', blurb: 'Behaviour of every terminal pane.' },
   { id: 'sessions', label: 'Sessions', hint: 'Defaults, layout', blurb: 'What new terminals and new windows start as.' },
   { id: 'ai', label: 'AI & voice', hint: 'Approval, insert', blurb: 'How AI suggestions and transcripts reach a terminal.' },
-  { id: 'speech', label: 'Speech recognition', hint: 'Engine, model', blurb: 'Which recogniser runs, and how it is tuned.' }
+  { id: 'speech', label: 'Speech recognition', hint: 'Engine, model', blurb: 'Which recogniser runs, and how it is tuned.' },
+  { id: 'updates', label: 'Updates', hint: 'New releases', blurb: 'Whether ZeroG looks for a newer release, and what it does when it finds one.' }
 ];
 
 /**
@@ -676,7 +682,9 @@ export function SettingsPanel({
   mcpInfo,
   onMcpStart,
   onMcpStop,
-  onMcpCopyToken
+  onMcpCopyToken,
+  update,
+  onCheckForUpdates
 }: SettingsPanelProps) {
   const [page, setPage] = useState<SettingsPage>('appearance');
   const bindings = useMemo(() => resolveBindings(settings.shortcuts), [settings.shortcuts]);
@@ -1072,6 +1080,36 @@ export function SettingsPanel({
                   onCopySnippet={onCopySnippet}
                   onClear={onClearCommandHistory}
                 />
+              </>
+            )}
+
+            {page === 'updates' && (
+              <>
+                <Toggle
+                  label="Check for updates at startup"
+                  hint="A few seconds after launch, ZeroG asks GitHub for the newest release. Nothing downloads until you choose to."
+                  checked={settings.updates.checkOnStartup}
+                  onChange={(checkOnStartup) => onChange('updates', { checkOnStartup })}
+                />
+                <div className="settings-test">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!update || update.mode === 'disabled' || update.status === 'checking' || update.status === 'downloading'}
+                    onClick={onCheckForUpdates}
+                  >
+                    {update?.status === 'checking' ? 'Checking…' : 'Check now'}
+                  </button>
+                  <small className={update?.status === 'error' ? 'settings-key-error' : 'settings-key-notice'}>{updateSummary(update)}</small>
+                </div>
+                {settings.updates.skippedVersion ? (
+                  <p>
+                    Skipping version {settings.updates.skippedVersion}.{' '}
+                    <button type="button" className="dialog-disclosure" onClick={() => onChange('updates', { skippedVersion: '' })}>
+                      Stop skipping it
+                    </button>
+                  </p>
+                ) : null}
               </>
             )}
 

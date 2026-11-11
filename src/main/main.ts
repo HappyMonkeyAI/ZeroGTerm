@@ -1,5 +1,5 @@
 import { shutdownPtys } from './pty-lifecycle.js';
-import { app, BrowserWindow, clipboard, ipcMain, Menu, safeStorage, session, shell } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, Menu, net, safeStorage, session, shell } from 'electron';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -33,6 +33,8 @@ import { requireWorkspaceName } from './mcp-protocol.js';
 import { PaneLinkController, pasteAndSubmit } from './pane-link.js';
 import { AgentHookServer, buildLaunchCommand } from './agent-hook-server.js';
 import { parseOpenCwd } from '../shared/open-cwd.js';
+import { LATEST_RELEASE_API, RELEASES_URL, safeReleaseUrl, updateMode } from '../shared/update.js';
+import { UpdateService, type InstallUpdater } from './update-service.js';
 import type { AiSuggestionRequest, CommandRecord, FileEntry, PortForwardRequest, SpeechApiKeyStatus } from '../shared/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -755,6 +757,40 @@ function requireEntryKind(value: unknown): FileEntry['kind'] {
 // Electron's own reading of package.json, so the title bar shows what is
 // actually running rather than a string compiled in from the repo.
 ipcMain.handle('app:version', () => app.getVersion());
+
+// Updates. The renderer decides when to check (a setting) and the user decides
+// whether to download; see update-service.ts. The mode is fixed at start: it
+// depends on how this copy was packaged, which cannot change while it runs.
+const updates = new UpdateService({
+  mode: updateMode({ isPackaged: app.isPackaged, platform: process.platform, env: process.env }),
+  currentVersion: app.getVersion(),
+  loadUpdater: async () => {
+    // CommonJS package: its named exports arrive on the default import under ESM.
+    const module = await import('electron-updater');
+    const updater = (module.default ?? module).autoUpdater as unknown as InstallUpdater;
+    return updater;
+  },
+  fetchLatest: async () => {
+    const response = await net.fetch(LATEST_RELEASE_API, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'ZeroGTerminal-update-check' },
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`GitHub answered ${response.status} to the update check.`);
+    return response.json();
+  },
+  onChange: (state) => win?.webContents.send('updates:state', state)
+});
+ipcMain.handle('updates:state', () => updates.current());
+ipcMain.handle('updates:check', () => updates.check());
+ipcMain.handle('updates:download', () => updates.download());
+ipcMain.handle('updates:install', () => updates.install());
+// Opens the release page the last check found, never a URL from the renderer.
+ipcMain.handle('updates:openRelease', () => {
+  const state = updates.current();
+  const url = 'releaseUrl' in state ? safeReleaseUrl(state.releaseUrl) : RELEASES_URL;
+  return shell.openExternal(url);
+});
 ipcMain.handle('fs:localHome', () => localHome());
 // Cached on success only, so a distribution that was not running when it was
 // first asked can answer later.

@@ -1,3 +1,5 @@
+import type { UpdateState } from './update.js';
+
 export type SessionStatus = 'connected' | 'detached' | 'unavailable' | 'error';
 export type SessionKind = 'local' | 'ssh';
 /**
@@ -626,6 +628,17 @@ export interface TerminalApi {
   listLocalDirectory(path?: string): Promise<DirectoryListing>;
   /** The running app's version, as Electron reports it from package.json. */
   appVersion(): Promise<string>;
+  /** Where the update check stands; see src/shared/update.ts. */
+  updateState(): Promise<UpdateState>;
+  /** Look for a newer release. Does nothing in an unpackaged run. */
+  checkForUpdates(): Promise<UpdateState>;
+  /** Download the release the last check found (installable builds only). */
+  downloadUpdate(): Promise<UpdateState>;
+  /** Quit and restart into the downloaded update. */
+  installUpdate(): Promise<void>;
+  /** Open the found release's page in the browser. The URL is chosen in main. */
+  openReleasePage(): Promise<void>;
+  onUpdateState(callback: (state: UpdateState) => void): () => void;
   /**
    * Absolute directory from `--cwd` / `ZEROG_OPEN_CWD` / bare argv on cold start.
    * Cleared after the first successful take so a reload does not reopen it.

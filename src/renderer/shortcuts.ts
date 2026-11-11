@@ -291,6 +291,9 @@ export function matchShortcut(event: ShortcutEvent, bindings: Bindings = DEFAULT
  * reaching the shell for `vi` to be usable.
  */
 export const DISMISS_ORDER = [
+  // The update popup can open over anything, Settings included, when a manual
+  // check finds a release, so it is the first thing Escape closes.
+  'update',
   'help',
   'editor',
   'transfer',

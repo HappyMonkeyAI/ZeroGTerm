@@ -502,6 +502,15 @@ having: with it, local sessions are persistent and rediscovered after relaunch.
 Without it, ZeroG falls back to a direct PTY on the chosen shell and labels the
 session process-only; that shell is lost when the application exits.
 
+#### Updates
+
+A few seconds after launch, ZeroG asks GitHub whether a newer release exists, and shows a popup if one does. Nothing is downloaded until you choose to:
+
+- **Windows installer and AppImage:** **Download & install** fetches the update (checked against the release's `latest.yml` hash), then **Restart & install** closes every pane and restarts into the new version. A downloaded update also installs the next time you quit.
+- **Portable `.exe` and `.deb`:** these cannot replace themselves, so the popup offers **Open download page** instead.
+
+**Later** hides the popup until the next launch, and **Skip this version** stops it for that version. Turn the startup check off, check by hand, or stop skipping a version in **Settings → Updates**. Development and npm-installed copies do not check.
+
 ### Windows
 
 No tooling beyond Node.js. The new-terminal dialog offers the shells it finds on
