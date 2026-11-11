@@ -17,3 +17,4 @@ ZeroG Terminal version history
 0.9.3-alpha.1 - Nine colour themes (Tokyo Night, Light, Dracula, Nord, Solarized Dark, Monokai, One Dark, Synthwave and High contrast) chosen in Settings, pane buttons that are easier to see at rest, and a release workflow fix for the annotated tag check
 0.9.4-alpha.1 - A neon glow on the buttons in the Synthwave theme
 1.0.0 - First stable release: reliable remote screen discovery and reconnection, coordinated PTY shutdown, verified Windows/Linux installation and removal, reproducible native builds, and dependency advisory fixes
+1.1.0 - Update notifications with optional install, recent sessions at startup, favourite directories, closing a terminal from the sidebar, and open-in-directory launch hints
